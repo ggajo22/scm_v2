@@ -2,6 +2,7 @@
 Security must-pass tests (SEC-MUST-001 through SEC-MUST-005).
 ALL tests in this file are HARD requirements — any failure = OVERALL FAIL.
 """
+
 import pytest
 from django.conf import settings
 from django.contrib.auth import get_user_model
@@ -231,13 +232,17 @@ class TestSecMust004AlgNoneAndHs384Rejected:
         import json
 
         # Craft a JWT with algorithm=none (unsigned)
-        header = base64.urlsafe_b64encode(
-            json.dumps({"alg": "none", "typ": "JWT"}).encode()
-        ).rstrip(b"=").decode()
+        header = (
+            base64.urlsafe_b64encode(json.dumps({"alg": "none", "typ": "JWT"}).encode())
+            .rstrip(b"=")
+            .decode()
+        )
 
-        payload = base64.urlsafe_b64encode(
-            json.dumps({"user_id": 1, "token_type": "access"}).encode()
-        ).rstrip(b"=").decode()
+        payload = (
+            base64.urlsafe_b64encode(json.dumps({"user_id": 1, "token_type": "access"}).encode())
+            .rstrip(b"=")
+            .decode()
+        )
 
         # alg:none token has empty signature
         fake_token = f"{header}.{payload}."

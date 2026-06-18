@@ -2,6 +2,7 @@
 Tests for Token Refresh endpoint (AC-AUTH-004, 005, 013).
 POST /api/auth/token/refresh/
 """
+
 import pytest
 from django.conf import settings
 from freezegun import freeze_time
@@ -54,7 +55,6 @@ class TestExpiredRefreshToken:
     def test_expired_refresh_token_returns_401(self, api_client):
         """AC-AUTH-013: freezegun test — refresh token expired after TTL."""
 
-
         AdminUserFactory(username="expired_refresh_user")
 
         # Login to get tokens
@@ -84,9 +84,7 @@ class TestExpiredAccessToken:
 
         # Move 20 minutes ahead (access TTL is 15min)
         with freeze_time("2026-01-01 00:20:00"):
-            api_client.credentials(
-                HTTP_AUTHORIZATION=f"Bearer {tokens['access']}"
-            )
+            api_client.credentials(HTTP_AUTHORIZATION=f"Bearer {tokens['access']}")
             # Try to access a protected endpoint
             resp = api_client.get("/api/admin/users/")
 

@@ -1,6 +1,7 @@
 """
 Tests for RBAC permission classes (AC-AUTH-007, 011, SEC-MUST-001).
 """
+
 from unittest.mock import MagicMock
 
 import pytest

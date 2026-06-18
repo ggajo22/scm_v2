@@ -2,6 +2,7 @@
 Tests for Logout endpoint (AC-AUTH-006).
 POST /api/auth/logout/
 """
+
 import pytest
 from rest_framework import status
 

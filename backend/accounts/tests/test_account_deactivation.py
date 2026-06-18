@@ -1,6 +1,7 @@
 """
 Tests for account deactivation → token invalidation (AC-AUTH-010, REQ-AUTH-022).
 """
+
 import pytest
 from rest_framework import status
 

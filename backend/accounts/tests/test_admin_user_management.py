@@ -3,6 +3,7 @@ Tests for AdminUserViewSet (AC-AUTH-008, 009, 012, EDGE-015).
 GET/POST/PUT/PATCH /api/admin/users/
 POST /api/admin/users/{id}/reset-password/
 """
+
 import pytest
 from django.contrib.auth import get_user_model
 from rest_framework import status

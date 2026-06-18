@@ -1,7 +1,7 @@
 ---
 id: SPEC-AUTH-001
-version: "1.1.0"
-status: completed
+version: "1.0.1"
+status: draft
 created: "2026-06-18"
 updated: "2026-06-18"
 author: ggajo
@@ -136,34 +136,3 @@ The 시스템 **shall** JWT 페이로드의 역할 정보가 변경되더라도 
 7. **권한 세분화 (Fine-grained Permission)** — 도서별·주문별 접근 제어 등의 세분화된 권한 관리는 v1 범위 외이다.
 8. **Refresh Token 자동 로테이션** — 갱신 시 기존 토큰 자동 회전(Rotation) 전략은 구현하지 않는다. 단순 블랙리스트 방식으로 무효화한다.
 9. **비활성화 계정의 기존 Access Token 즉시 무효화** — 계정 비활성화 시 기존 발급 Access Token은 만료 전까지 유효하다. 즉시 무효화는 v1에서 지원하지 않는다. (Refresh Token은 즉시 무효화됨, REQ-AUTH-022)
-
----
-
-## 구현 노트 (Implementation Notes)
-
-> 이 섹션은 sync 단계에서 자동 추가됨. 실제 구현과 계획의 차이를 기록함.
-
-### 구현 완료일
-2026-06-18
-
-### 브랜치
-`feature/SPEC-AUTH-001-admin-auth`
-
-### 계획 대비 추가 구현
-
-| 항목 | 사유 |
-|------|------|
-| `accounts/signals.py` | REQ-AUTH-022 — 계정 비활성화 시 Refresh Token 즉시 무효화를 Django Signal로 구현. 계획에 없었으나 기능 완성도를 위해 추가. |
-| `accounts/tests/factories.py` | 테스트 데이터 생성 팩토리 (factory-boy). 중복 코드 제거를 위해 추가. |
-| `accounts/tests/test_security_must_pass.py` | SEC-MUST-001~005 보안 필수 검증 테스트. 계획에 없었으나 보안 품질 강화를 위해 추가. |
-| EDGE-013 예외 처리 | ADMIN 역할이 관리자 계정 관리 엔드포인트 접근 시 경로 확장 처리 |
-| EDGE-015 예외 처리 | SuperAdmin의 자기 자신 비활성화 방지 로직 (`partial_update` 내 검증) |
-
-### 품질 지표
-
-| 지표 | 결과 |
-|------|------|
-| 테스트 수 | 91개 |
-| 커버리지 | 99.78% |
-| 린트 | ruff All checks passed |
-| 보안 | SEC-MUST-001~005 모두 통과 |
