@@ -17,5 +17,8 @@
 - Phase 2.8a complete: evaluator-active 평균 0.79 PASS, MAJOR×2 결함 발견 후 수정
 - Phase 2.9 complete: MX 태그 추가 (ANCHOR×4, WARN×1)
 - Phase 3 complete: commit 04115da — feature/SPEC-AUTH-001-admin-auth
-- Status: RUN COMPLETE — 91 tests, 99.78% coverage, SEC-MUST-001~005 모두 통과
-- Next: /moai sync SPEC-AUTH-001
+- Phase 4 complete: docs sync (README.md 생성, spec.md completed, product.md 업데이트)
+- Phase 5 complete: commit 2edf661 — docs(sync): SPEC-AUTH-001 문서 동기화 및 완료 처리
+- Phase 6 complete: master 브랜치 origin push, feature 브랜치 push (최신화)
+- Status: SYNC COMPLETE — PR 생성 대기 (gh auth 필요)
+- Next: gh auth login → gh pr create, OR GitHub 웹 UI에서 PR 생성

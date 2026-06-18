@@ -1,7 +1,7 @@
 ---
 id: SPEC-FE-AUTH-001
 version: "1.0.1"
-status: draft
+status: completed
 created: "2026-06-18"
 updated: "2026-06-18"
 author: ggajo

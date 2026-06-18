@@ -5,8 +5,6 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { AdminUsersPage } from './AdminUsersPage'
 import { useAuthStore } from '@/store/authStore'
-import { server } from '@/test/server'
-
 vi.mock('@/store/authStore')
 
 const mockUseAuthStore = vi.mocked(useAuthStore)

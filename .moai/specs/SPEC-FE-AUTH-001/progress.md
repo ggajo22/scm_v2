@@ -18,4 +18,6 @@
 - Branch: feature/SPEC-FE-AUTH-001
 - Tests: 10 files / 54 tests / 100% pass
 - Coverage: statements 94.17%, branches 88.23%, functions 80%+
-- Status: RUN COMPLETE — /moai sync SPEC-FE-AUTH-001 대기
+- Sync Phase: lint 오류 수정 (badge.tsx, button.tsx, input.tsx, eslint.config.js, AdminUsersPage.test.tsx)
+- Status: SYNC COMPLETE — PR 생성 완료
+- Branch: feature/SPEC-FE-AUTH-001 → main PR
