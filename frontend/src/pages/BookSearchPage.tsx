@@ -18,19 +18,29 @@ export function BookSearchPage() {
   useEffect(() => { setPage(1) }, [query])
   const { data, isPending, isFetching, isError } = useBookSearch(query, page)
 
+  // isPending  = no cache at all (very first search)
+  // isFetching = request in-flight (first load OR re-search with stale/placeholder data)
+  const showSkeleton = isPending
+  const showResults  = !isPending && !isError
+
   return (
     <div className="p-6 space-y-4">
-      {/* Top progress bar — visible on every fetch (first load & refetch) */}
+
+      {/* Progress bar: inline style to avoid Tailwind v4 @keyframes resolution issue */}
       {isFetching && (
-        <div className="fixed top-0 left-0 right-0 z-50 h-1 bg-primary/20">
-          <div className="h-full bg-primary animate-[progress_1.2s_ease-in-out_infinite]" />
+        <div className="fixed top-0 left-0 right-0 z-50 h-1 overflow-hidden bg-primary/20">
+          <div
+            className="h-full bg-primary"
+            style={{ animation: 'search-progress 1.2s ease-in-out infinite' }}
+          />
         </div>
       )}
 
-      {isPending && (
+      {/* First-load skeleton */}
+      {showSkeleton && (
         <div role="status" aria-label="로딩 중" className="space-y-2">
           {Array.from({ length: 5 }).map((_, i) => (
-            <div key={i} className="h-8 bg-muted animate-pulse rounded" />
+            <div key={i} className="h-10 bg-muted animate-pulse rounded" />
           ))}
         </div>
       )}
@@ -41,12 +51,16 @@ export function BookSearchPage() {
         </p>
       )}
 
-      {!isPending && !isError && data?.count === 0 && (
+      {showResults && data?.count === 0 && !isFetching && (
         <p className="text-muted-foreground">검색 결과가 없습니다.</p>
       )}
 
-      {!isPending && !isError && data && data.count > 0 && (
-        <div className="rounded-md border">
+      {/* Results table — dim while re-fetching to signal stale data */}
+      {showResults && data && data.count > 0 && (
+        <div
+          className="rounded-md border transition-opacity duration-200"
+          style={{ opacity: isFetching ? 0.5 : 1 }}
+        >
           <Table>
             <TableHeader>
               <TableRow>
@@ -72,7 +86,7 @@ export function BookSearchPage() {
         </div>
       )}
 
-      {!isPending && !isError && data && data.count > 0 && (
+      {showResults && data && data.count > 0 && (
         <div className="flex items-center justify-between">
           <span className="text-sm text-muted-foreground">전체 {data.count}건</span>
           <div className="flex gap-2">
@@ -80,7 +94,7 @@ export function BookSearchPage() {
               variant="outline"
               size="sm"
               onClick={() => setPage((p) => Math.max(1, p - 1))}
-              disabled={!data.previous}
+              disabled={!data.previous || isFetching}
               aria-label="이전 페이지"
             >
               이전
@@ -90,7 +104,7 @@ export function BookSearchPage() {
               variant="outline"
               size="sm"
               onClick={() => setPage((p) => p + 1)}
-              disabled={!data.next}
+              disabled={!data.next || isFetching}
               aria-label="다음 페이지"
             >
               다음
