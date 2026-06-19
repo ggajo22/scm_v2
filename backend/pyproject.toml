@@ -1,0 +1,37 @@
+[tool.poetry]
+name = "scm-v2-backend"
+version = "0.1.0"
+description = "SCM v2 Backend - Shopify Book Inventory Management"
+authors = ["ggajo <ggajo22@naver.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+django = "^5.0"
+djangorestframework = "^3.14"
+djangorestframework-simplejwt = "^5.3"
+mysqlclient = "^2.2"
+python-decouple = "^3.8"
+django-cors-headers = "^4.3"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4"
+pytest-django = "^4.7"
+pytest-cov = "^4.1"
+factory-boy = "^3.3"
+freezegun = "^1.4"
+faker = "^22.0"
+ruff = "^0.1"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+# Exclude auto-generated migration files from lint
+exclude = ["accounts/migrations/*.py"]
