@@ -1,9 +1,9 @@
 ---
 id: SPEC-BOOK-SEARCH-001
-version: "1.0.2"
+version: "1.0.3"
 status: completed
 created: "2026-06-19"
-updated: "2026-06-19"
+updated: "2026-06-20"
 author: ggajo
 priority: medium
 issue_number: 0
@@ -16,6 +16,7 @@ issue_number: 0
 | 1.0.0 | 2026-06-19 | ggajo | 최초 작성 — ISBN 및 제목 부분 검색 기능 SPEC |
 | 1.0.1 | 2026-06-19 | ggajo | 구현 완료 — TDD 방식으로 백엔드/프론트엔드 전체 구현, 18/18 테스트 통과 |
 | 1.0.2 | 2026-06-19 | ggajo | 레이아웃 개선 — BookLayout 도입, 도서 관련 URL 상단 고정 검색바, Sidebar 도서 관리 메뉴 추가 |
+| 1.0.3 | 2026-06-20 | ggajo | UX 개선 — FULLTEXT AND 검색(정확도), ISBN 즉시검색, 검색 후 입력창 초기화, 검색결과 헤더 표시 |
 
 ---
 

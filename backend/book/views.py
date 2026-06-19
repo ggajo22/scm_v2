@@ -17,6 +17,14 @@ def _sanitize_ft(q: str) -> str:
     return _FT_SPECIAL.sub(' ', q).strip()
 
 
+def _build_ft_query(q: str) -> str:
+    """Require ALL whitespace-separated terms (BOOLEAN MODE AND semantics)."""
+    sanitized = _sanitize_ft(q)
+    if not sanitized:
+        return ''
+    return ' '.join(f'+{term}' for term in sanitized.split())
+
+
 from book.constants import ERROR_STATUSES, LISTED_STATUSES, STATUS_LABELS, WAITING_STATUSES
 from book.models import BookNote, Info, Inven, Shopify_product
 from book.serializers import BookDetailSerializer, DashboardMetricsSerializer
@@ -49,7 +57,8 @@ class BookListViewSet(viewsets.ReadOnlyModelViewSet):
 
         # Text path: annotate relevance score so DRF paginator gets the full result set
         # (avoids the 50-item LIMIT that broke pagination)
-        safe_q = _sanitize_ft(search)
+        # _build_ft_query prefixes each token with + so BOOLEAN MODE requires ALL terms
+        safe_q = _build_ft_query(search)
         if not safe_q:
             return qs.none()
 

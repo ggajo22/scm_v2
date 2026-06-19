@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { useSearchParams, useNavigate, useLocation, Outlet } from 'react-router-dom'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
@@ -12,15 +12,11 @@ export function BookLayout() {
   const navigate = useNavigate()
   const location = useLocation()
 
-  // Local input state — decoupled from URL to avoid mid-IME composition searches
-  const [inputValue, setInputValue] = useState(searchParams.get('q') ?? '')
+  const [inputValue, setInputValue] = useState('')
 
-  // Sync input when URL query changes externally (e.g. browser back/forward)
-  useEffect(() => {
-    setInputValue(searchParams.get('q') ?? '')
-  }, [searchParams])
-
-  const submit = (value: string) => {
+  // clearAfter: true when user explicitly submits (button/Enter) — clears input for next search
+  // false for ISBN auto-submit (onChange) — user is still typing
+  const submit = (value: string, clearAfter = false) => {
     const trimmed = value.trim()
     if (trimmed.length === 0) {
       navigate('/books', { replace: true })
@@ -30,6 +26,7 @@ export function BookLayout() {
         { replace: location.pathname === '/books/search' }
       )
     }
+    if (clearAfter) setInputValue('')
   }
 
   return (
@@ -39,12 +36,17 @@ export function BookLayout() {
           <Input
             placeholder="ISBN 또는 도서명으로 검색"
             value={inputValue}
-            onChange={(e) => setInputValue(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && submit(inputValue)}
+            onChange={(e) => {
+              const value = e.target.value
+              setInputValue(value)
+              // Digits-only → ISBN path: auto-submit on every keystroke (0 ms debounce, index scan)
+              if (/^\d*$/.test(value)) submit(value)
+            }}
+            onKeyDown={(e) => e.key === 'Enter' && submit(inputValue, true)}
             className="flex-1"
             aria-label="도서 검색"
           />
-          <Button onClick={() => submit(inputValue)} aria-label="검색">
+          <Button onClick={() => submit(inputValue, true)} aria-label="검색">
             검색
           </Button>
         </div>

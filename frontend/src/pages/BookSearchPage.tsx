@@ -36,6 +36,13 @@ export function BookSearchPage() {
         </div>
       )}
 
+      {/* Search query header */}
+      {query && !isPending && data && (
+        <p className="text-sm text-muted-foreground">
+          <span className="font-medium text-foreground">{query}</span> 검색 결과: {data.count}건
+        </p>
+      )}
+
       {/* First-load skeleton */}
       {showSkeleton && (
         <div role="status" aria-label="로딩 중" className="space-y-2">
