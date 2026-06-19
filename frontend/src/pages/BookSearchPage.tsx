@@ -16,10 +16,17 @@ export function BookSearchPage() {
   const query = searchParams.get('q') ?? ''
   const [page, setPage] = useState(1)
   useEffect(() => { setPage(1) }, [query])
-  const { data, isPending, isError } = useBookSearch(query, page)
+  const { data, isPending, isFetching, isError } = useBookSearch(query, page)
 
   return (
     <div className="p-6 space-y-4">
+      {/* Top progress bar — visible on every fetch (first load & refetch) */}
+      {isFetching && (
+        <div className="fixed top-0 left-0 right-0 z-50 h-1 bg-primary/20">
+          <div className="h-full bg-primary animate-[progress_1.2s_ease-in-out_infinite]" />
+        </div>
+      )}
+
       {isPending && (
         <div role="status" aria-label="로딩 중" className="space-y-2">
           {Array.from({ length: 5 }).map((_, i) => (
