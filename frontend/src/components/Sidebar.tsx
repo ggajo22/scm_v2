@@ -1,5 +1,5 @@
 import { Link, useNavigate } from 'react-router-dom'
-import { LayoutDashboard, Users, LogOut } from 'lucide-react'
+import { Users, LogOut, BookOpen } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useAuthStore } from '@/store/authStore'
 import { cn } from '@/lib/utils'
@@ -13,9 +13,9 @@ interface NavItem {
 
 const navItems: NavItem[] = [
   {
-    label: '대시보드',
-    href: '/',
-    icon: LayoutDashboard,
+    label: '도서 관리',
+    href: '/books',
+    icon: BookOpen,
   },
   {
     label: '관리자 계정 관리',

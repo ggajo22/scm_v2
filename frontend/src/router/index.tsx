@@ -1,4 +1,4 @@
-import { createBrowserRouter } from 'react-router-dom'
+import { createBrowserRouter, Navigate } from 'react-router-dom'
 import { ProtectedRoute } from './ProtectedRoute'
 import { PublicRoute } from './PublicRoute'
 import { SuperAdminRoute } from './SuperAdminRoute'
@@ -6,20 +6,16 @@ import { LoginPage } from '@/features/auth/LoginPage'
 import { DashboardPage } from '@/pages/DashboardPage'
 import { ForbiddenPage } from '@/pages/ForbiddenPage'
 import { AppLayout } from '@/components/AppLayout'
+import { BookLayout } from '@/features/book/BookLayout'
 
 export const router = createBrowserRouter([
   {
-    // Public routes — redirect to / if already authenticated
     element: <PublicRoute />,
     children: [
-      {
-        path: '/login',
-        element: <LoginPage />,
-      },
+      { path: '/login', element: <LoginPage /> },
     ],
   },
   {
-    // Protected routes — redirect to /login if not authenticated
     element: <ProtectedRoute />,
     children: [
       {
@@ -27,17 +23,26 @@ export const router = createBrowserRouter([
         children: [
           {
             path: '/',
-            element: <DashboardPage />,
+            element: <Navigate to="/books" replace />,
           },
           {
             path: '/books',
-            lazy: async () => {
-              const { BookSearchPage } = await import('@/pages/BookSearchPage')
-              return { Component: BookSearchPage }
-            },
+            element: <BookLayout />,
+            children: [
+              {
+                index: true,
+                element: <DashboardPage />,
+              },
+              {
+                path: 'search',
+                lazy: async () => {
+                  const { BookSearchPage } = await import('@/pages/BookSearchPage')
+                  return { Component: BookSearchPage }
+                },
+              },
+            ],
           },
           {
-            // Super admin only routes
             element: <SuperAdminRoute />,
             children: [
               {
@@ -53,12 +58,6 @@ export const router = createBrowserRouter([
       },
     ],
   },
-  {
-    path: '/403',
-    element: <ForbiddenPage />,
-  },
-  {
-    path: '*',
-    element: <div className="p-6 text-center">페이지를 찾을 수 없습니다 (404)</div>,
-  },
+  { path: '/403', element: <ForbiddenPage /> },
+  { path: '*', element: <div className="p-6 text-center">페이지를 찾을 수 없습니다 (404)</div> },
 ])

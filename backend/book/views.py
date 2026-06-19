@@ -1,12 +1,36 @@
+import re
 from datetime import timedelta
 
+from django.db import connection
 from django.db.models import Count, Q
+from django.db.models.expressions import RawSQL
 from django.utils import timezone
 from rest_framework import viewsets
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.authentication import JWTAuthentication
+
+_FT_SPECIAL = re.compile(r'[+\-><()~*"@]')
+
+
+def _sanitize_ft(q: str) -> str:
+    return _FT_SPECIAL.sub(' ', q).strip()
+
+
+def _ft_ids_by_score(q: str, limit: int = 50) -> list[int]:
+    """Return inven_ids sorted by FULLTEXT relevance score descending."""
+    sql = """
+        SELECT inven_id
+        FROM book_info
+        WHERE MATCH(name) AGAINST (%s IN BOOLEAN MODE)
+        ORDER BY MATCH(name) AGAINST (%s IN BOOLEAN MODE) DESC
+        LIMIT %s
+    """
+    with connection.cursor() as cur:
+        cur.execute(sql, [q, q, limit])
+        return [r[0] for r in cur.fetchall()]
+
 
 from book.constants import ERROR_STATUSES, LISTED_STATUSES, STATUS_LABELS, WAITING_STATUSES
 from book.models import BookNote, Info, Inven, Shopify_product
@@ -18,7 +42,9 @@ from book.serializers import BookDetailSerializer, DashboardMetricsSerializer
 class BookListViewSet(viewsets.ReadOnlyModelViewSet):
     """
     GET /api/book/search/?search=<query>
-    Returns paginated list of books matching inven_SKU or info.name (case-insensitive OR).
+    Two-path search:
+      - digits only → inven_SKU startswith (index scan, fast)
+      - text        → FULLTEXT MATCH AGAINST ngram on info.name (Korean-aware)
     REQ-SEARCH-001 to REQ-SEARCH-008
     """
     authentication_classes = [JWTAuthentication]
@@ -29,12 +55,27 @@ class BookListViewSet(viewsets.ReadOnlyModelViewSet):
         # REQ-SEARCH-008: select_related avoids N+1 on info fields
         qs = Inven.objects.select_related("info")
         search = self.request.query_params.get("search", "").strip()
-        if search:
-            # REQ-SEARCH-001: OR icontains on inven_SKU and info.name
-            qs = qs.filter(
-                Q(inven_SKU__icontains=search) | Q(info__name__icontains=search)
-            )
-        return qs.order_by("id")
+        if not search:
+            return qs.order_by("id")
+
+        # ISBN path: digits only → startswith uses the inven_SKU index
+        if search.isdigit():
+            return qs.filter(inven_SKU__startswith=search).order_by("id")
+
+        # Text path: FULLTEXT ngram search sorted by relevance score
+        safe_q = _sanitize_ft(search)
+        if not safe_q:
+            return qs.none()
+
+        ordered_ids = _ft_ids_by_score(safe_q)
+        if not ordered_ids:
+            return qs.none()
+
+        # Preserve relevance order in DB via FIELD() — keeps QuerySet for pagination
+        placeholders = ','.join(['%s'] * len(ordered_ids))
+        return qs.filter(id__in=ordered_ids).order_by(
+            RawSQL(f"FIELD(book_inven.id, {placeholders})", ordered_ids)
+        )
 
 
 class DashboardMetricsView(APIView):
