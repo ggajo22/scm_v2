@@ -1,45 +1,55 @@
+import { useState, useEffect } from 'react'
 import { useSearchParams, useNavigate, useLocation, Outlet } from 'react-router-dom'
 import { Input } from '@/components/ui/input'
+import { Button } from '@/components/ui/button'
 
 export interface BookLayoutContext {
   query: string
 }
 
 export function BookLayout() {
-  const [searchParams, setSearchParams] = useSearchParams()
+  const [searchParams] = useSearchParams()
   const navigate = useNavigate()
   const location = useLocation()
-  const query = searchParams.get('q') ?? ''
 
-  const handleQueryChange = (value: string) => {
-    if (value.length >= 2) {
-      // Go to search page with query param
-      navigate(`/books/search?q=${encodeURIComponent(value)}`, { replace: location.pathname === '/books/search' })
-    } else if (value.length === 0) {
-      // Return to dashboard
-      if (location.pathname !== '/books') {
-        navigate('/books', { replace: true })
-      } else {
-        setSearchParams({}, { replace: true })
-      }
+  // Local input state — decoupled from URL to avoid mid-IME composition searches
+  const [inputValue, setInputValue] = useState(searchParams.get('q') ?? '')
+
+  // Sync input when URL query changes externally (e.g. browser back/forward)
+  useEffect(() => {
+    setInputValue(searchParams.get('q') ?? '')
+  }, [searchParams])
+
+  const submit = (value: string) => {
+    const trimmed = value.trim()
+    if (trimmed.length === 0) {
+      navigate('/books', { replace: true })
     } else {
-      // 1 char — update param but stay on current page
-      setSearchParams({ q: value }, { replace: true })
+      navigate(
+        `/books/search?q=${encodeURIComponent(trimmed)}`,
+        { replace: location.pathname === '/books/search' }
+      )
     }
   }
 
   return (
     <div className="flex flex-col">
       <div className="px-6 py-4 border-b bg-background sticky top-0 z-10">
-        <Input
-          placeholder="ISBN 또는 도서명으로 검색 (2자 이상)"
-          value={query}
-          onChange={(e) => handleQueryChange(e.target.value)}
-          className="max-w-md"
-          aria-label="도서 검색"
-        />
+        <div className="flex gap-2 max-w-md">
+          <Input
+            placeholder="ISBN 또는 도서명으로 검색"
+            value={inputValue}
+            onChange={(e) => setInputValue(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && submit(inputValue)}
+            className="flex-1"
+            aria-label="도서 검색"
+          />
+          <Button onClick={() => submit(inputValue)} aria-label="검색">
+            검색
+          </Button>
+        </div>
       </div>
-      <Outlet context={{ query } satisfies BookLayoutContext} />
+      <Outlet context={{ query: searchParams.get('q') ?? '' } satisfies BookLayoutContext} />
     </div>
   )
 }
