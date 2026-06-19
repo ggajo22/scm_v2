@@ -30,6 +30,13 @@ export const router = createBrowserRouter([
             element: <DashboardPage />,
           },
           {
+            path: '/books',
+            lazy: async () => {
+              const { BookSearchPage } = await import('@/pages/BookSearchPage')
+              return { Component: BookSearchPage }
+            },
+          },
+          {
             // Super admin only routes
             element: <SuperAdminRoute />,
             children: [

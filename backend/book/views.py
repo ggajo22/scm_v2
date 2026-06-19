@@ -1,7 +1,8 @@
 from datetime import timedelta
 
-from django.db.models import Count
+from django.db.models import Count, Q
 from django.utils import timezone
+from rest_framework import viewsets
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -9,7 +10,31 @@ from rest_framework_simplejwt.authentication import JWTAuthentication
 
 from book.constants import ERROR_STATUSES, LISTED_STATUSES, STATUS_LABELS, WAITING_STATUSES
 from book.models import BookNote, Info, Inven, Shopify_product
-from book.serializers import DashboardMetricsSerializer
+from book.serializers import BookDetailSerializer, DashboardMetricsSerializer
+
+
+# @MX:ANCHOR: [AUTO] BookListViewSet.list — search endpoint for book inventory
+# @MX:REASON: REQ-SEARCH-001 through REQ-SEARCH-008 all served by this single list action
+class BookListViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    GET /api/book/search/?search=<query>
+    Returns paginated list of books matching inven_SKU or info.name (case-insensitive OR).
+    REQ-SEARCH-001 to REQ-SEARCH-008
+    """
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+    serializer_class = BookDetailSerializer
+
+    def get_queryset(self):
+        # REQ-SEARCH-008: select_related avoids N+1 on info fields
+        qs = Inven.objects.select_related("info")
+        search = self.request.query_params.get("search", "").strip()
+        if search:
+            # REQ-SEARCH-001: OR icontains on inven_SKU and info.name
+            qs = qs.filter(
+                Q(inven_SKU__icontains=search) | Q(info__name__icontains=search)
+            )
+        return qs.order_by("id")
 
 
 class DashboardMetricsView(APIView):
