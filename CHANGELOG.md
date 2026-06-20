@@ -55,6 +55,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - null status nulls_last 정렬, 로딩 스켈레톤, 에러 처리
 - 9개 pytest 테스트
 
+#### SPEC-ETOILE-INVEN-ADD-001: Etoile 재고 일괄 추가
+
+- Etoile 재고 일괄 추가 엔드포인트 (`POST /api/book/etoile-inven-skus/`)
+  - 핵심 불변 조건: Etoile 등록 시 본관(Gimssine) 레코드 선행 필수
+  - 본관 없음 → Inven 신규 생성 후 `EtoileBookInven(status_of_shopify=-1)` 생성
+  - 본관 있음 → `EtoileBookInven(status_of_shopify=0)` 생성
+  - 이미 EtoileBookInven에 있으면 건너뜀
+  - 4가지 결과 범주 반환: `book_created_skus`, `etoile_created_new_book_skus`, `etoile_created_existing_book_skus`, `etoile_existing_skus`
+  - 단일 원자적 트랜잭션 처리
+- 10개 pytest 테스트 (인증, 빈 입력, 중복 제거, 혼합 케이스, 트랜잭션 롤백 등)
+
 ### Security
 
 - 모든 도서 수정 API에 JWT 인증 적용 (`IsAuthenticated`)

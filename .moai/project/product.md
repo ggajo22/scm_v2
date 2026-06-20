@@ -64,6 +64,13 @@ Shopify 연동 도서 재고 및 주문 관리 관리자 애플리케이션
 - **로딩/에러 상태** — 스켈레톤 애니메이션 + 에러 메시지 처리
 - 9개 pytest 테스트 (인증, 집계 정확성, 레이블 매핑, null 처리 등)
 
+### 0-7. Etoile 재고 일괄 추가 (SPEC-ETOILE-INVEN-ADD-001 — 완료)
+- **Etoile 일괄 등록** — ISBN을 한 줄에 하나씩 입력해 `EtoileBookInven` 레코드 일괄 생성 (`POST /api/book/etoile-inven-skus/`)
+- **본관 선행 보장** — Etoile 등록 전 본관(`Inven`) 레코드 존재 필수; 없으면 자동 생성
+- **3분기 처리 로직** — 본관 신규 생성(`status=-1`) / 본관 기존(`status=0`) / Etoile 중복 건너뜀
+- **4가지 결과 반환** — `book_created_skus` / `etoile_created_new_book_skus` / `etoile_created_existing_book_skus` / `etoile_existing_skus`
+- 10개 pytest 테스트 (인증, 빈 입력, 중복 제거, 혼합 케이스, 트랜잭션 롤백 등)
+
 ### 0-3. ISBN 일괄 추가 (SPEC-INVEN-ADD-001 — 완료)
 - **ISBN 일괄 등록** — 한 줄에 하나씩 입력 후 신규 Inven 레코드 일괄 생성 (`POST /api/book/inven-skus/`)
 - **중복 자동 감지** — 기존 DB 조회로 중복 SKU를 건너뛰고 생성됨/중복으로 분리 반환
