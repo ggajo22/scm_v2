@@ -30,6 +30,7 @@ from book.serializers import (
     EtoileBookInfoSerializer,
     EtoileBookInvenSerializer,
     EtoileShopifyProductSerializer,
+    FastListingSkuBulkSerializer,
     InfoSerializer,
     InfoUpdateSerializer,
     InvenSkuBulkAddSerializer,
@@ -557,8 +558,6 @@ class FastListingSkuView(APIView):
 
     def post(self, request):
         from django.db import transaction
-
-        from book.serializers import FastListingSkuBulkSerializer
 
         serializer = FastListingSkuBulkSerializer(data=request.data)
         if not serializer.is_valid():

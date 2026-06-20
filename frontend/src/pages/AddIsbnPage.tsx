@@ -44,6 +44,13 @@ export function AddIsbnPage() {
 
       {result && (
         <div className="mt-4 space-y-3">
+          <Button
+            variant="outline"
+            className="w-full"
+            onClick={() => { setText(''); setResult(null) }}
+          >
+            다시 등록하기
+          </Button>
           <div className="flex gap-4 text-sm">
             <span className="text-green-600 font-medium">생성됨: {result.created_count}개</span>
             <span className="text-muted-foreground">중복: {result.duplicate_count}개</span>

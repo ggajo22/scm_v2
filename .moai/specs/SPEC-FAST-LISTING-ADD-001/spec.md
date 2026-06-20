@@ -1,7 +1,7 @@
 ---
 id: SPEC-FAST-LISTING-ADD-001
 version: 1.0.0
-status: Planned
+status: Completed
 created: 2026-06-20
 updated: 2026-06-20
 author: ggajo
