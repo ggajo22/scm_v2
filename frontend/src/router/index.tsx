@@ -71,6 +71,13 @@ export const router = createBrowserRouter([
             ],
           },
           {
+            path: '/orders',
+            lazy: async () => {
+              const { OrdersPage } = await import('@/pages/OrdersPage')
+              return { Component: OrdersPage }
+            },
+          },
+          {
             element: <SuperAdminRoute />,
             children: [
               {
