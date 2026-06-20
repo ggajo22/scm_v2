@@ -754,17 +754,18 @@ function ShopifyLiveInfoSection({
     info: ShopifyStoreInfo
     mutation: ReturnType<typeof useUpdateShopifyStatus>
     showTags?: boolean
+    showImageCount?: boolean
   }> = [
     { label: 'GIMSSINE', info: data.booksen, mutation: booksenMutation },
     ...(data.etoile.registered
-      ? [{ label: 'ETOILE', info: data.etoile, mutation: etoileMutation, showTags: !!etoileInfo }]
+      ? [{ label: 'ETOILE', info: data.etoile, mutation: etoileMutation, showTags: !!etoileInfo, showImageCount: true }]
       : []),
   ]
 
   return (
     <SectionCard title="Shopify 실시간 정보">
       <div className="space-y-4">
-        {stores.map(({ label, info, mutation, showTags }) => (
+        {stores.map(({ label, info, mutation, showTags, showImageCount }) => (
           <div key={label} className="space-y-1.5">
             <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
               {label}
@@ -776,6 +777,16 @@ function ShopifyLiveInfoSection({
                   {info.weight != null
                     ? `${info.weight} ${info.weight_unit ?? ''}`
                     : '중량 없음'}
+                </span>
+              )}
+              {info.registered && (
+                <span className="text-sm text-muted-foreground">
+                  {info.price != null ? `$${info.price}` : '-'}
+                </span>
+              )}
+              {info.registered && showImageCount && (
+                <span className="text-sm text-muted-foreground">
+                  Preview {info.image_count != null ? `${info.image_count}개` : '-'}
                 </span>
               )}
               {info.registered && (
