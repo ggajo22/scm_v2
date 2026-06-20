@@ -115,3 +115,11 @@ class InfoUpdateSerializer(serializers.ModelSerializer):
             "kyobo_category1", "kyobo_category2", "kyobo_category3",
             "kyobo_category4", "kyobo_category5",
         ]
+        extra_kwargs = {
+            "dim1": {"allow_null": True},
+            "dim2": {"allow_null": True},
+            "dim3": {"allow_null": True},
+            "manual_weight": {"allow_null": True},
+            "cover_image_url2": {"allow_null": True},
+            "image_detail": {"allow_blank": True},
+        }

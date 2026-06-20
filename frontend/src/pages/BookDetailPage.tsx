@@ -27,6 +27,23 @@ import {
 import type { BookInfo, BookNote, ShopifyStoreInfo } from '@/types/book'
 
 // ---------------------------------------------------------------------------
+// status_of_shopify labels (mirrors backend book/constants.py STATUS_LABELS)
+// ---------------------------------------------------------------------------
+
+const STATUS_LABELS: Record<number, string> = {
+  5:   '북센 상품 없음',
+  6:   '북센 상품 없음 · 교보 공급가 완료',
+  12:  '구판 / 절판',
+  14:  '카테고리 / 이미지 정보 없음',
+  15:  '정보 수정 시 리스팅·업데이트 대상',
+  30:  '이미지 다운로드 완료',
+  31:  '이미지 다운로드 에러',
+  32:  '이미지 URL 이상',
+  80:  'Active (교보 미포함)',
+  81:  'Active (교보 포함)',
+}
+
+// ---------------------------------------------------------------------------
 // Small presentational helpers
 // ---------------------------------------------------------------------------
 
@@ -858,6 +875,11 @@ export function BookDetailPage() {
         <h1 className="text-xl font-semibold">도서 정보 수정</h1>
         {data && (
           <span className="text-sm text-muted-foreground font-mono">{data.inven_SKU}</span>
+        )}
+        {data && (
+          <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground font-mono">
+            {data.status_of_shopify} · {STATUS_LABELS[data.status_of_shopify] ?? '-'}
+          </span>
         )}
       </div>
 

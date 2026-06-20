@@ -287,6 +287,8 @@ class BookInfoUpdateView(APIView):
             return Response(serializer.errors, status=400)
 
         serializer.save()
+        inven.status_of_shopify = 15
+        inven.save(update_fields=["status_of_shopify"])
         return Response(InfoSerializer(inven.info).data)
 
 
@@ -419,6 +421,10 @@ class EtoileShopifyStatusView(APIView):
         success = services.set_shopify_product_status_for_etoile_inven(etoile_inven.id, action)
         if not success:
             return Response({"detail": "Shopify API call failed."}, status=502)
+
+        if action == "draft":
+            etoile_inven.status_of_shopify = 12
+            etoile_inven.save(update_fields=["status_of_shopify"])
 
         return Response({"status": "ok", "action": action})
 
