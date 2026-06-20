@@ -118,6 +118,18 @@ export interface BookDetail {
   } | null
 }
 
+// SPEC-ETOILE-DASHBOARD-001
+export interface EtoileStatusCount {
+  status: number | null
+  label: string
+  count: number
+}
+
+export interface EtoileDashboard {
+  status_counts: EtoileStatusCount[]
+  total: number
+}
+
 // REQ-SEARCH-007: DRF paginated response wrapper
 export interface PaginatedResponse<T> {
   count: number

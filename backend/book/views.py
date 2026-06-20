@@ -12,7 +12,7 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.authentication import JWTAuthentication
 
 from book import shopify_client
-from book.constants import ERROR_STATUSES, LISTED_STATUSES, STATUS_LABELS, WAITING_STATUSES
+from book.constants import ERROR_STATUSES, ETOILE_STATUS_LABELS, LISTED_STATUSES, STATUS_LABELS, WAITING_STATUSES
 from book.models import (
     BookNote,
     Booksen_category,
@@ -711,3 +711,42 @@ class ShopifyLiveInfoView(APIView):
             etoile_data = f_etoile.result()
 
         return Response({"booksen": booksen_data, "etoile": etoile_data})
+
+
+# SPEC-ETOILE-DASHBOARD-001: etoile inventory status dashboard
+class EtoileDashboardView(APIView):
+    """
+    GET /api/book/etoile/dashboard/
+    Aggregates EtoileBookInven by status_of_shopify.
+    REQ-ETD-001 through REQ-ETD-007
+    """
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from django.db.models import F
+
+        raw_counts = (
+            EtoileBookInven.objects
+            .values("status_of_shopify")
+            .annotate(count=Count("id"))
+            .order_by(F("status_of_shopify").asc(nulls_last=True))
+        )
+
+        status_counts = [
+            {
+                "status": row["status_of_shopify"],
+                "label": (
+                    ETOILE_STATUS_LABELS.get(row["status_of_shopify"], "정의되지 않은 상태")
+                    if row["status_of_shopify"] is not None
+                    else "상태 없음"
+                ),
+                "count": row["count"],
+            }
+            for row in raw_counts
+        ]
+
+        return Response({
+            "status_counts": status_counts,
+            "total": sum(row["count"] for row in status_counts),
+        })

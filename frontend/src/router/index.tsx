@@ -55,6 +55,13 @@ export const router = createBrowserRouter([
                 },
               },
               {
+                path: 'etoile',
+                lazy: async () => {
+                  const { EtoileDashboardPage } = await import('@/pages/EtoileDashboardPage')
+                  return { Component: EtoileDashboardPage }
+                },
+              },
+              {
                 path: ':id',
                 lazy: async () => {
                   const { BookDetailPage } = await import('@/pages/BookDetailPage')

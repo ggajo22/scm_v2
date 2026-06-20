@@ -33,6 +33,14 @@ STATUS_LABELS = {
 }
 
 ERROR_STATUSES = [31, 32, 41, 42, 43, 44]
+
+# Ported from legacy etoile_index() — SPEC-ETOILE-DASHBOARD-001
+ETOILE_STATUS_LABELS = {
+    -1: "gimssine 등록 대기",
+    0:  "리스팅 준비",
+    12: "리스팅 제외 - 컨셉",
+    80: "리스팅 완료",
+}
 WAITING_STATUSES = [0, 1, 5, 6, 14, 15, 16]
 
 # Statuses considered "listed" on Shopify
