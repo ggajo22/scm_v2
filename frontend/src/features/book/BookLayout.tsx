@@ -31,7 +31,7 @@ export function BookLayout() {
 
   return (
     <div className="flex flex-col">
-      <div className="px-6 py-4 border-b bg-background sticky top-0 z-10">
+      <div className="px-6 py-4 border-b bg-white dark:bg-gray-900 sticky top-0 z-10">
         <div className="flex gap-2 max-w-md">
           <Input
             placeholder="ISBN 또는 도서명으로 검색"

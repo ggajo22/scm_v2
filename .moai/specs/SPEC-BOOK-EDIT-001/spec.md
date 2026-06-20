@@ -1,7 +1,7 @@
 ---
 id: SPEC-BOOK-EDIT-001
 version: "0.1.0"
-status: draft
+status: completed
 created: "2026-06-20"
 updated: "2026-06-20"
 author: ggajo

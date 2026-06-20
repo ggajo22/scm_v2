@@ -7,6 +7,7 @@ from book.views import (
     BookNoteResolveView,
     BookRetrieveView,
     BookShopifyStatusView,
+    BooksenCategoryListView,
     DashboardMetricsView,
     EtoileShopifyStatusView,
     EtoileTagsView,
@@ -14,6 +15,7 @@ from book.views import (
 
 urlpatterns = [
     path("book/dashboard/metrics/", DashboardMetricsView.as_view(), name="book-dashboard-metrics"),
+    path("book/booksen-categories/", BooksenCategoryListView.as_view(), name="book-booksen-categories"),
     # REQ-SEARCH-001: book search endpoint
     path(
         "book/search/",

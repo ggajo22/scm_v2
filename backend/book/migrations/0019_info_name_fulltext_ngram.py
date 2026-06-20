@@ -16,11 +16,47 @@ class Migration(migrations.Migration):
     operations = [
         migrations.RunSQL(
             sql=[
-                "ALTER TABLE book_info DROP INDEX ft_book_info_name",
+                # Safe drop using procedure: ignore error if index does not exist
+                """
+                CREATE PROCEDURE IF NOT EXISTS _drop_idx_if_exists(tbl VARCHAR(64), idx VARCHAR(64))
+                BEGIN
+                    IF EXISTS (
+                        SELECT 1 FROM information_schema.statistics
+                        WHERE table_schema = DATABASE()
+                          AND table_name = tbl
+                          AND index_name = idx
+                    ) THEN
+                        SET @sql = CONCAT('ALTER TABLE `', tbl, '` DROP INDEX `', idx, '`');
+                        PREPARE stmt FROM @sql;
+                        EXECUTE stmt;
+                        DEALLOCATE PREPARE stmt;
+                    END IF;
+                END
+                """,
+                "CALL _drop_idx_if_exists('book_info', 'ft_book_info_name')",
+                "CALL _drop_idx_if_exists('book_info', 'ft_info_name_ngram')",
+                "DROP PROCEDURE IF EXISTS _drop_idx_if_exists",
                 "ALTER TABLE book_info ADD FULLTEXT INDEX ft_info_name_ngram (name) WITH PARSER ngram",
             ],
             reverse_sql=[
-                "ALTER TABLE book_info DROP INDEX ft_info_name_ngram",
+                """
+                CREATE PROCEDURE IF NOT EXISTS _drop_idx_if_exists(tbl VARCHAR(64), idx VARCHAR(64))
+                BEGIN
+                    IF EXISTS (
+                        SELECT 1 FROM information_schema.statistics
+                        WHERE table_schema = DATABASE()
+                          AND table_name = tbl
+                          AND index_name = idx
+                    ) THEN
+                        SET @sql = CONCAT('ALTER TABLE `', tbl, '` DROP INDEX `', idx, '`');
+                        PREPARE stmt FROM @sql;
+                        EXECUTE stmt;
+                        DEALLOCATE PREPARE stmt;
+                    END IF;
+                END
+                """,
+                "CALL _drop_idx_if_exists('book_info', 'ft_info_name_ngram')",
+                "DROP PROCEDURE IF EXISTS _drop_idx_if_exists",
                 "ALTER TABLE book_info ADD FULLTEXT INDEX ft_book_info_name (name)",
             ],
         ),

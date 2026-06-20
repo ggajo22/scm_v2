@@ -28,6 +28,7 @@ def _build_ft_query(q: str) -> str:
 from book.constants import ERROR_STATUSES, LISTED_STATUSES, STATUS_LABELS, WAITING_STATUSES
 from book.models import (
     BookNote,
+    Booksen_category,
     EtoileBookInfo,
     EtoileBookInven,
     Info,
@@ -164,6 +165,32 @@ class DashboardMetricsView(APIView):
 
         serializer = DashboardMetricsSerializer(payload)
         return Response(serializer.data)
+
+
+# ---------------------------------------------------------------------------
+# Booksen category cascade API
+# ---------------------------------------------------------------------------
+
+class BooksenCategoryListView(APIView):
+    """
+    GET /api/book/booksen-categories/?top_code=<int>
+    Returns Booksen_category entries with the given top_category_code.
+    top_code=0 returns top-level categories (rank 2 / 대).
+    """
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        try:
+            top_code = int(request.query_params.get("top_code", 0))
+        except (TypeError, ValueError):
+            return Response({"detail": "top_code must be an integer."}, status=400)
+
+        qs = Booksen_category.objects.filter(top_category_code=top_code)
+        if top_code == 0:
+            qs = qs.filter(category_rank=1)
+        categories = qs.order_by("category_code").values("category_code", "category_name", "category_rank")
+        return Response(list(categories))
 
 
 # ---------------------------------------------------------------------------
