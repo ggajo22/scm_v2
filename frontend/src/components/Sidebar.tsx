@@ -29,6 +29,7 @@ const bookGroup: NavGroup = {
   items: [
     { label: '대시보드', href: '/books' },
     { label: 'ISBN 추가', href: '/books/add-isbn' },
+    { label: '빠른 리스팅', href: '/books/fast-listing' },
   ],
 }
 

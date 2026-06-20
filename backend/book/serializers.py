@@ -99,6 +99,15 @@ class InfoSerializer(serializers.ModelSerializer):
         ]
 
 
+# SPEC-FAST-LISTING-ADD-001 serializer
+class FastListingSkuBulkSerializer(serializers.Serializer):
+    """Validate fast-listing bulk request — skus must be a non-empty list."""
+    skus = serializers.ListField(
+        child=serializers.CharField(),
+        allow_empty=False,
+    )
+
+
 # SPEC-INVEN-ADD-001 serializer
 class InvenSkuBulkAddSerializer(serializers.Serializer):
     """Validate bulk SKU add request — skus must be a non-empty list."""

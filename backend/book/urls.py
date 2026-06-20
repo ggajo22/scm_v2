@@ -11,6 +11,7 @@ from book.views import (
     DashboardMetricsView,
     EtoileShopifyStatusView,
     EtoileTagsView,
+    FastListingSkuView,
     InvenSkuBulkAddView,
     ShopifyLiveInfoView,
 )
@@ -18,6 +19,8 @@ from book.views import (
 urlpatterns = [
     # SPEC-INVEN-ADD-001: bulk ISBN add
     path("book/inven-skus/", InvenSkuBulkAddView.as_view(), name="book-inven-skus"),
+    # SPEC-FAST-LISTING-ADD-001: fast listing bulk add
+    path("book/fast-listing-skus/", FastListingSkuView.as_view(), name="book-fast-listing-skus"),
     path("book/dashboard/metrics/", DashboardMetricsView.as_view(), name="book-dashboard-metrics"),
     path(
         "book/booksen-categories/",

@@ -541,6 +541,87 @@ class InvenSkuBulkAddView(APIView):
         })
 
 
+# SPEC-FAST-LISTING-ADD-001: fast listing bulk add
+class FastListingSkuView(APIView):
+    """
+    POST /api/book/fast-listing-skus/
+    Bulk-set Inven records to status_of_shopify=1 (fast listing target).
+    New SKUs are inserted; existing SKUs updated unless status IN (80, 81, 82).
+    REQ-FLA-001 through REQ-FLA-010
+    """
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    # status values representing already-active Shopify listings — must not be overwritten
+    _PROTECTED = frozenset({80, 81, 82})
+
+    def post(self, request):
+        from django.db import transaction
+
+        from book.serializers import FastListingSkuBulkSerializer
+
+        serializer = FastListingSkuBulkSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=400)
+
+        raw_skus = serializer.validated_data["skus"]
+
+        # REQ-FLA-005: strip, remove empty, deduplicate preserving order
+        seen: set = set()
+        unique_skus: list = []
+        for sku in raw_skus:
+            s = sku.strip()
+            if s and s not in seen:
+                seen.add(s)
+                unique_skus.append(s)
+
+        if not unique_skus:
+            return Response({"skus": ["This field may not be blank."]}, status=400)
+
+        # Fetch existing records with their current status
+        existing: dict = {
+            obj.inven_SKU: obj.status_of_shopify
+            for obj in Inven.objects.filter(inven_SKU__in=unique_skus).only(
+                "inven_SKU", "status_of_shopify"
+            )
+        }
+
+        new_skus = [s for s in unique_skus if s not in existing]
+        # REQ-FLA-007: updatable only when status NOT IN (80, 81, 82)
+        updatable_skus = [s for s in unique_skus if s in existing and existing[s] not in self._PROTECTED]
+        # REQ-FLA-008: skip protected-status records without modification
+        skipped_skus = [s for s in unique_skus if s in existing and existing[s] in self._PROTECTED]
+
+        # REQ-FLA-006/007: all DB writes in a single atomic transaction
+        try:
+            with transaction.atomic():
+                if new_skus:
+                    Inven.objects.bulk_create([
+                        Inven(
+                            inven_SKU=sku,
+                            vendor="북센",
+                            store="책방",
+                            is_prepared=0,
+                            status_of_shopify=1,
+                            is_use=1,
+                        )
+                        for sku in new_skus
+                    ])
+                if updatable_skus:
+                    Inven.objects.filter(inven_SKU__in=updatable_skus).update(status_of_shopify=1)
+        except Exception:
+            return Response({"error": "Database error."}, status=500)
+
+        return Response({
+            "created": new_skus,
+            "updated": updatable_skus,
+            "skipped": skipped_skus,
+            "created_count": len(new_skus),
+            "updated_count": len(updatable_skus),
+            "skipped_count": len(skipped_skus),
+        })
+
+
 # @MX:ANCHOR: [AUTO] ShopifyLiveInfoView.get — real-time Shopify product info entry point
 # @MX:REASON: SPEC-SHOPIFY-INFO-001 REQ-SHPINFO-001; called on every BookDetailPage load
 # for both Booksen and Etoile stores simultaneously

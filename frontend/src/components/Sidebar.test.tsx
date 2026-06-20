@@ -99,6 +99,25 @@ describe('Sidebar', () => {
     })
   })
 
+  describe('REQ-FLA-012: 빠른 리스팅 하위 항목 (SPEC-FAST-LISTING-ADD-001)', () => {
+    it('"빠른 리스팅" 링크가 /books/fast-listing 경로로 렌더링된다', () => {
+      renderSidebar()
+      const link = screen.getByRole('link', { name: '빠른 리스팅' })
+      expect(link).toBeInTheDocument()
+      expect(link).toHaveAttribute('href', '/books/fast-listing')
+    })
+
+    it('/books/fast-listing 경로에서 "빠른 리스팅" 링크가 aria-current="page"를 가진다', () => {
+      renderSidebar('super_admin', '/books/fast-listing')
+      expect(screen.getByRole('link', { name: '빠른 리스팅' })).toHaveAttribute('aria-current', 'page')
+    })
+
+    it('/books/fast-listing 경로에서 "대시보드"는 aria-current를 가지지 않는다', () => {
+      renderSidebar('super_admin', '/books/fast-listing')
+      expect(screen.getByRole('link', { name: '대시보드' })).not.toHaveAttribute('aria-current')
+    })
+  })
+
   describe('REQ-007 & REQ-008: 관리자 계정 관리 역할 기반 표시', () => {
     it('REQ-007: super_admin은 관리자 계정 관리 메뉴를 볼 수 있다', () => {
       renderSidebar('super_admin')
@@ -142,6 +161,7 @@ describe('Sidebar', () => {
       await user.click(screen.getByRole('button', { name: /도서관리/i }))
       expect(screen.queryByRole('link', { name: '대시보드' })).not.toBeInTheDocument()
       expect(screen.queryByRole('link', { name: 'ISBN 추가' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('link', { name: '빠른 리스팅' })).not.toBeInTheDocument()
     })
 
     it('접힌 상태에서 다시 클릭 시 하위 항목이 펼쳐진다', async () => {
