@@ -99,17 +99,17 @@ describe('Sidebar', () => {
     })
   })
 
-  describe('REQ-ETD-009: 에투알 현황 하위 항목 (SPEC-ETOILE-DASHBOARD-001)', () => {
-    it('"에투알 현황" 링크가 /books/etoile 경로로 렌더링된다', () => {
+  describe('REQ-ETD-009: Etoile 현황 하위 항목 (SPEC-ETOILE-DASHBOARD-001)', () => {
+    it('"Etoile 현황" 링크가 /books/etoile 경로로 렌더링된다', () => {
       renderSidebar()
-      const link = screen.getByRole('link', { name: '에투알 현황' })
+      const link = screen.getByRole('link', { name: 'Etoile 현황' })
       expect(link).toBeInTheDocument()
       expect(link).toHaveAttribute('href', '/books/etoile')
     })
 
-    it('/books/etoile 경로에서 "에투알 현황" 링크가 aria-current="page"를 가진다', () => {
+    it('/books/etoile 경로에서 "Etoile 현황" 링크가 aria-current="page"를 가진다', () => {
       renderSidebar('super_admin', '/books/etoile')
-      expect(screen.getByRole('link', { name: '에투알 현황' })).toHaveAttribute('aria-current', 'page')
+      expect(screen.getByRole('link', { name: 'Etoile 현황' })).toHaveAttribute('aria-current', 'page')
     })
 
     it('/books/etoile 경로에서 "대시보드"는 aria-current를 가지지 않는다', () => {
@@ -181,7 +181,7 @@ describe('Sidebar', () => {
       expect(screen.queryByRole('link', { name: '대시보드' })).not.toBeInTheDocument()
       expect(screen.queryByRole('link', { name: 'ISBN 추가' })).not.toBeInTheDocument()
       expect(screen.queryByRole('link', { name: '빠른 리스팅' })).not.toBeInTheDocument()
-      expect(screen.queryByRole('link', { name: '에투알 현황' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('link', { name: 'Etoile 현황' })).not.toBeInTheDocument()
     })
 
     it('접힌 상태에서 다시 클릭 시 하위 항목이 펼쳐진다', async () => {

@@ -121,7 +121,7 @@ The system shall provide a link navigating back to `/books` on the fast-listing 
 
 ## 제외 사항 (What NOT to Build)
 
-- **EtoileBookInven 레코드 생성 없음**: 에투알 연동 테이블은 본 기능의 범위 밖이다.
+- **EtoileBookInven 레코드 생성 없음**: Etoile 연동 테이블은 본 기능의 범위 밖이다.
 - **Info 레코드 생성 없음**: 도서 메타정보(Info) 테이블 삽입은 포함하지 않는다.
 - **Shopify API 직접 연동 없음**: `status_of_shopify=1`은 내부 상태 플래그일 뿐이며, 실제 Shopify API 호출은 별도 배치/동기화 작업이 담당한다.
 - **ISBN 형식 유효성 검사 없음**: 입력값의 ISBN-10/13 형식 검증은 수행하지 않는다.

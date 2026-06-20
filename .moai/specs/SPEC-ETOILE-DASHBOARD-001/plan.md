@@ -30,7 +30,7 @@
 - `path: 'etoile'` lazy route 추가
 
 ### 2-4. Sidebar.tsx
-- `bookGroup.items`에 `{ label: '에투알 현황', href: '/books/etoile' }` 추가
+- `bookGroup.items`에 `{ label: 'Etoile 현황', href: '/books/etoile' }` 추가
 
 ## M3: 테스트
 
@@ -38,4 +38,4 @@
 - `test_etoile_dashboard.py`: 인증, 집계 정확성, 레이블, null 처리, 정렬
 
 ### 프론트엔드
-- `Sidebar.test.tsx`: 에투알 항목 렌더링 + active state 테스트 추가
+- `Sidebar.test.tsx`: Etoile 항목 렌더링 + active state 테스트 추가

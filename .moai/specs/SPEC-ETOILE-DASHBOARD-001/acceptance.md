@@ -26,11 +26,11 @@
 
 ## 시나리오 7: 사이드바 항목
 - **Given**: 인증된 사용자가 사이드바를 봄
-- **Then**: "도서관리" 그룹 내 "에투알 현황" 링크가 `/books/etoile`로 존재
+- **Then**: "도서관리" 그룹 내 "Etoile 현황" 링크가 `/books/etoile`로 존재
 
 ## 시나리오 8: 활성 상태
 - **Given**: 현재 경로가 `/books/etoile`
-- **Then**: "에투알 현황" 링크만 `aria-current="page"`, 다른 항목은 없음
+- **Then**: "Etoile 현황" 링크만 `aria-current="page"`, 다른 항목은 없음
 
 ## 시나리오 9: 로딩 상태
 - **Given**: API 호출 진행 중

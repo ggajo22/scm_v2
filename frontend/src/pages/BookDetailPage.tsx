@@ -906,7 +906,7 @@ export function BookDetailPage() {
       {/* Content */}
       {data && (
         <div className="space-y-6">
-          {/* Row 1: 기본 정보(좌) + Shopify 상태·에투알·노트(우) */}
+          {/* Row 1: 기본 정보(좌) + Shopify 상태·Etoile·노트(우) */}
           <div className="grid grid-cols-3 gap-6 items-start">
             <div className="col-span-2">
               <BasicInfoSection info={data.info} bookId={data.id} />

@@ -38,7 +38,7 @@ author: ggajo
 - `useBookInfoUpdate.ts`: Info 수정 mutation 훅
 - `useBookNotes.ts`: 노트 생성/해결 훅
 - `useShopifyStatus.ts`: Shopify 상태 변경 훅
-- `useEtoileTags.ts`: 에투알 태그 관리 훅
+- `useEtoileTags.ts`: Etoile 태그 관리 훅
 - `BookSearchPage.tsx` 수정: 도서 행 클릭 시 `/book/:id/edit`으로 라우팅 추가
 
 shadcn/ui 컴포넌트 활용:
@@ -84,9 +84,9 @@ shadcn/ui 컴포넌트 활용:
 
 #### Priority Low (부가 기능)
 
-6. **에투알 태그 관리**
+6. **Etoile 태그 관리**
    - `PATCH /api/book/{id}/etoile-tags/` 구현 (DB 저장 + Shopify 동기화)
-   - 프론트엔드 에투알 섹션 (조건부 렌더링)
+   - 프론트엔드 Etoile 섹션 (조건부 렌더링)
 
 ---
 
@@ -97,7 +97,7 @@ shadcn/ui 컴포넌트 활용:
 | Shopify API 외부 의존성 | 상태 변경 기능 차단 | mock/stub으로 단위 테스트, 통합 테스트에서 실제 API 사용 |
 | `BookDetailSerializer` 중첩 쿼리 N+1 | 응답 지연 | `select_related` / `prefetch_related` 적용 필수 |
 | 레거시 필드명 불일치 | Info 수정 오류 | 실제 DB 스키마와 serializer 필드명 대조 검증 |
-| EtoileBookInven 미존재 도서 | 에투알 섹션 오류 | null-safe 처리, 프론트엔드 조건부 렌더링 |
+| EtoileBookInven 미존재 도서 | Etoile 섹션 오류 | null-safe 처리, 프론트엔드 조건부 렌더링 |
 
 ---
 

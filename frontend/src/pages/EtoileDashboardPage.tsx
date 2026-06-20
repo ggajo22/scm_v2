@@ -16,20 +16,20 @@ export function EtoileDashboardPage() {
   if (isError) {
     return (
       <div className="p-6">
-        <p className="text-destructive">에투알 현황을 불러오는데 실패했습니다.</p>
+        <p className="text-destructive">Etoile 현황을 불러오는데 실패했습니다.</p>
       </div>
     )
   }
 
   return (
     <div className="p-6 space-y-6">
-      <h1 className="text-2xl font-bold">에투알 현황</h1>
+      <h1 className="text-2xl font-bold">Etoile 현황</h1>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        <MetricCard label="전체 에투알 재고" value={data.total} />
+        <MetricCard label="전체 Etoile 재고" value={data.total} />
       </div>
 
-      <section aria-label="에투알 상태별 현황">
+      <section aria-label="Etoile 상태별 현황">
         <h2 className="text-lg font-semibold mb-2">상태별 현황</h2>
         <EtoileStatusTable rows={data.status_counts} />
       </section>

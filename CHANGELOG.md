@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### SPEC-BOOK-EDIT-001: 도서 정보 수정 화면
 - 도서 상세 정보 조회 엔드포인트 (`GET /api/book/{id}/`)
-  - Inven, Info, BookNote, Shopify 상품, 에투알 정보 통합 조회
+  - Inven, Info, BookNote, Shopify 상품, Etoile 정보 통합 조회
   - 미해결 노트 전체 + 최근 해결 노트 10건 포함
 - 도서 기본 정보 수정 엔드포인트 (`PATCH /api/book/{id}/info/`)
   - 선택적 필드 업데이트 (partial update)
@@ -21,13 +21,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 노트 완료 처리 (`PATCH /api/book/notes/{note_id}/resolve/`)
 - Shopify 상태 변경 엔드포인트
   - 본관 상태 변경 (`PATCH /api/book/{id}/shopify-status/`)
-  - 에투알 상태 변경 (`PATCH /api/book/{id}/etoile-shopify-status/`)
-- 에투알 태그 관리 엔드포인트 (`PATCH /api/book/{id}/etoile-tags/`)
+  - Etoile 상태 변경 (`PATCH /api/book/{id}/etoile-shopify-status/`)
+- Etoile 태그 관리 엔드포인트 (`PATCH /api/book/{id}/etoile-tags/`)
 - React 기반 도서 수정 화면 (`BookDetailPage`)
-  - 탭 기반 섹션 구분 (기본 정보, 노트, Shopify, 에투알)
+  - 탭 기반 섹션 구분 (기본 정보, 노트, Shopify, Etoile)
   - 실시간 필드 검증
   - 인라인 성공/오류 피드백 (토스트)
-  - 에투알 섹션 조건부 표시
+  - Etoile 섹션 조건부 표시
 - 데이터베이스 마이그레이션
   - Info.name 전문 검색 인덱스 추가 (FULLTEXT NGRAM)
 

@@ -21,7 +21,7 @@ author: ggajo
 
 ---
 
-### 시나리오 2: 에투알 없는 도서 조회
+### 시나리오 2: Etoile 없는 도서 조회
 
 **Given** 인증된 관리자, `Inven.id=2` 도서가 `EtoileBookInven`을 보유하지 않는 상태  
 **When** `GET /api/book/2/` 요청을 전송  
@@ -131,7 +131,7 @@ author: ggajo
 
 ---
 
-### 시나리오 13: 에투알 태그 업데이트
+### 시나리오 13: Etoile 태그 업데이트
 
 **Given** 인증된 관리자, `Inven.id=1` 도서에 EtoileBookInfo 존재, Shopify API mock 성공 설정  
 **When** `PATCH /api/book/1/etoile-tags/` 요청을 `{"tags": ["신간", "추천"]}`로 전송  
@@ -142,7 +142,7 @@ author: ggajo
 
 ---
 
-### 시나리오 14: 에투알 없는 도서 Shopify 상태 변경 시도
+### 시나리오 14: Etoile 없는 도서 Shopify 상태 변경 시도
 
 **Given** 인증된 관리자, `Inven.id=2` 도서에 EtoileBookInven 없음  
 **When** `PATCH /api/book/2/etoile-shopify-status/` 요청을 전송  
@@ -180,7 +180,7 @@ author: ggajo
 | `Shopify_product` 없는 도서 조회 | `shopify_products: []` 빈 배열 반환 |
 | PATCH 요청 바디가 빈 객체 `{}` | HTTP 200 OK, 아무 필드도 변경되지 않음 |
 | `note_type`에 허용되지 않는 값 전달 | HTTP 400, 유효성 검사 오류 반환 |
-| 에투알 태그 Shopify 동기화 실패 | HTTP 207, DB 저장은 완료, `shopify_sync: "failed"` 반환 |
+| Etoile 태그 Shopify 동기화 실패 | HTTP 207, DB 저장은 완료, `shopify_sync: "failed"` 반환 |
 | 동시에 여러 필드 수정 (전체 Info 필드) | 모든 필드 정상 저장, `updated_at` 갱신 |
 
 ---
@@ -193,5 +193,5 @@ author: ggajo
 - [ ] 도서 검색 → 수정 화면 이동 흐름 수동 확인
 - [ ] JWT 미인증 시 401 반환 확인 (모든 엔드포인트)
 - [ ] Shopify API 실패 시 DB 롤백 동작 확인
-- [ ] `EtoileBookInven` 없는 도서에서 에투알 섹션이 null-safe 처리됨 확인
+- [ ] `EtoileBookInven` 없는 도서에서 Etoile 섹션이 null-safe 처리됨 확인
 - [ ] `SPEC-AUTH-001` 인증 플로우와 연동 확인

@@ -33,16 +33,16 @@ Shopify 연동 도서 재고 및 주문 관리 관리자 애플리케이션
 - 테스트 커버리지 18/18 (신규 13개)
 
 ### 0-2. 도서 정보 수정 화면 (SPEC-BOOK-EDIT-001 — 완료)
-- **도서 상세 조회** — Inven/Info 모델 통합 조회 + 노트, Shopify, 에투알 데이터 연동 (`GET /api/book/{id}/`)
+- **도서 상세 조회** — Inven/Info 모델 통합 조회 + 노트, Shopify, Etoile 데이터 연동 (`GET /api/book/{id}/`)
 - **기본 정보 수정** — Info 필드 선택적 편집 (name, price, cover_image_url, 카테고리 등) (`PATCH /api/book/{id}/info/`)
 - **메모(노트) 관리** — 일반/출고 노트 생성, 완료 처리, 미해결 + 최근 10건 조회
-- **Shopify 상태 변경** — 본관/에투알 별도 상태 제어 (active/draft)
-- **에투알 태그 관리** — 태그 편집 및 Shopify 동기화
+- **Shopify 상태 변경** — 본관/Etoile 별도 상태 제어 (active/draft)
+- **Etoile 태그 관리** — 태그 편집 및 Shopify 동기화
 - **React UI** — 탭 기반 섹션 구분, 실시간 검증 및 인라인 피드백
 - 테스트 커버리지: 백엔드 8개 엔드포인트 단위 테스트, E2E 검색-상세-저장 흐름
 
 ### 0-4. 사이드바 계층형 네비게이션 (SPEC-NAV-SIDEBAR-001 — 완료)
-- **그룹형 사이드바** — "도서관리" 그룹 헤더 아래 "대시보드", "ISBN 추가", "빠른 리스팅", "에투알 현황" 하위 항목 배치
+- **그룹형 사이드바** — "도서관리" 그룹 헤더 아래 "대시보드", "ISBN 추가", "빠른 리스팅", "Etoile 현황" 하위 항목 배치
 - **토글(접기/펼치기)** — ChevronDown 아이콘과 함께 클릭으로 하위 항목 토글, 기본 상태 펼침
 - **활성 상태 표시** — 현재 경로 정확 일치 시에만 하위 항목 강조(`aria-current="page"`)
 - **접근성** — `role="group"`, `aria-label`, `aria-expanded` 속성 적용
@@ -56,11 +56,11 @@ Shopify 연동 도서 재고 및 주문 관리 관리자 애플리케이션
 - **다시 등록하기** — 결과 확인 후 폼 초기화 버튼으로 연속 작업 지원
 - 신규 생성 고정값: `vendor="북센"`, `store="책방"`, `is_use=1`
 
-### 0-6. 에투알 재고 현황 대시보드 (SPEC-ETOILE-DASHBOARD-001 — 완료)
+### 0-6. Etoile 재고 현황 대시보드 (SPEC-ETOILE-DASHBOARD-001 — 완료)
 - **상태별 집계 API** — `GET /api/book/etoile/dashboard/` — `EtoileBookInven.status_of_shopify` 기준 그룹별 건수 반환
 - **레이블 매핑** — `-1: gimssine 등록 대기 / 0: 리스팅 준비 / 12: 리스팅 제외 - 컨셉 / 80: 리스팅 완료 / 미정의: 정의되지 않은 상태 / null: 상태 없음`
 - **null 정렬** — `status_of_shopify IS NULL` 레코드는 테이블 맨 아래 배치 (`nulls_last`)
-- **전체 건수 카드** — 에투알 전체 재고 합계 MetricCard 표시
+- **전체 건수 카드** — Etoile 전체 재고 합계 MetricCard 표시
 - **상태별 현황 테이블** — 상태값 / 레이블 / 건수 3컬럼 테이블
 - **로딩/에러 상태** — 스켈레톤 애니메이션 + 에러 메시지 처리
 - 9개 pytest 테스트 (인증, 집계 정확성, 레이블 매핑, null 처리 등)

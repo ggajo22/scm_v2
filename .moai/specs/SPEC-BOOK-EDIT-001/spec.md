@@ -21,19 +21,19 @@ issue_number: 0
 
 ### 문제 정의
 
-도서 검색(SPEC-BOOK-SEARCH-001)으로 도서 목록을 조회한 후, 특정 도서를 선택하여 상세 정보를 확인하고 수정할 방법이 없다. 관리자는 도서 기본 정보 편집, 메모(노트) 관리, Shopify 상태 변경, 에투알(Etoile) 정보 관리를 모두 개별 DB 쿼리 또는 레거시 시스템에서 수행해야 한다.
+도서 검색(SPEC-BOOK-SEARCH-001)으로 도서 목록을 조회한 후, 특정 도서를 선택하여 상세 정보를 확인하고 수정할 방법이 없다. 관리자는 도서 기본 정보 편집, 메모(노트) 관리, Shopify 상태 변경, Etoile(Etoile) 정보 관리를 모두 개별 DB 쿼리 또는 레거시 시스템에서 수행해야 한다.
 
 ### 목표
 
 1. 도서 검색 결과에서 도서를 클릭하면 해당 도서의 전체 정보를 조회·수정할 수 있는 화면을 제공한다.
-2. 도서 기본 정보(Info 모델 필드), 노트, Shopify 상태, 에투알 정보를 단일 화면에서 통합 관리할 수 있도록 한다.
+2. 도서 기본 정보(Info 모델 필드), 노트, Shopify 상태, Etoile 정보를 단일 화면에서 통합 관리할 수 있도록 한다.
 3. 레거시 `UpdateBookInfoView`와 동등한 기능을 REST API + React SPA 방식으로 제공한다.
 
 ### 비목표 (Non-Goals)
 
 - 이 SPEC은 도서 **생성** 또는 **삭제** 기능을 다루지 않는다.
 - Shopify 상품 상세 페이지 직접 편집(메타필드, 옵션 등)은 다루지 않는다.
-- 에투알 영문 설명(`desc_en`) 및 영문 제목(`name_en`) 직접 편집은 이 SPEC 범위 밖이다 (조회만 제공).
+- Etoile 영문 설명(`desc_en`) 및 영문 제목(`name_en`) 직접 편집은 이 SPEC 범위 밖이다 (조회만 제공).
 - 이미지 업로드(cover_image_url 외부 URL 입력은 가능하나 파일 업로드는 제외)는 다루지 않는다.
 - 교보 카테고리, 부클 카테고리 코드 목록 관리는 이 SPEC에 포함하지 않는다.
 
@@ -46,7 +46,7 @@ issue_number: 0
 | 액터 | 설명 |
 |------|------|
 | 관리자 (Admin) | JWT 로그인 완료된 내부 운영자. 도서 정보 수정 권한 보유 |
-| Shopify API | 본관/에투알 Shopify 스토어의 외부 REST API |
+| Shopify API | 본관/Etoile Shopify 스토어의 외부 REST API |
 
 ### 관련 시스템 및 의존성
 
@@ -67,7 +67,7 @@ issue_number: 0
 
 **REQ-BKEDIT-002**: `IF` 요청한 `{id}`에 해당하는 `Inven` 레코드가 존재하지 않으면, 시스템은 HTTP 404 Not Found를 반환하여야 한다.
 
-**REQ-BKEDIT-003**: `WHERE` `EtoileBookInven` 연관 레코드가 존재하는 경우, 시스템은 에투알 섹션 데이터(`etoile_inven`, `etoile_info`, `etoile_shopify_product`)를 응답에 포함하여야 한다. 존재하지 않으면 해당 필드를 `null`로 반환하여야 한다.
+**REQ-BKEDIT-003**: `WHERE` `EtoileBookInven` 연관 레코드가 존재하는 경우, 시스템은 Etoile 섹션 데이터(`etoile_inven`, `etoile_info`, `etoile_shopify_product`)를 응답에 포함하여야 한다. 존재하지 않으면 해당 필드를 `null`로 반환하여야 한다.
 
 **REQ-BKEDIT-004**: 시스템은 `GET /api/book/{id}/` 엔드포인트에 대해 유효한 JWT 인증을 요구하여야 한다.
 
@@ -114,21 +114,21 @@ issue_number: 0
 
 **REQ-BKEDIT-017**: `WHEN` 관리자가 `PATCH /api/book/{id}/shopify-status/`를 `action: active` 또는 `action: draft`로 요청하면, 시스템은 외부 Shopify API를 호출하여 해당 상품 상태를 변경하고 성공 시 `Inven.status_of_shopify`를 갱신하여야 한다.
 
-**REQ-BKEDIT-018**: `WHEN` 관리자가 `PATCH /api/book/{id}/etoile-shopify-status/`를 `action: active` 또는 `action: draft`로 요청하면, 시스템은 에투알 Shopify API를 호출하여 해당 상품 상태를 변경하고 성공 시 `EtoileBookInven.status_of_shopify`를 갱신하여야 한다.
+**REQ-BKEDIT-018**: `WHEN` 관리자가 `PATCH /api/book/{id}/etoile-shopify-status/`를 `action: active` 또는 `action: draft`로 요청하면, 시스템은 Etoile Shopify API를 호출하여 해당 상품 상태를 변경하고 성공 시 `EtoileBookInven.status_of_shopify`를 갱신하여야 한다.
 
 **REQ-BKEDIT-019**: `IF` Shopify API 호출이 실패하면 (네트워크 오류, 4xx/5xx 응답), 시스템은 DB 상태를 변경하지 않고 HTTP 502 Bad Gateway와 오류 원인을 반환하여야 한다.
 
-**REQ-BKEDIT-020**: `IF` 에투알 Shopify 상태 변경 요청 시 `EtoileBookInven` 레코드가 존재하지 않으면, 시스템은 HTTP 404 Not Found를 반환하여야 한다.
+**REQ-BKEDIT-020**: `IF` Etoile Shopify 상태 변경 요청 시 `EtoileBookInven` 레코드가 존재하지 않으면, 시스템은 HTTP 404 Not Found를 반환하여야 한다.
 
 ---
 
-### 5. 에투알 태그 관리
+### 5. Etoile 태그 관리
 
-**REQ-BKEDIT-021**: `WHEN` 관리자가 `PATCH /api/book/{id}/etoile-tags/`를 요청하면, 시스템은 `tags` 필드(문자열 배열)를 `EtoileBookInfo.tags` JSONField에 저장하고, Shopify API를 통해 에투알 상품 태그를 동기화하여야 한다.
+**REQ-BKEDIT-021**: `WHEN` 관리자가 `PATCH /api/book/{id}/etoile-tags/`를 요청하면, 시스템은 `tags` 필드(문자열 배열)를 `EtoileBookInfo.tags` JSONField에 저장하고, Shopify API를 통해 Etoile 상품 태그를 동기화하여야 한다.
 
-**REQ-BKEDIT-022**: `IF` 에투알 태그 저장 후 Shopify API 동기화가 실패하면, 시스템은 DB 저장은 유지하되 HTTP 207 Multi-Status로 부분 성공을 반환하여야 한다.
+**REQ-BKEDIT-022**: `IF` Etoile 태그 저장 후 Shopify API 동기화가 실패하면, 시스템은 DB 저장은 유지하되 HTTP 207 Multi-Status로 부분 성공을 반환하여야 한다.
 
-**REQ-BKEDIT-023**: `IF` 에투알 태그 변경 요청 시 `EtoileBookInfo` 레코드가 존재하지 않으면, 시스템은 HTTP 404 Not Found를 반환하여야 한다.
+**REQ-BKEDIT-023**: `IF` Etoile 태그 변경 요청 시 `EtoileBookInfo` 레코드가 존재하지 않으면, 시스템은 HTTP 404 Not Found를 반환하여야 한다.
 
 ---
 
@@ -138,13 +138,13 @@ issue_number: 0
 
 **REQ-BKEDIT-025**: `WHEN` `BookDetailPage`가 로드되면, 시스템은 `GET /api/book/{id}/` API를 호출하여 도서 정보를 가져오고 로딩 중에는 스켈레톤 또는 로딩 인디케이터를 표시하여야 한다.
 
-**REQ-BKEDIT-026**: `WHILE` 도서 수정 폼이 표시된 상태에서, 시스템은 필드 그룹별로 탭 또는 섹션을 구분하여 표시하여야 한다 (기본 정보, 부클, 교보, 중량, 장문 텍스트, 노트, Shopify 상태, 에투알).
+**REQ-BKEDIT-026**: `WHILE` 도서 수정 폼이 표시된 상태에서, 시스템은 필드 그룹별로 탭 또는 섹션을 구분하여 표시하여야 한다 (기본 정보, 부클, 교보, 중량, 장문 텍스트, 노트, Shopify 상태, Etoile).
 
 **REQ-BKEDIT-027**: `WHEN` 관리자가 기본 정보 저장 버튼을 클릭하면, 시스템은 변경된 필드만 포함한 PATCH 요청을 전송하고, 성공 시 인라인 성공 피드백(토스트 또는 배너)을 표시하여야 한다.
 
 **REQ-BKEDIT-028**: `IF` API 저장 요청이 실패하면, 시스템은 오류 메시지를 화면에 표시하고 폼 상태를 저장 이전 값으로 유지하여야 한다.
 
-**REQ-BKEDIT-029**: `WHERE` 에투알 연관 데이터가 존재하는 경우, 시스템은 에투알 섹션(태그, Shopify 상태)을 화면에 표시하여야 한다. 존재하지 않는 경우 에투알 섹션을 숨기거나 비활성 상태로 표시하여야 한다.
+**REQ-BKEDIT-029**: `WHERE` Etoile 연관 데이터가 존재하는 경우, 시스템은 Etoile 섹션(태그, Shopify 상태)을 화면에 표시하여야 한다. 존재하지 않는 경우 Etoile 섹션을 숨기거나 비활성 상태로 표시하여야 한다.
 
 **REQ-BKEDIT-030**: `WHEN` 관리자가 도서 수정 화면에서 뒤로가기 또는 검색 링크를 클릭하면, 시스템은 도서 검색 화면(`/book`)으로 이동하여야 한다.
 
@@ -415,7 +415,7 @@ issue_number: 0
 - **도서 생성**: `POST /api/book/` 신규 등록 기능은 이 SPEC에 포함하지 않는다.
 - **도서 삭제**: `DELETE /api/book/{id}/` 삭제 기능은 이 SPEC에 포함하지 않는다.
 - **이미지 파일 업로드**: `cover_image_url`은 외부 URL 문자열 입력만 허용하며, 파일 업로드 기능은 포함하지 않는다.
-- **에투알 영문 정보 편집**: `EtoileBookInfo.name_en`, `desc_en`, `preview_urls` 수정 기능은 포함하지 않는다 (조회만 가능).
+- **Etoile 영문 정보 편집**: `EtoileBookInfo.name_en`, `desc_en`, `preview_urls` 수정 기능은 포함하지 않는다 (조회만 가능).
 - **카테고리 코드 목록 API**: 부클/교보 카테고리 코드 선택용 드롭다운 목록 API는 이 SPEC에 포함하지 않는다 (직접 입력).
 - **Shopify 웹훅 수신**: 외부 Shopify 이벤트에 의한 자동 상태 동기화는 포함하지 않는다.
 - **권한 역할 분리**: 관리자 역할 내 세부 권한 분리(읽기 전용 vs 편집)는 포함하지 않는다.
