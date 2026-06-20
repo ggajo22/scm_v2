@@ -11,10 +11,13 @@ from book.views import (
     DashboardMetricsView,
     EtoileShopifyStatusView,
     EtoileTagsView,
+    InvenSkuBulkAddView,
     ShopifyLiveInfoView,
 )
 
 urlpatterns = [
+    # SPEC-INVEN-ADD-001: bulk ISBN add
+    path("book/inven-skus/", InvenSkuBulkAddView.as_view(), name="book-inven-skus"),
     path("book/dashboard/metrics/", DashboardMetricsView.as_view(), name="book-dashboard-metrics"),
     path(
         "book/booksen-categories/",

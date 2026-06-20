@@ -41,6 +41,13 @@ export const router = createBrowserRouter([
                 },
               },
               {
+                path: 'add-isbn',
+                lazy: async () => {
+                  const { AddIsbnPage } = await import('@/pages/AddIsbnPage')
+                  return { Component: AddIsbnPage }
+                },
+              },
+              {
                 path: ':id',
                 lazy: async () => {
                   const { BookDetailPage } = await import('@/pages/BookDetailPage')

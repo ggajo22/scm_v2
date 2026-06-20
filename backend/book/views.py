@@ -32,6 +32,7 @@ from book.serializers import (
     EtoileShopifyProductSerializer,
     InfoSerializer,
     InfoUpdateSerializer,
+    InvenSkuBulkAddSerializer,
     ShopifyProductSerializer,
 )
 
@@ -474,6 +475,70 @@ class EtoileTagsView(APIView):
             )
 
         return Response(EtoileBookInfoSerializer(etoile_info).data)
+
+
+# SPEC-INVEN-ADD-001: ISBN bulk add
+class InvenSkuBulkAddView(APIView):
+    """
+    POST /api/book/inven-skus/
+    Bulk-create Inven records for new SKUs. Duplicates are returned separately.
+    REQ-IADD-001 through REQ-IADD-010
+    """
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        from django.db import transaction
+
+        serializer = InvenSkuBulkAddSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=400)
+
+        raw_skus = serializer.validated_data["skus"]
+
+        # REQ-IADD-005: strip, remove empty, deduplicate preserving order
+        seen: set = set()
+        unique_skus: list = []
+        for sku in raw_skus:
+            s = sku.strip()
+            if s and s not in seen:
+                seen.add(s)
+                unique_skus.append(s)
+
+        if not unique_skus:
+            return Response({"skus": ["This field may not be blank."]}, status=400)
+
+        # REQ-IADD-006: partition existing vs new
+        existing_set = set(
+            Inven.objects.filter(inven_SKU__in=unique_skus).values_list("inven_SKU", flat=True)
+        )
+        new_skus = [s for s in unique_skus if s not in existing_set]
+        duplicate_skus = [s for s in unique_skus if s in existing_set]
+
+        # REQ-IADD-007/008: bulk insert in single transaction
+        try:
+            with transaction.atomic():
+                if new_skus:
+                    Inven.objects.bulk_create([
+                        Inven(
+                            inven_SKU=sku,
+                            vendor="북센",
+                            store="책방",
+                            is_prepared=0,
+                            status_of_shopify=0,
+                            is_use=1,
+                        )
+                        for sku in new_skus
+                    ])
+        except Exception:
+            return Response({"error": "Database error during bulk insert."}, status=500)
+
+        return Response({
+            "created": new_skus,
+            "duplicates": duplicate_skus,
+            "created_count": len(new_skus),
+            "duplicate_count": len(duplicate_skus),
+        })
 
 
 # @MX:ANCHOR: [AUTO] ShopifyLiveInfoView.get — real-time Shopify product info entry point
