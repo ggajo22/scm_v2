@@ -129,6 +129,43 @@ describe('Sidebar', () => {
     })
   })
 
+  describe('토글 동작', () => {
+    it('기본적으로 하위 항목이 펼쳐져 있다', () => {
+      renderSidebar()
+      expect(screen.getByRole('link', { name: '대시보드' })).toBeInTheDocument()
+      expect(screen.getByRole('link', { name: 'ISBN 추가' })).toBeInTheDocument()
+    })
+
+    it('그룹 헤더 클릭 시 하위 항목이 접힌다', async () => {
+      const user = userEvent.setup()
+      renderSidebar()
+      await user.click(screen.getByRole('button', { name: /도서관리/i }))
+      expect(screen.queryByRole('link', { name: '대시보드' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('link', { name: 'ISBN 추가' })).not.toBeInTheDocument()
+    })
+
+    it('접힌 상태에서 다시 클릭 시 하위 항목이 펼쳐진다', async () => {
+      const user = userEvent.setup()
+      renderSidebar()
+      const toggleButton = screen.getByRole('button', { name: /도서관리/i })
+      await user.click(toggleButton)
+      await user.click(toggleButton)
+      expect(screen.getByRole('link', { name: '대시보드' })).toBeInTheDocument()
+    })
+
+    it('펼쳐진 상태에서 aria-expanded="true"를 가진다', () => {
+      renderSidebar()
+      expect(screen.getByRole('button', { name: /도서관리/i })).toHaveAttribute('aria-expanded', 'true')
+    })
+
+    it('접힌 상태에서 aria-expanded="false"를 가진다', async () => {
+      const user = userEvent.setup()
+      renderSidebar()
+      await user.click(screen.getByRole('button', { name: /도서관리/i }))
+      expect(screen.getByRole('button', { name: /도서관리/i })).toHaveAttribute('aria-expanded', 'false')
+    })
+  })
+
   describe('로그아웃', () => {
     it('로그아웃 버튼 클릭 시 logout을 호출한다', async () => {
       const user = userEvent.setup()

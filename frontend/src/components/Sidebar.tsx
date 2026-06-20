@@ -1,5 +1,6 @@
+import { useState } from 'react'
 import { Link, useNavigate, useLocation } from 'react-router-dom'
-import { Users, LogOut, BookOpen } from 'lucide-react'
+import { Users, LogOut, BookOpen, ChevronDown } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useAuthStore } from '@/store/authStore'
 import { cn } from '@/lib/utils'
@@ -47,6 +48,8 @@ export function Sidebar() {
   const user = useAuthStore((state) => state.user)
   const logout = useAuthStore((state) => state.logout)
 
+  const [bookGroupOpen, setBookGroupOpen] = useState(true)
+
   const visibleFlatItems = flatNavItems.filter((item) => {
     if (!item.roles) return true
     return item.roles.includes(user?.role as 'super_admin' | 'admin')
@@ -73,36 +76,51 @@ export function Sidebar() {
 
       <nav className="flex-1 p-4" aria-label="메인 내비게이션">
         <ul className="space-y-1" role="list">
-          {/* REQ-001: 도서관리 그룹 헤더 (non-clickable, REQ-010: role=group + aria-label) */}
+          {/* REQ-001, REQ-010: 도서관리 그룹 헤더 — 토글 가능, role=group + aria-label */}
           <li>
             <div role="group" aria-label={bookGroup.label}>
-              <div className="flex items-center gap-3 px-3 py-2 text-sm font-medium text-muted-foreground select-none">
+              <button
+                type="button"
+                onClick={() => setBookGroupOpen((prev) => !prev)}
+                aria-expanded={bookGroupOpen}
+                className={cn(
+                  'w-full flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium text-muted-foreground',
+                  'hover:bg-accent hover:text-accent-foreground transition-colors',
+                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
+                )}
+              >
                 <bookGroup.icon className="h-4 w-4" aria-hidden="true" />
-                {bookGroup.label}
-              </div>
+                <span className="flex-1 text-left">{bookGroup.label}</span>
+                <ChevronDown
+                  className={cn('h-3.5 w-3.5 transition-transform duration-200', !bookGroupOpen && '-rotate-90')}
+                  aria-hidden="true"
+                />
+              </button>
               {/* REQ-002, REQ-003: sub-items; REQ-004, REQ-005, REQ-006: exact-match active state */}
-              <ul className="space-y-1">
-                {bookGroup.items.map((subItem) => {
-                  const isActive = location.pathname === subItem.href
-                  return (
-                    <li key={subItem.href}>
-                      <Link
-                        to={subItem.href}
-                        aria-current={isActive ? 'page' : undefined}
-                        className={cn(
-                          // REQ-009: pl-9 indents sub-items relative to group header (pl-3)
-                          'flex items-center rounded-md pl-9 pr-3 py-2 text-sm transition-colors',
-                          'hover:bg-accent hover:text-accent-foreground',
-                          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                          isActive && 'bg-accent text-accent-foreground font-medium'
-                        )}
-                      >
-                        {subItem.label}
-                      </Link>
-                    </li>
-                  )
-                })}
-              </ul>
+              {bookGroupOpen && (
+                <ul className="space-y-1 mt-0.5">
+                  {bookGroup.items.map((subItem) => {
+                    const isActive = location.pathname === subItem.href
+                    return (
+                      <li key={subItem.href}>
+                        <Link
+                          to={subItem.href}
+                          aria-current={isActive ? 'page' : undefined}
+                          className={cn(
+                            // REQ-009: pl-9 indents sub-items relative to group header (pl-3)
+                            'flex items-center rounded-md pl-9 pr-3 py-2 text-sm transition-colors',
+                            'hover:bg-accent hover:text-accent-foreground',
+                            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                            isActive && 'bg-accent text-accent-foreground font-medium'
+                          )}
+                        >
+                          {subItem.label}
+                        </Link>
+                      </li>
+                    )
+                  })}
+                </ul>
+              )}
             </div>
           </li>
 
