@@ -1,0 +1,794 @@
+import { useState, useEffect } from 'react'
+import { useParams, useNavigate } from 'react-router-dom'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Badge } from '@/components/ui/badge'
+import { cn } from '@/lib/utils'
+import { useBookDetail } from '@/features/book/hooks/useBookDetail'
+import {
+  useUpdateBookInfo,
+  useAddNote,
+  useResolveNote,
+  useUpdateShopifyStatus,
+  useUpdateEtoileShopifyStatus,
+  useUpdateEtoileTags,
+} from '@/features/book/hooks/useBookMutations'
+import type { BookInfo, BookNote } from '@/types/book'
+
+// ---------------------------------------------------------------------------
+// Small presentational helpers
+// ---------------------------------------------------------------------------
+
+function SectionCard({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="rounded-lg border bg-card p-6 space-y-4">
+      <h2 className="text-base font-semibold text-foreground">{title}</h2>
+      {children}
+    </div>
+  )
+}
+
+function FieldRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="grid grid-cols-[160px_1fr] items-start gap-3">
+      <Label className="pt-2 text-sm text-muted-foreground leading-tight">{label}</Label>
+      <div>{children}</div>
+    </div>
+  )
+}
+
+function LoadingSkeleton() {
+  return (
+    <div role="status" aria-label="로딩 중" className="space-y-4">
+      {Array.from({ length: 6 }).map((_, i) => (
+        <div key={i} className="rounded-lg border p-6 space-y-3">
+          <div className="h-5 w-32 bg-muted animate-pulse rounded" />
+          {Array.from({ length: 4 }).map((_, j) => (
+            <div key={j} className="h-9 bg-muted animate-pulse rounded" />
+          ))}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function shopifyStatusLabel(status: number | null | undefined): string {
+  if (status === 1) return '활성'
+  if (status === 0) return '드래프트'
+  return '없음'
+}
+
+// ---------------------------------------------------------------------------
+// Section: 기본 정보
+// ---------------------------------------------------------------------------
+
+type BasicInfoState = Pick<
+  BookInfo,
+  | 'name'
+  | 'cover_image_url'
+  | 'price'
+  | 'price_sale'
+  | 'manual_weight'
+  | 'kyobo_supply_price'
+  | 'status'
+  | 'useruse1'
+  | 'useruse2'
+  | 'opndate'
+  | 'dim1'
+  | 'dim2'
+  | 'dim3'
+  | 'page'
+  | 'qty'
+  | 'image_detail'
+>
+
+function BasicInfoSection({ info, bookId }: { info: BookInfo; bookId: number }) {
+  const [form, setForm] = useState<BasicInfoState>({
+    name: info.name,
+    cover_image_url: info.cover_image_url,
+    price: info.price,
+    price_sale: info.price_sale,
+    manual_weight: info.manual_weight,
+    kyobo_supply_price: info.kyobo_supply_price,
+    status: info.status,
+    useruse1: info.useruse1,
+    useruse2: info.useruse2,
+    opndate: info.opndate,
+    dim1: info.dim1,
+    dim2: info.dim2,
+    dim3: info.dim3,
+    page: info.page,
+    qty: info.qty,
+    image_detail: info.image_detail,
+  })
+
+  useEffect(() => {
+    setForm({
+      name: info.name,
+      cover_image_url: info.cover_image_url,
+      price: info.price,
+      price_sale: info.price_sale,
+      manual_weight: info.manual_weight,
+      kyobo_supply_price: info.kyobo_supply_price,
+      status: info.status,
+      useruse1: info.useruse1,
+      useruse2: info.useruse2,
+      opndate: info.opndate,
+      dim1: info.dim1,
+      dim2: info.dim2,
+      dim3: info.dim3,
+      page: info.page,
+      qty: info.qty,
+      image_detail: info.image_detail,
+    })
+  }, [info])
+
+  const mutation = useUpdateBookInfo(bookId)
+
+  const setStr = (key: keyof BasicInfoState) => (e: React.ChangeEvent<HTMLInputElement>) =>
+    setForm((prev) => ({ ...prev, [key]: e.target.value }))
+
+  const setNum = (key: keyof BasicInfoState) => (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = e.target.value === '' ? null : Number(e.target.value)
+    setForm((prev) => ({ ...prev, [key]: val }))
+  }
+
+  return (
+    <SectionCard title="기본 정보">
+      <div className="space-y-3">
+        <FieldRow label="도서명">
+          <Input value={form.name} onChange={setStr('name')} />
+        </FieldRow>
+        <FieldRow label="표지 이미지 URL">
+          <Input value={form.cover_image_url} onChange={setStr('cover_image_url')} />
+        </FieldRow>
+        <FieldRow label="정가">
+          <Input type="number" value={form.price} onChange={setNum('price')} />
+        </FieldRow>
+        <FieldRow label="판매가">
+          <Input type="number" value={form.price_sale} onChange={setNum('price_sale')} />
+        </FieldRow>
+        <FieldRow label="수동 중량(g)">
+          <Input
+            type="number"
+            value={form.manual_weight ?? ''}
+            onChange={setNum('manual_weight')}
+            placeholder="미입력 시 자동 계산"
+          />
+        </FieldRow>
+        <FieldRow label="교보 공급가">
+          <Input type="number" value={form.kyobo_supply_price} onChange={setNum('kyobo_supply_price')} />
+        </FieldRow>
+        <FieldRow label="상태">
+          <Input value={form.status} onChange={setStr('status')} />
+        </FieldRow>
+        <FieldRow label="사용자필드1">
+          <Input value={form.useruse1} onChange={setStr('useruse1')} />
+        </FieldRow>
+        <FieldRow label="사용자필드2">
+          <Input value={form.useruse2} onChange={setStr('useruse2')} />
+        </FieldRow>
+        <FieldRow label="출판일">
+          <Input type="date" value={form.opndate} onChange={setStr('opndate')} />
+        </FieldRow>
+        <FieldRow label="치수1 (mm)">
+          <Input type="number" value={form.dim1 ?? ''} onChange={setNum('dim1')} />
+        </FieldRow>
+        <FieldRow label="치수2 (mm)">
+          <Input type="number" value={form.dim2 ?? ''} onChange={setNum('dim2')} />
+        </FieldRow>
+        <FieldRow label="치수3 (mm)">
+          <Input type="number" value={form.dim3 ?? ''} onChange={setNum('dim3')} />
+        </FieldRow>
+        <FieldRow label="페이지">
+          <Input type="number" value={form.page} onChange={setNum('page')} />
+        </FieldRow>
+        <FieldRow label="재고수량">
+          <Input type="number" value={form.qty} onChange={setNum('qty')} />
+        </FieldRow>
+        <FieldRow label="이미지 상세 URL">
+          <Input value={form.image_detail} onChange={setStr('image_detail')} />
+        </FieldRow>
+      </div>
+      <div className="flex justify-end pt-2">
+        <Button onClick={() => mutation.mutate(form)} disabled={mutation.isPending}>
+          {mutation.isPending ? '저장 중...' : '저장'}
+        </Button>
+      </div>
+    </SectionCard>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Section: 부클 카테고리
+// ---------------------------------------------------------------------------
+
+type BooxenState = Pick<BookInfo, 'booxen_cate_cd1' | 'booxen_cate_cd2' | 'booxen_cate_cd3'>
+
+function BooxenCategorySection({ info, bookId }: { info: BookInfo; bookId: number }) {
+  const [form, setForm] = useState<BooxenState>({
+    booxen_cate_cd1: info.booxen_cate_cd1,
+    booxen_cate_cd2: info.booxen_cate_cd2,
+    booxen_cate_cd3: info.booxen_cate_cd3,
+  })
+
+  useEffect(() => {
+    setForm({
+      booxen_cate_cd1: info.booxen_cate_cd1,
+      booxen_cate_cd2: info.booxen_cate_cd2,
+      booxen_cate_cd3: info.booxen_cate_cd3,
+    })
+  }, [info])
+
+  const mutation = useUpdateBookInfo(bookId)
+  const setNum = (key: keyof BooxenState) => (e: React.ChangeEvent<HTMLInputElement>) =>
+    setForm((prev) => ({ ...prev, [key]: Number(e.target.value) }))
+
+  return (
+    <SectionCard title="부클 카테고리">
+      <div className="space-y-3">
+        <FieldRow label="카테고리 코드1">
+          <Input type="number" value={form.booxen_cate_cd1} onChange={setNum('booxen_cate_cd1')} />
+        </FieldRow>
+        <FieldRow label="카테고리 코드2">
+          <Input type="number" value={form.booxen_cate_cd2} onChange={setNum('booxen_cate_cd2')} />
+        </FieldRow>
+        <FieldRow label="카테고리 코드3">
+          <Input type="number" value={form.booxen_cate_cd3} onChange={setNum('booxen_cate_cd3')} />
+        </FieldRow>
+      </div>
+      <div className="flex justify-end pt-2">
+        <Button onClick={() => mutation.mutate(form)} disabled={mutation.isPending}>
+          {mutation.isPending ? '저장 중...' : '저장'}
+        </Button>
+      </div>
+    </SectionCard>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Section: 교보 카테고리
+// ---------------------------------------------------------------------------
+
+type KyoboCategoryState = Pick<
+  BookInfo,
+  | 'kyobo_category1'
+  | 'kyobo_category2'
+  | 'kyobo_category3'
+  | 'kyobo_category4'
+  | 'kyobo_category5'
+  | 'kyobo_weight'
+>
+
+function KyboCategorySection({ info, bookId }: { info: BookInfo; bookId: number }) {
+  const [form, setForm] = useState<KyoboCategoryState>({
+    kyobo_category1: info.kyobo_category1,
+    kyobo_category2: info.kyobo_category2,
+    kyobo_category3: info.kyobo_category3,
+    kyobo_category4: info.kyobo_category4,
+    kyobo_category5: info.kyobo_category5,
+    kyobo_weight: info.kyobo_weight,
+  })
+
+  useEffect(() => {
+    setForm({
+      kyobo_category1: info.kyobo_category1,
+      kyobo_category2: info.kyobo_category2,
+      kyobo_category3: info.kyobo_category3,
+      kyobo_category4: info.kyobo_category4,
+      kyobo_category5: info.kyobo_category5,
+      kyobo_weight: info.kyobo_weight,
+    })
+  }, [info])
+
+  const mutation = useUpdateBookInfo(bookId)
+  const setStr = (key: keyof KyoboCategoryState) => (e: React.ChangeEvent<HTMLInputElement>) =>
+    setForm((prev) => ({ ...prev, [key]: e.target.value }))
+  const setNum = (key: keyof KyoboCategoryState) => (e: React.ChangeEvent<HTMLInputElement>) =>
+    setForm((prev) => ({ ...prev, [key]: Number(e.target.value) }))
+
+  return (
+    <SectionCard title="교보 카테고리">
+      <div className="space-y-3">
+        <FieldRow label="교보 카테고리1">
+          <Input value={form.kyobo_category1} onChange={setStr('kyobo_category1')} />
+        </FieldRow>
+        <FieldRow label="교보 카테고리2">
+          <Input value={form.kyobo_category2} onChange={setStr('kyobo_category2')} />
+        </FieldRow>
+        <FieldRow label="교보 카테고리3">
+          <Input value={form.kyobo_category3} onChange={setStr('kyobo_category3')} />
+        </FieldRow>
+        <FieldRow label="교보 카테고리4">
+          <Input value={form.kyobo_category4} onChange={setStr('kyobo_category4')} />
+        </FieldRow>
+        <FieldRow label="교보 카테고리5">
+          <Input value={form.kyobo_category5} onChange={setStr('kyobo_category5')} />
+        </FieldRow>
+        <FieldRow label="교보 중량(g)">
+          <Input type="number" value={form.kyobo_weight} onChange={setNum('kyobo_weight')} />
+        </FieldRow>
+      </div>
+      <div className="flex justify-end pt-2">
+        <Button onClick={() => mutation.mutate(form)} disabled={mutation.isPending}>
+          {mutation.isPending ? '저장 중...' : '저장'}
+        </Button>
+      </div>
+    </SectionCard>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Section: 중량 정보
+// ---------------------------------------------------------------------------
+
+type WeightState = Pick<BookInfo, 'weight' | 'yes24_weight' | 'aladin_weight'>
+
+function WeightSection({ info, bookId }: { info: BookInfo; bookId: number }) {
+  const [form, setForm] = useState<WeightState>({
+    weight: info.weight,
+    yes24_weight: info.yes24_weight,
+    aladin_weight: info.aladin_weight,
+  })
+
+  useEffect(() => {
+    setForm({
+      weight: info.weight,
+      yes24_weight: info.yes24_weight,
+      aladin_weight: info.aladin_weight,
+    })
+  }, [info])
+
+  const mutation = useUpdateBookInfo(bookId)
+  const setNum = (key: keyof WeightState) => (e: React.ChangeEvent<HTMLInputElement>) =>
+    setForm((prev) => ({ ...prev, [key]: Number(e.target.value) }))
+
+  return (
+    <SectionCard title="중량 정보">
+      <div className="space-y-3">
+        <FieldRow label="기본 중량(g)">
+          <Input type="number" value={form.weight} onChange={setNum('weight')} />
+        </FieldRow>
+        <FieldRow label="예스24 중량(g)">
+          <Input type="number" value={form.yes24_weight} onChange={setNum('yes24_weight')} />
+        </FieldRow>
+        <FieldRow label="알라딘 중량(g)">
+          <Input type="number" value={form.aladin_weight} onChange={setNum('aladin_weight')} />
+        </FieldRow>
+      </div>
+      <div className="flex justify-end pt-2">
+        <Button onClick={() => mutation.mutate(form)} disabled={mutation.isPending}>
+          {mutation.isPending ? '저장 중...' : '저장'}
+        </Button>
+      </div>
+    </SectionCard>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Section: 장문 텍스트
+// ---------------------------------------------------------------------------
+
+type LongTextState = Pick<BookInfo, 'desc_desc' | 'desc_table' | 'desc_pub' | 'desc_author'>
+
+function LongTextSection({ info, bookId }: { info: BookInfo; bookId: number }) {
+  const [form, setForm] = useState<LongTextState>({
+    desc_desc: info.desc_desc,
+    desc_table: info.desc_table,
+    desc_pub: info.desc_pub,
+    desc_author: info.desc_author,
+  })
+
+  useEffect(() => {
+    setForm({
+      desc_desc: info.desc_desc,
+      desc_table: info.desc_table,
+      desc_pub: info.desc_pub,
+      desc_author: info.desc_author,
+    })
+  }, [info])
+
+  const mutation = useUpdateBookInfo(bookId)
+  const setStr = (key: keyof LongTextState) => (e: React.ChangeEvent<HTMLTextAreaElement>) =>
+    setForm((prev) => ({ ...prev, [key]: e.target.value }))
+
+  return (
+    <SectionCard title="장문 텍스트">
+      <div className="space-y-3">
+        <FieldRow label="도서 소개">
+          <textarea
+            className="w-full min-h-[120px] rounded-md border border-input bg-background px-3 py-2 text-sm resize-y focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            value={form.desc_desc}
+            onChange={setStr('desc_desc')}
+          />
+        </FieldRow>
+        <FieldRow label="목차">
+          <textarea
+            className="w-full min-h-[120px] rounded-md border border-input bg-background px-3 py-2 text-sm resize-y focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            value={form.desc_table}
+            onChange={setStr('desc_table')}
+          />
+        </FieldRow>
+        <FieldRow label="출판사 서평">
+          <textarea
+            className="w-full min-h-[120px] rounded-md border border-input bg-background px-3 py-2 text-sm resize-y focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            value={form.desc_pub}
+            onChange={setStr('desc_pub')}
+          />
+        </FieldRow>
+        <FieldRow label="저자 소개">
+          <textarea
+            className="w-full min-h-[120px] rounded-md border border-input bg-background px-3 py-2 text-sm resize-y focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            value={form.desc_author}
+            onChange={setStr('desc_author')}
+          />
+        </FieldRow>
+      </div>
+      <div className="flex justify-end pt-2">
+        <Button onClick={() => mutation.mutate(form)} disabled={mutation.isPending}>
+          {mutation.isPending ? '저장 중...' : '저장'}
+        </Button>
+      </div>
+    </SectionCard>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Section: 노트
+// ---------------------------------------------------------------------------
+
+function NoteItem({
+  note,
+  onResolve,
+  resolving,
+}: {
+  note: BookNote
+  onResolve?: () => void
+  resolving?: boolean
+}) {
+  return (
+    <div className="flex items-start gap-3 rounded-md border p-3 text-sm">
+      <Badge
+        variant={note.note_type === 'SHIPPING' ? 'secondary' : 'outline'}
+        className="shrink-0 mt-0.5"
+      >
+        {note.note_type === 'SHIPPING' ? '배송' : '일반'}
+      </Badge>
+      <div className="flex-1 min-w-0">
+        <p className="whitespace-pre-wrap break-words">{note.content}</p>
+        <p className="text-xs text-muted-foreground mt-1">
+          {note.created_by} · {new Date(note.created_at).toLocaleString('ko-KR')}
+        </p>
+      </div>
+      {onResolve && (
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={onResolve}
+          disabled={resolving}
+          className="shrink-0"
+        >
+          해결
+        </Button>
+      )}
+    </div>
+  )
+}
+
+function NotesSection({ notes, bookId }: { notes: BookNote[]; bookId: number }) {
+  const [noteType, setNoteType] = useState<'GENERAL' | 'SHIPPING'>('GENERAL')
+  const [content, setContent] = useState('')
+  const [showResolved, setShowResolved] = useState(false)
+
+  const addMutation = useAddNote(bookId)
+  const resolveMutation = useResolveNote(bookId)
+
+  const unresolvedGeneral = notes.filter((n) => !n.is_resolved && n.note_type === 'GENERAL')
+  const shipping = notes.filter((n) => n.note_type === 'SHIPPING')
+  const resolved = notes.filter((n) => n.is_resolved)
+
+  const handleAdd = () => {
+    if (!content.trim()) return
+    addMutation.mutate(
+      { note_type: noteType, content: content.trim() },
+      { onSuccess: () => setContent('') }
+    )
+  }
+
+  return (
+    <SectionCard title="노트">
+      {/* Unresolved GENERAL notes */}
+      {unresolvedGeneral.length > 0 && (
+        <div className="space-y-2">
+          <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+            미해결 일반 노트 ({unresolvedGeneral.length})
+          </p>
+          {unresolvedGeneral.map((note) => (
+            <NoteItem
+              key={note.id}
+              note={note}
+              onResolve={() => resolveMutation.mutate(note.id)}
+              resolving={resolveMutation.isPending}
+            />
+          ))}
+        </div>
+      )}
+
+      {/* SHIPPING notes */}
+      {shipping.length > 0 && (
+        <div className="space-y-2">
+          <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+            배송 노트 ({shipping.length})
+          </p>
+          {shipping.map((note) => (
+            <NoteItem key={note.id} note={note} />
+          ))}
+        </div>
+      )}
+
+      {/* Resolved notes (collapsed) */}
+      {resolved.length > 0 && (
+        <div className="space-y-2">
+          <button
+            type="button"
+            className="text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+            onClick={() => setShowResolved((v) => !v)}
+          >
+            {showResolved ? '▲' : '▶'} 해결된 노트 ({resolved.length})
+          </button>
+          {showResolved && (
+            <div className="space-y-2 opacity-60">
+              {resolved.map((note) => (
+                <NoteItem key={note.id} note={note} />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Add note form */}
+      <div className="border-t pt-4 space-y-3">
+        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          노트 추가
+        </p>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={() => setNoteType('GENERAL')}
+            className={cn(
+              'px-3 py-1.5 rounded-md text-sm border transition-colors',
+              noteType === 'GENERAL'
+                ? 'bg-primary text-primary-foreground border-primary'
+                : 'bg-background border-input hover:bg-accent'
+            )}
+          >
+            일반
+          </button>
+          <button
+            type="button"
+            onClick={() => setNoteType('SHIPPING')}
+            className={cn(
+              'px-3 py-1.5 rounded-md text-sm border transition-colors',
+              noteType === 'SHIPPING'
+                ? 'bg-primary text-primary-foreground border-primary'
+                : 'bg-background border-input hover:bg-accent'
+            )}
+          >
+            배송
+          </button>
+        </div>
+        <textarea
+          className="w-full min-h-[80px] rounded-md border border-input bg-background px-3 py-2 text-sm resize-y focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          placeholder="노트 내용을 입력하세요"
+          value={content}
+          onChange={(e) => setContent(e.target.value)}
+        />
+        <div className="flex justify-end">
+          <Button
+            onClick={handleAdd}
+            disabled={addMutation.isPending || !content.trim()}
+            size="sm"
+          >
+            {addMutation.isPending ? '추가 중...' : '추가'}
+          </Button>
+        </div>
+      </div>
+    </SectionCard>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Section: Shopify 상태
+// ---------------------------------------------------------------------------
+
+function ShopifyStatusSection({
+  status,
+  bookId,
+}: {
+  status: number
+  bookId: number
+}) {
+  const mutation = useUpdateShopifyStatus(bookId)
+
+  return (
+    <SectionCard title="Shopify 상태">
+      <div className="flex items-center gap-4">
+        <span className="text-sm text-muted-foreground">현재 상태:</span>
+        <Badge variant={status === 1 ? 'default' : 'secondary'}>
+          {shopifyStatusLabel(status)}
+        </Badge>
+      </div>
+      <div className="flex gap-2">
+        <Button
+          variant="default"
+          onClick={() => mutation.mutate('active')}
+          disabled={mutation.isPending}
+        >
+          활성
+        </Button>
+        <Button
+          variant="outline"
+          onClick={() => mutation.mutate('draft')}
+          disabled={mutation.isPending}
+        >
+          드래프트
+        </Button>
+      </div>
+    </SectionCard>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Section: 에투알
+// ---------------------------------------------------------------------------
+
+function EtoileSection({
+  etoile,
+  bookId,
+}: {
+  etoile: NonNullable<import('@/types/book').BookDetail['etoile']>
+  bookId: number
+}) {
+  const statusMutation = useUpdateEtoileShopifyStatus(bookId)
+  const tagsMutation = useUpdateEtoileTags(bookId)
+
+  const initialTags = etoile.info?.tags ?? []
+  const [tagsInput, setTagsInput] = useState(initialTags.join(', '))
+
+  useEffect(() => {
+    setTagsInput(etoile.info?.tags.join(', ') ?? '')
+  }, [etoile.info?.tags])
+
+  const handleSaveTags = () => {
+    const tags = tagsInput
+      .split(',')
+      .map((t) => t.trim())
+      .filter(Boolean)
+    tagsMutation.mutate(tags)
+  }
+
+  return (
+    <SectionCard title="에투알 (Etoile)">
+      <div className="space-y-4">
+        {/* Shopify status */}
+        <div>
+          <p className="text-sm font-medium mb-2">에투알 Shopify 상태</p>
+          <div className="flex items-center gap-4">
+            <Badge variant={etoile.inven.status_of_shopify === 1 ? 'default' : 'secondary'}>
+              {shopifyStatusLabel(etoile.inven.status_of_shopify)}
+            </Badge>
+          </div>
+          <div className="flex gap-2 mt-3">
+            <Button
+              variant="default"
+              size="sm"
+              onClick={() => statusMutation.mutate('active')}
+              disabled={statusMutation.isPending}
+            >
+              활성
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => statusMutation.mutate('draft')}
+              disabled={statusMutation.isPending}
+            >
+              드래프트
+            </Button>
+          </div>
+        </div>
+
+        {/* Tags */}
+        {etoile.info && (
+          <div className="border-t pt-4">
+            <p className="text-sm font-medium mb-2">태그 (쉼표로 구분)</p>
+            <div className="flex gap-2">
+              <Input
+                value={tagsInput}
+                onChange={(e) => setTagsInput(e.target.value)}
+                placeholder="tag1, tag2, tag3"
+                className="flex-1"
+              />
+              <Button
+                onClick={handleSaveTags}
+                disabled={tagsMutation.isPending}
+                size="sm"
+              >
+                {tagsMutation.isPending ? '저장 중...' : '저장'}
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+    </SectionCard>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Main page
+// ---------------------------------------------------------------------------
+
+// @MX:ANCHOR: [AUTO] BookDetailPage is the top-level route component for /books/:id
+// @MX:REASON: Fan-in >= 3 — router lazy import, BookSearchPage row click, and direct URL entry all reach this component
+export function BookDetailPage() {
+  const { id } = useParams<{ id: string }>()
+  const navigate = useNavigate()
+  const bookId = id ? Number(id) : undefined
+
+  const { data, isPending, isError, error } = useBookDetail(bookId)
+
+  return (
+    <div className="p-6 space-y-6 max-w-4xl mx-auto">
+      {/* Header */}
+      <div className="flex items-center gap-4">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => navigate('/books/search')}
+          aria-label="목록으로 돌아가기"
+        >
+          ← 목록
+        </Button>
+        <h1 className="text-xl font-semibold">도서 정보 수정</h1>
+        {data && (
+          <span className="text-sm text-muted-foreground font-mono">{data.inven_SKU}</span>
+        )}
+      </div>
+
+      {/* Loading */}
+      {isPending && <LoadingSkeleton />}
+
+      {/* Error */}
+      {isError && (
+        <div className="rounded-lg border border-destructive/50 p-6 text-center" role="alert">
+          <p className="text-destructive font-medium">도서 정보를 불러오는데 실패했습니다.</p>
+          {error instanceof Error && (
+            <p className="text-sm text-muted-foreground mt-1">{error.message}</p>
+          )}
+          <Button
+            variant="outline"
+            className="mt-4"
+            onClick={() => navigate('/books/search')}
+          >
+            목록으로 돌아가기
+          </Button>
+        </div>
+      )}
+
+      {/* Content */}
+      {data && (
+        <div className="space-y-6">
+          <BasicInfoSection info={data.info} bookId={data.id} />
+          <BooxenCategorySection info={data.info} bookId={data.id} />
+          <KyboCategorySection info={data.info} bookId={data.id} />
+          <WeightSection info={data.info} bookId={data.id} />
+          <LongTextSection info={data.info} bookId={data.id} />
+          <NotesSection notes={data.notes} bookId={data.id} />
+          <ShopifyStatusSection status={data.status_of_shopify} bookId={data.id} />
+          {data.etoile && <EtoileSection etoile={data.etoile} bookId={data.id} />}
+        </div>
+      )}
+    </div>
+  )
+}

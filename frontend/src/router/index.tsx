@@ -40,6 +40,13 @@ export const router = createBrowserRouter([
                   return { Component: BookSearchPage }
                 },
               },
+              {
+                path: ':id',
+                lazy: async () => {
+                  const { BookDetailPage } = await import('@/pages/BookDetailPage')
+                  return { Component: BookDetailPage }
+                },
+              },
             ],
           },
           {

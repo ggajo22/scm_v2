@@ -26,8 +26,25 @@ def _build_ft_query(q: str) -> str:
 
 
 from book.constants import ERROR_STATUSES, LISTED_STATUSES, STATUS_LABELS, WAITING_STATUSES
-from book.models import BookNote, Info, Inven, Shopify_product
-from book.serializers import BookDetailSerializer, DashboardMetricsSerializer
+from book.models import (
+    BookNote,
+    EtoileBookInfo,
+    EtoileBookInven,
+    Info,
+    Inven,
+    Shopify_product,
+)
+from book.serializers import (
+    BookDetailSerializer,
+    BookNoteSerializer,
+    DashboardMetricsSerializer,
+    EtoileBookInfoSerializer,
+    EtoileBookInvenSerializer,
+    EtoileShopifyProductSerializer,
+    InfoSerializer,
+    InfoUpdateSerializer,
+    ShopifyProductSerializer,
+)
 
 
 # @MX:ANCHOR: [AUTO] BookListViewSet.list — search endpoint for book inventory
@@ -147,3 +164,272 @@ class DashboardMetricsView(APIView):
 
         serializer = DashboardMetricsSerializer(payload)
         return Response(serializer.data)
+
+
+# ---------------------------------------------------------------------------
+# SPEC-BOOK-EDIT-001 views
+# ---------------------------------------------------------------------------
+
+class BookRetrieveView(APIView):
+    """
+    GET /api/book/{id}/
+    Returns full book detail: inven, info, notes, shopify_products, etoile.
+    REQ-BKEDIT-001 through REQ-BKEDIT-006
+    """
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        try:
+            inven = Inven.objects.select_related("info").get(pk=pk)
+        except Inven.DoesNotExist:
+            return Response({"detail": "Not found."}, status=404)
+
+        # Notes: all unresolved + 10 most recent resolved (REQ-BKEDIT-005)
+        unresolved_notes = BookNote.objects.filter(inven=inven, is_resolved=False)
+        resolved_notes = BookNote.objects.filter(inven=inven, is_resolved=True).order_by("-resolved_at")[:10]
+
+        # Combine and serialize in chronological order
+        notes_qs = list(unresolved_notes) + list(resolved_notes)
+
+        # Shopify products
+        shopify_products = Shopify_product.objects.filter(inven=inven)
+
+        # Etoile data — null if no EtoileBookInven
+        etoile_data = None
+        try:
+            etoile_inven = inven.etoile_inven
+            etoile_inven_data = EtoileBookInvenSerializer(etoile_inven).data
+
+            etoile_shopify_products = etoile_inven.shopify_product.all()
+            try:
+                etoile_info = etoile_inven.info
+                etoile_info_data = EtoileBookInfoSerializer(etoile_info).data
+            except EtoileBookInfo.DoesNotExist:
+                etoile_info_data = None
+
+            etoile_data = {
+                "inven": dict(etoile_inven_data),
+                "info": etoile_info_data,
+                "shopify_products": EtoileShopifyProductSerializer(etoile_shopify_products, many=True).data,
+            }
+        except EtoileBookInven.DoesNotExist:
+            etoile_data = None
+
+        payload = {
+            "id": inven.id,
+            "inven_SKU": inven.inven_SKU,
+            "vendor": inven.vendor,
+            "store": inven.store,
+            "is_prepared": inven.is_prepared,
+            "status_of_shopify": inven.status_of_shopify,
+            "is_use": inven.is_use,
+            "info": InfoSerializer(inven.info).data if hasattr(inven, "info") else None,
+            "notes": BookNoteSerializer(notes_qs, many=True).data,
+            "shopify_products": ShopifyProductSerializer(shopify_products, many=True).data,
+            "etoile": etoile_data,
+        }
+        return Response(payload)
+
+
+class BookInfoUpdateView(APIView):
+    """
+    PATCH /api/book/{id}/info/
+    Partial update of Info model fields.
+    REQ-BKEDIT-007 through REQ-BKEDIT-009
+    """
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, pk):
+        try:
+            inven = Inven.objects.select_related("info").get(pk=pk)
+        except Inven.DoesNotExist:
+            return Response({"detail": "Not found."}, status=404)
+
+        serializer = InfoUpdateSerializer(inven.info, data=request.data, partial=True)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=400)
+
+        serializer.save()
+        return Response(InfoSerializer(inven.info).data)
+
+
+class BookNoteCreateView(APIView):
+    """
+    POST /api/book/{id}/notes/
+    Creates a BookNote for the given Inven.
+    REQ-BKEDIT-010 through REQ-BKEDIT-012
+    """
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        try:
+            inven = Inven.objects.get(pk=pk)
+        except Inven.DoesNotExist:
+            return Response({"detail": "Not found."}, status=404)
+
+        # content is required
+        content = request.data.get("content", "").strip()
+        if not content:
+            return Response({"detail": "content is required."}, status=400)
+
+        note_type = request.data.get("note_type", "GENERAL")
+        if note_type not in ("GENERAL", "SHIPPING"):
+            return Response({"detail": "note_type must be 'GENERAL' or 'SHIPPING'."}, status=400)
+
+        note = BookNote.objects.create(
+            inven=inven,
+            note_type=note_type,
+            content=content,
+            created_by=request.user.username,
+        )
+        return Response(BookNoteSerializer(note).data, status=201)
+
+
+class BookNoteResolveView(APIView):
+    """
+    PATCH /api/book/notes/{pk}/resolve/
+    Resolves a GENERAL note. Returns 400 if SHIPPING or already resolved.
+    REQ-BKEDIT-013 through REQ-BKEDIT-015
+    """
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, pk):
+        try:
+            note = BookNote.objects.get(pk=pk)
+        except BookNote.DoesNotExist:
+            return Response({"detail": "Not found."}, status=404)
+
+        if note.note_type == "SHIPPING":
+            return Response({"detail": "SHIPPING notes cannot be resolved."}, status=400)
+
+        if note.is_resolved:
+            return Response({"detail": "Note is already resolved."}, status=400)
+
+        note.resolve()
+        return Response(BookNoteSerializer(note).data)
+
+
+class BookShopifyStatusView(APIView):
+    """
+    PATCH /api/book/{id}/shopify-status/
+    Calls Shopify API to set product status (active/draft).
+    REQ-BKEDIT-016 through REQ-BKEDIT-019
+    """
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    # @MX:WARN: [AUTO] patch — Shopify API call with external dependency and status_of_shopify mutation
+    # @MX:REASON: REQ-BKEDIT-016/017/018 require conditional DB update and external API call
+    def patch(self, request, pk):
+        from book import services
+
+        try:
+            inven = Inven.objects.select_related("info").get(pk=pk)
+        except Inven.DoesNotExist:
+            return Response({"detail": "Not found."}, status=404)
+
+        action = request.data.get("action", "")
+        if action not in ("active", "draft"):
+            return Response({"detail": "action must be 'active' or 'draft'."}, status=400)
+
+        success = services.set_shopify_product_status_for_inven(inven.id, action)
+        if not success:
+            return Response({"detail": "Shopify API call failed."}, status=502)
+
+        # Update local status_of_shopify based on action
+        if action == "draft":
+            inven.status_of_shopify = 12
+        else:
+            # active: 81 if kyobo_category1 set, else 80
+            try:
+                has_kyobo = bool(inven.info.kyobo_category1)
+            except Info.DoesNotExist:
+                has_kyobo = False
+            inven.status_of_shopify = 81 if has_kyobo else 80
+
+        inven.save(update_fields=["status_of_shopify"])
+        return Response({"status_of_shopify": inven.status_of_shopify})
+
+
+class EtoileShopifyStatusView(APIView):
+    """
+    PATCH /api/book/{id}/etoile-shopify-status/
+    Calls Shopify API to set etoile product status.
+    REQ-BKEDIT-020 through REQ-BKEDIT-021
+    """
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, pk):
+        from book import services
+
+        try:
+            inven = Inven.objects.get(pk=pk)
+        except Inven.DoesNotExist:
+            return Response({"detail": "Not found."}, status=404)
+
+        try:
+            etoile_inven = inven.etoile_inven
+        except EtoileBookInven.DoesNotExist:
+            return Response({"detail": "EtoileBookInven not found."}, status=404)
+
+        action = request.data.get("action", "")
+        if action not in ("active", "draft"):
+            return Response({"detail": "action must be 'active' or 'draft'."}, status=400)
+
+        success = services.set_shopify_product_status_for_etoile_inven(etoile_inven.id, action)
+        if not success:
+            return Response({"detail": "Shopify API call failed."}, status=502)
+
+        return Response({"status": "ok", "action": action})
+
+
+class EtoileTagsView(APIView):
+    """
+    PATCH /api/book/{id}/etoile-tags/
+    Saves tags to EtoileBookInfo and syncs to Shopify.
+    REQ-BKEDIT-022 through REQ-BKEDIT-025
+    """
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, pk):
+        from book import services
+
+        try:
+            inven = Inven.objects.get(pk=pk)
+        except Inven.DoesNotExist:
+            return Response({"detail": "Not found."}, status=404)
+
+        try:
+            etoile_inven = inven.etoile_inven
+        except EtoileBookInven.DoesNotExist:
+            return Response({"detail": "EtoileBookInven not found."}, status=404)
+
+        try:
+            etoile_info = etoile_inven.info
+        except EtoileBookInfo.DoesNotExist:
+            return Response({"detail": "EtoileBookInfo not found."}, status=404)
+
+        tags = request.data.get("tags", [])
+        if not isinstance(tags, list):
+            return Response({"detail": "tags must be a list."}, status=400)
+
+        # Save tags to DB regardless of Shopify sync result
+        etoile_info.tags = tags
+        etoile_info.save(update_fields=["tags"])
+
+        # Sync to Shopify
+        shopify_success = services.set_shopify_product_tags_for_etoile_inven(etoile_inven.id, tags)
+        if not shopify_success:
+            # 207: DB saved but Shopify sync failed
+            return Response(
+                {"detail": "Tags saved to DB but Shopify sync failed.", "tags": tags},
+                status=207,
+            )
+
+        return Response(EtoileBookInfoSerializer(etoile_info).data)

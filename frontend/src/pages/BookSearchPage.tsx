@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useSearchParams, useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import {
   Table,
@@ -13,6 +13,7 @@ import { useBookSearch } from '@/features/book/hooks/useBookSearch'
 
 export function BookSearchPage() {
   const [searchParams] = useSearchParams()
+  const navigate = useNavigate()
   const query = searchParams.get('q') ?? ''
   const [page, setPage] = useState(1)
   useEffect(() => { setPage(1) }, [query])
@@ -79,7 +80,11 @@ export function BookSearchPage() {
             </TableHeader>
             <TableBody>
               {data.results.map((book) => (
-                <TableRow key={book.inven_SKU}>
+                <TableRow
+                  key={book.inven_SKU}
+                  className="cursor-pointer hover:bg-muted/50"
+                  onClick={() => navigate(`/books/${book.id}`)}
+                >
                   <TableCell className="font-mono text-sm">{book.inven_SKU}</TableCell>
                   <TableCell>{book.name}</TableCell>
                   <TableCell className="text-right">
