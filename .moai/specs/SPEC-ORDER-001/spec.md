@@ -1,7 +1,7 @@
 ---
 id: SPEC-ORDER-001
 title: Shopify 주문 동기화 및 목록 조회
-status: Approved
+status: completed
 created: 2026-06-20
 updated: 2026-06-20
 author: ggajo

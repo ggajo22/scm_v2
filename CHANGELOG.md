@@ -55,6 +55,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - null status nulls_last 정렬, 로딩 스켈레톤, 에러 처리
 - 9개 pytest 테스트
 
+#### SPEC-ORDER-001: Shopify 주문 동기화 및 목록 조회
+- 주문 동기화 엔드포인트 (`POST /api/orders/sync/`)
+  - Booksen·Etoile 두 스토어에서 status=open 주문 일괄 동기화
+  - Shopify Admin REST API v2024-10 cursor pagination (250건/페이지)
+  - per-store `transaction.atomic()` 격리 — 한 스토어 실패가 타 스토어에 무영향
+  - `update_or_create` upsert — 중복 동기화 안전, 신규/업데이트 건수 분리 응답
+- 주문 목록 엔드포인트 (`GET /api/orders/`)
+  - 50건/페이지 페이지네이션, shopify_created_at 최신순 정렬
+  - 필터: store_type, financial_status, fulfillment_status, date_from/date_to
+  - `has_refund` 실시간 계산 필드 (`prefetch_related("refunds")`, DB 컬럼 비정규화 없음)
+- 환불 "취소" 표기: `has_refund=true` OR `financial_status="refunded"` → 빨간색 "취소"
+- 7개 신규 DB 모델: Order, Customer, LineItem, ShippingLine, Refund, ShippingAddress, BillingAddress
+- React 주문관리 페이지 (`/orders`) — 필터 + 테이블 + 페이지네이션 + 동기화 버튼
+- 사이드바 "주문관리" 내비게이션 항목 추가
+- 29개 pytest 테스트 (모델 4 + Shopify 클라이언트 10 + 동기화 뷰 4 + 목록 뷰 11)
+
 ### Security
 
 - 모든 도서 수정 API에 JWT 인증 적용 (`IsAuthenticated`)
