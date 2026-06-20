@@ -1,7 +1,7 @@
 ---
 id: SPEC-INVEN-ADD-001
 title: ISBN 일괄 추가 기능
-status: Planned
+status: Completed
 created: 2026-06-20
 updated: 2026-06-20
 author: ggajo
@@ -125,5 +125,26 @@ When 페이지가 처음 로드될 때, the 시스템 shall 텍스트 영역과 
 ### 프론트엔드
 - `frontend/src/pages/AddIsbnPage.tsx` — 신규 페이지 컴포넌트 생성
 - `frontend/src/features/book/hooks/useAddIsbn.ts` — TanStack Query mutation 훅 추가
-- `frontend/src/App.tsx` — `/books/add-isbn` 라우트 등록
+- `frontend/src/router/index.tsx` — `/books/add-isbn` 라우트 등록 (SPEC에는 App.tsx로 기재되었으나 실제 라우터 파일 위치에 맞게 수정)
 - `frontend/src/features/book/BookLayout.tsx` — 네비게이션 링크 추가
+
+---
+
+## 구현 노트 (Implementation Notes)
+
+**구현 완료일**: 2026-06-20
+**커밋**: `7f2bff8` (master)
+
+### 계획 대비 변경사항
+
+- **라우터 파일**: SPEC에서 `App.tsx`로 명시했으나 프로젝트의 실제 라우팅 구조상 `frontend/src/router/index.tsx`에 등록. 기능 동일.
+- **훅 파일명**: `useBookMutations.ts`에 추가 예정이었으나 독립 파일 `useAddIsbn.ts`로 분리하여 관심사 분리 개선.
+
+### 미구현 항목
+
+- 없음 — 모든 REQ-IADD-001~REQ-IADD-020 구현 완료.
+
+### 후속 고려사항
+
+- `skus` 목록 최대 크기 제한 미적용 (내부 도구, JWT 필수로 DoS 위험 낮음)
+- 현재 별도 테스트 파일 없음 — 추후 `test_inven_sku_bulk_add.py` 작성 권장
