@@ -85,7 +85,7 @@ export function Sidebar() {
                 aria-expanded={bookGroupOpen}
                 className={cn(
                   'w-full flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium text-muted-foreground',
-                  'cursor-pointer hover:bg-muted hover:text-foreground transition-colors',
+                  'cursor-pointer hover:bg-gray-100 hover:text-gray-900 transition-colors',
                   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
                 )}
               >
@@ -109,7 +109,7 @@ export function Sidebar() {
                           className={cn(
                             // REQ-009: pl-9 indents sub-items relative to group header (pl-3)
                             'flex items-center rounded-md pl-9 pr-3 py-2 text-sm transition-colors',
-                            'hover:bg-muted hover:text-foreground',
+                            'hover:bg-gray-100 hover:text-gray-900',
                             'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                             isActive && 'bg-accent text-accent-foreground font-medium'
                           )}
@@ -132,7 +132,7 @@ export function Sidebar() {
                 aria-current={location.pathname === item.href ? 'page' : undefined}
                 className={cn(
                   'flex items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors',
-                  'hover:bg-muted hover:text-foreground',
+                  'hover:bg-gray-100 hover:text-gray-900',
                   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                   location.pathname === item.href && 'bg-accent text-accent-foreground font-medium'
                 )}
