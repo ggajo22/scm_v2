@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useSearchParams, useNavigate, useLocation, Outlet, Link } from 'react-router-dom'
+import { useSearchParams, useNavigate, useLocation, Outlet } from 'react-router-dom'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 
@@ -49,9 +49,6 @@ export function BookLayout() {
           <Button onClick={() => submit(inputValue, true)} aria-label="검색">
             검색
           </Button>
-          <Link to="/books/add-isbn">
-            <Button variant="outline" type="button">ISBN 추가</Button>
-          </Link>
         </div>
       </div>
       <Outlet context={{ query: searchParams.get('q') ?? '' } satisfies BookLayoutContext} />
