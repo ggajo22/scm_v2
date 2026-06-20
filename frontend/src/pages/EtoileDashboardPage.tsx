@@ -25,23 +25,10 @@ export function EtoileDashboardPage() {
     <div className="p-6 space-y-6">
       <h1 className="text-2xl font-bold">Etoile 현황</h1>
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        <MetricCard label="전체 Etoile 재고" value={data.total} />
-      </div>
-
       <section aria-label="Etoile 상태별 현황">
         <h2 className="text-lg font-semibold mb-2">상태별 현황</h2>
         <EtoileStatusTable rows={data.status_counts} />
       </section>
-    </div>
-  )
-}
-
-function MetricCard({ label, value }: { label: string; value: number }) {
-  return (
-    <div className="rounded-lg border bg-card p-4 text-card-foreground shadow-sm">
-      <p className="text-sm text-muted-foreground">{label}</p>
-      <p className="text-2xl font-bold mt-1">{value}</p>
     </div>
   )
 }
