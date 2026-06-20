@@ -1,8 +1,9 @@
 import re
+from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 
-from django.db.models import Count, Q
-from django.db.models.expressions import RawSQL
+from django.conf import settings
+from django.db.models import Count
 from django.utils import timezone
 from rest_framework import viewsets
 from rest_framework.permissions import IsAuthenticated
@@ -10,27 +11,14 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.authentication import JWTAuthentication
 
-_FT_SPECIAL = re.compile(r'[+\-><()~*"@]')
-
-
-def _sanitize_ft(q: str) -> str:
-    return _FT_SPECIAL.sub(' ', q).strip()
-
-
-def _build_ft_query(q: str) -> str:
-    """Require ALL whitespace-separated terms (BOOLEAN MODE AND semantics)."""
-    sanitized = _sanitize_ft(q)
-    if not sanitized:
-        return ''
-    return ' '.join(f'+{term}' for term in sanitized.split())
-
-
+from book import shopify_client
 from book.constants import ERROR_STATUSES, LISTED_STATUSES, STATUS_LABELS, WAITING_STATUSES
 from book.models import (
     BookNote,
     Booksen_category,
     EtoileBookInfo,
     EtoileBookInven,
+    EtoileShopifyProduct,
     Info,
     Inven,
     Shopify_product,
@@ -46,6 +34,20 @@ from book.serializers import (
     InfoUpdateSerializer,
     ShopifyProductSerializer,
 )
+
+_FT_SPECIAL = re.compile(r'[+\-><()~*"@]')
+
+
+def _sanitize_ft(q: str) -> str:
+    return _FT_SPECIAL.sub(' ', q).strip()
+
+
+def _build_ft_query(q: str) -> str:
+    """Require ALL whitespace-separated terms (BOOLEAN MODE AND semantics)."""
+    sanitized = _sanitize_ft(q)
+    if not sanitized:
+        return ''
+    return ' '.join(f'+{term}' for term in sanitized.split())
 
 
 # @MX:ANCHOR: [AUTO] BookListViewSet.list — search endpoint for book inventory
@@ -189,7 +191,9 @@ class BooksenCategoryListView(APIView):
         qs = Booksen_category.objects.filter(top_category_code=top_code)
         if top_code == 0:
             qs = qs.filter(category_rank=1)
-        categories = qs.order_by("category_code").values("category_code", "category_name", "category_rank")
+        categories = qs.order_by("category_code").values(
+            "category_code", "category_name", "category_rank"
+        )
         return Response(list(categories))
 
 
@@ -214,7 +218,9 @@ class BookRetrieveView(APIView):
 
         # Notes: all unresolved + 10 most recent resolved (REQ-BKEDIT-005)
         unresolved_notes = BookNote.objects.filter(inven=inven, is_resolved=False)
-        resolved_notes = BookNote.objects.filter(inven=inven, is_resolved=True).order_by("-resolved_at")[:10]
+        resolved_notes = (
+            BookNote.objects.filter(inven=inven, is_resolved=True).order_by("-resolved_at")[:10]
+        )
 
         # Combine and serialize in chronological order
         notes_qs = list(unresolved_notes) + list(resolved_notes)
@@ -238,7 +244,9 @@ class BookRetrieveView(APIView):
             etoile_data = {
                 "inven": dict(etoile_inven_data),
                 "info": etoile_info_data,
-                "shopify_products": EtoileShopifyProductSerializer(etoile_shopify_products, many=True).data,
+                "shopify_products": EtoileShopifyProductSerializer(
+                    etoile_shopify_products, many=True
+                ).data,
             }
         except EtoileBookInven.DoesNotExist:
             etoile_data = None
@@ -349,7 +357,7 @@ class BookShopifyStatusView(APIView):
     authentication_classes = [JWTAuthentication]
     permission_classes = [IsAuthenticated]
 
-    # @MX:WARN: [AUTO] patch — Shopify API call with external dependency and status_of_shopify mutation
+    # @MX:WARN: [AUTO] patch — Shopify API call; mutates status_of_shopify + external API
     # @MX:REASON: REQ-BKEDIT-016/017/018 require conditional DB update and external API call
     def patch(self, request, pk):
         from book import services
@@ -460,3 +468,95 @@ class EtoileTagsView(APIView):
             )
 
         return Response(EtoileBookInfoSerializer(etoile_info).data)
+
+
+# @MX:ANCHOR: [AUTO] ShopifyLiveInfoView.get — real-time Shopify product info entry point
+# @MX:REASON: SPEC-SHOPIFY-INFO-001 REQ-SHPINFO-001; called on every BookDetailPage load
+# for both Booksen and Etoile stores simultaneously
+class ShopifyLiveInfoView(APIView):
+    """
+    GET /api/book/{pk}/shopify-live-info/
+    Returns real-time Shopify product info for Booksen and Etoile stores.
+    SPEC-SHOPIFY-INFO-001: REQ-SHPINFO-001 through REQ-SHPINFO-014
+    """
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        try:
+            inven = Inven.objects.get(pk=pk)
+        except Inven.DoesNotExist:
+            return Response({"detail": "Not found."}, status=404)
+
+        # Booksen: Inven → Shopify_product (first match)
+        booksen_product = Shopify_product.objects.filter(inven=inven).first()
+
+        # Etoile: Inven → EtoileBookInven → EtoileShopifyProduct
+        etoile_sp = None
+        try:
+            etoile_inven = inven.etoile_inven
+            etoile_sp = EtoileShopifyProduct.objects.filter(etoile_inven=etoile_inven).first()
+        except EtoileBookInven.DoesNotExist:
+            pass
+
+        booksen_domain = settings.SHOPIFY_BOOKSEN_DOMAIN
+        booksen_token = settings.SHOPIFY_BOOKSEN_TOKEN
+        etoile_domain = settings.SHOPIFY_ETOILE_DOMAIN
+        etoile_token = settings.SHOPIFY_ETOILE_TOKEN
+
+        def get_booksen() -> dict:
+            if not booksen_product:
+                return {
+                    "registered": False,
+                    "product_id": None,
+                    "variant_id": None,
+                    "status": None,
+                    "weight": None,
+                    "weight_unit": None,
+                    "error": None,
+                }
+            info = shopify_client.fetch_store_live_info(
+                booksen_domain,
+                booksen_token,
+                booksen_product.product_id,
+                booksen_product.variant_id,
+            )
+            return {
+                "registered": True,
+                "product_id": booksen_product.product_id,
+                "variant_id": booksen_product.variant_id,
+                **info,
+            }
+
+        def get_etoile() -> dict:
+            if not etoile_sp:
+                return {
+                    "registered": False,
+                    "product_id": None,
+                    "variant_id": None,
+                    "status": None,
+                    "weight": None,
+                    "weight_unit": None,
+                    "error": None,
+                }
+            info = shopify_client.fetch_store_live_info(
+                etoile_domain,
+                etoile_token,
+                etoile_sp.product_id,
+                etoile_sp.variant_id,
+            )
+            return {
+                "registered": True,
+                "product_id": etoile_sp.product_id,
+                "variant_id": etoile_sp.variant_id,
+                **info,
+            }
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            f_booksen = executor.submit(get_booksen)
+            f_etoile = executor.submit(get_etoile)
+            booksen_data = f_booksen.result()
+            etoile_data = f_etoile.result()
+
+        return Response({"booksen": booksen_data, "etoile": etoile_data})

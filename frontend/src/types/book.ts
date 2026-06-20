@@ -125,3 +125,19 @@ export interface PaginatedResponse<T> {
   previous: string | null
   results: T[]
 }
+
+// SPEC-SHOPIFY-INFO-001: real-time Shopify product info types
+export interface ShopifyStoreInfo {
+  registered: boolean
+  product_id: string | null
+  variant_id: string | null
+  status: 'active' | 'draft' | 'archived' | null
+  weight: number | null
+  weight_unit: 'g' | 'kg' | 'lb' | 'oz' | null
+  error: string | null
+}
+
+export interface ShopifyLiveInfoResponse {
+  booksen: ShopifyStoreInfo
+  etoile: ShopifyStoreInfo
+}

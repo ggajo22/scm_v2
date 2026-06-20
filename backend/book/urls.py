@@ -6,16 +6,21 @@ from book.views import (
     BookNoteCreateView,
     BookNoteResolveView,
     BookRetrieveView,
-    BookShopifyStatusView,
     BooksenCategoryListView,
+    BookShopifyStatusView,
     DashboardMetricsView,
     EtoileShopifyStatusView,
     EtoileTagsView,
+    ShopifyLiveInfoView,
 )
 
 urlpatterns = [
     path("book/dashboard/metrics/", DashboardMetricsView.as_view(), name="book-dashboard-metrics"),
-    path("book/booksen-categories/", BooksenCategoryListView.as_view(), name="book-booksen-categories"),
+    path(
+        "book/booksen-categories/",
+        BooksenCategoryListView.as_view(),
+        name="book-booksen-categories",
+    ),
     # REQ-SEARCH-001: book search endpoint
     path(
         "book/search/",
@@ -28,7 +33,21 @@ urlpatterns = [
     path("book/<int:pk>/", BookRetrieveView.as_view(), name="book-detail"),
     path("book/<int:pk>/info/", BookInfoUpdateView.as_view(), name="book-info-update"),
     path("book/<int:pk>/notes/", BookNoteCreateView.as_view(), name="book-note-create"),
-    path("book/<int:pk>/shopify-status/", BookShopifyStatusView.as_view(), name="book-shopify-status"),
-    path("book/<int:pk>/etoile-shopify-status/", EtoileShopifyStatusView.as_view(), name="book-etoile-shopify-status"),
+    path(
+        "book/<int:pk>/shopify-status/",
+        BookShopifyStatusView.as_view(),
+        name="book-shopify-status",
+    ),
+    path(
+        "book/<int:pk>/etoile-shopify-status/",
+        EtoileShopifyStatusView.as_view(),
+        name="book-etoile-shopify-status",
+    ),
     path("book/<int:pk>/etoile-tags/", EtoileTagsView.as_view(), name="book-etoile-tags"),
+    # SPEC-SHOPIFY-INFO-001: real-time Shopify product info
+    path(
+        "book/<int:pk>/shopify-live-info/",
+        ShopifyLiveInfoView.as_view(),
+        name="book-shopify-live-info",
+    ),
 ]

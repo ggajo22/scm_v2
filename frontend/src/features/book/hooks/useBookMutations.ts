@@ -68,10 +68,11 @@ export function useUpdateShopifyStatus(bookId: number) {
     },
     onSuccess: (_data, action) => {
       queryClient.invalidateQueries({ queryKey: ['book', 'detail', bookId] })
-      toast.success(`Shopify 상태가 ${action === 'active' ? '활성' : '드래프트'}로 변경되었습니다.`)
+      queryClient.invalidateQueries({ queryKey: ['book', 'shopify-live-info', bookId] })
+      toast.success(`GIMSSINE 상태가 ${action === 'active' ? 'Active' : 'Draft'}로 변경되었습니다.`)
     },
     onError: () => {
-      toast.error('Shopify 상태 변경에 실패했습니다.')
+      toast.error('GIMSSINE 상태 변경에 실패했습니다.')
     },
   })
 }
@@ -85,10 +86,11 @@ export function useUpdateEtoileShopifyStatus(bookId: number) {
     },
     onSuccess: (_data, action) => {
       queryClient.invalidateQueries({ queryKey: ['book', 'detail', bookId] })
-      toast.success(`에투알 Shopify 상태가 ${action === 'active' ? '활성' : '드래프트'}로 변경되었습니다.`)
+      queryClient.invalidateQueries({ queryKey: ['book', 'shopify-live-info', bookId] })
+      toast.success(`Etoile 상태가 ${action === 'active' ? 'Active' : 'Draft'}로 변경되었습니다.`)
     },
     onError: () => {
-      toast.error('에투알 Shopify 상태 변경에 실패했습니다.')
+      toast.error('Etoile 상태 변경에 실패했습니다.')
     },
   })
 }

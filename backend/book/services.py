@@ -3,7 +3,6 @@ Shopify API service layer for book inventory management.
 SPEC-BOOK-EDIT-001: REQ-BKEDIT-020 through REQ-BKEDIT-025
 """
 import json
-import os
 import urllib.error
 import urllib.request
 
@@ -27,18 +26,17 @@ def fetch_shopify_product_by_etoile_inven_id(etoile_inven_id: int):
 def set_shopify_product_status_for_inven(inven_id: int, status: str) -> bool:
     """
     Call Shopify API to set the product status for the Shopify product linked to inven_id.
-
+    PUT https://{domain}/admin/api/{version}/products/{product_id}.json
     Returns True on success, False on failure (missing config or API error).
-
-    TODO: Replace stub with real Shopify REST API call:
-        PUT https://{shop}.myshopify.com/admin/api/2024-01/products/{product_id}.json
-        Body: {"product": {"id": product_id, "status": status}}
-        Headers: X-Shopify-Access-Token
     """
-    store_url = os.environ.get("SHOPIFY_STORE_URL", "")
-    access_token = os.environ.get("SHOPIFY_ACCESS_TOKEN", "")
+    from django.conf import settings
 
-    if not store_url or not access_token:
+    from book.shopify_client import SHOPIFY_API_VERSION
+
+    domain = settings.SHOPIFY_BOOKSEN_DOMAIN
+    token = settings.SHOPIFY_BOOKSEN_TOKEN
+
+    if not domain or not token:
         return False
 
     product = fetch_shopify_product_for_inven(inven_id)
@@ -46,13 +44,13 @@ def set_shopify_product_status_for_inven(inven_id: int, status: str) -> bool:
         return False
 
     try:
-        url = f"{store_url}/admin/api/2024-01/products/{product.product_id}.json"
+        url = f"https://{domain}/admin/api/{SHOPIFY_API_VERSION}/products/{product.product_id}.json"
         body = json.dumps({"product": {"id": product.product_id, "status": status}}).encode()
         req = urllib.request.Request(
             url,
             data=body,
             headers={
-                "X-Shopify-Access-Token": access_token,
+                "X-Shopify-Access-Token": token,
                 "Content-Type": "application/json",
             },
             method="PUT",
@@ -66,15 +64,17 @@ def set_shopify_product_status_for_inven(inven_id: int, status: str) -> bool:
 def set_shopify_product_status_for_etoile_inven(etoile_inven_id: int, status: str) -> bool:
     """
     Call Shopify API to set the product status for the EtoileShopifyProduct.
-
+    PUT https://{domain}/admin/api/{version}/products/{product_id}.json
     Returns True on success, False on failure (missing config or API error).
-
-    TODO: Replace stub with real Shopify REST API call (same pattern as above).
     """
-    store_url = os.environ.get("SHOPIFY_STORE_URL", "")
-    access_token = os.environ.get("SHOPIFY_ACCESS_TOKEN", "")
+    from django.conf import settings
 
-    if not store_url or not access_token:
+    from book.shopify_client import SHOPIFY_API_VERSION
+
+    domain = settings.SHOPIFY_ETOILE_DOMAIN
+    token = settings.SHOPIFY_ETOILE_TOKEN
+
+    if not domain or not token:
         return False
 
     product = fetch_shopify_product_by_etoile_inven_id(etoile_inven_id)
@@ -82,13 +82,13 @@ def set_shopify_product_status_for_etoile_inven(etoile_inven_id: int, status: st
         return False
 
     try:
-        url = f"{store_url}/admin/api/2024-01/products/{product.product_id}.json"
+        url = f"https://{domain}/admin/api/{SHOPIFY_API_VERSION}/products/{product.product_id}.json"
         body = json.dumps({"product": {"id": product.product_id, "status": status}}).encode()
         req = urllib.request.Request(
             url,
             data=body,
             headers={
-                "X-Shopify-Access-Token": access_token,
+                "X-Shopify-Access-Token": token,
                 "Content-Type": "application/json",
             },
             method="PUT",
@@ -102,17 +102,17 @@ def set_shopify_product_status_for_etoile_inven(etoile_inven_id: int, status: st
 def set_shopify_product_tags_for_etoile_inven(etoile_inven_id: int, tags: list) -> bool:
     """
     Sync tags to Shopify for the EtoileShopifyProduct.
-
+    PUT /admin/api/{version}/products/{product_id}.json
     Returns True on success, False on failure (missing config or API error).
-
-    TODO: Replace stub with real Shopify REST API call:
-        PUT /admin/api/2024-01/products/{product_id}.json
-        Body: {"product": {"id": product_id, "tags": ",".join(tags)}}
     """
-    store_url = os.environ.get("SHOPIFY_STORE_URL", "")
-    access_token = os.environ.get("SHOPIFY_ACCESS_TOKEN", "")
+    from django.conf import settings
 
-    if not store_url or not access_token:
+    from book.shopify_client import SHOPIFY_API_VERSION
+
+    domain = settings.SHOPIFY_ETOILE_DOMAIN
+    token = settings.SHOPIFY_ETOILE_TOKEN
+
+    if not domain or not token:
         return False
 
     product = fetch_shopify_product_by_etoile_inven_id(etoile_inven_id)
@@ -120,13 +120,13 @@ def set_shopify_product_tags_for_etoile_inven(etoile_inven_id: int, tags: list) 
         return False
 
     try:
-        url = f"{store_url}/admin/api/2024-01/products/{product.product_id}.json"
+        url = f"https://{domain}/admin/api/{SHOPIFY_API_VERSION}/products/{product.product_id}.json"
         body = json.dumps({"product": {"id": product.product_id, "tags": ",".join(tags)}}).encode()
         req = urllib.request.Request(
             url,
             data=body,
             headers={
-                "X-Shopify-Access-Token": access_token,
+                "X-Shopify-Access-Token": token,
                 "Content-Type": "application/json",
             },
             method="PUT",

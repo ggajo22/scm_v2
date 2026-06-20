@@ -15,6 +15,7 @@ import {
 import { cn } from '@/lib/utils'
 import { api } from '@/lib/axios'
 import { useBookDetail } from '@/features/book/hooks/useBookDetail'
+import { useShopifyLiveInfo } from '@/features/book/hooks/useShopifyLiveInfo'
 import {
   useUpdateBookInfo,
   useAddNote,
@@ -23,7 +24,7 @@ import {
   useUpdateEtoileShopifyStatus,
   useUpdateEtoileTags,
 } from '@/features/book/hooks/useBookMutations'
-import type { BookInfo, BookNote } from '@/types/book'
+import type { BookInfo, BookNote, ShopifyStoreInfo } from '@/types/book'
 
 // ---------------------------------------------------------------------------
 // Small presentational helpers
@@ -60,12 +61,6 @@ function LoadingSkeleton() {
       ))}
     </div>
   )
-}
-
-function shopifyStatusLabel(status: number | null | undefined): string {
-  if (status === 1) return '활성'
-  if (status === 0) return '드래프트'
-  return '없음'
 }
 
 // ---------------------------------------------------------------------------
@@ -682,124 +677,154 @@ function NotesSection({ notes, bookId }: { notes: BookNote[]; bookId: number }) 
 // Section: Shopify 상태
 // ---------------------------------------------------------------------------
 
-function ShopifyStatusSection({
-  status,
-  bookId,
-}: {
-  status: number
-  bookId: number
-}) {
-  const mutation = useUpdateShopifyStatus(bookId)
+
+// ---------------------------------------------------------------------------
+// Section: Shopify 실시간 정보 (SPEC-SHOPIFY-INFO-001)
+// ---------------------------------------------------------------------------
+
+function ShopifyStoreBadge({ info }: { info: ShopifyStoreInfo }) {
+  if (!info.registered) {
+    return (
+      <Badge variant="secondary" className="bg-gray-100 text-gray-500">
+        미등록
+      </Badge>
+    )
+  }
+
+  const statusClass =
+    info.status === 'active'
+      ? 'bg-green-100 text-green-800'
+      : info.status === 'draft'
+        ? 'bg-amber-100 text-amber-800'
+        : 'bg-gray-100 text-gray-600'
+
+  const statusLabel =
+    info.status === 'active' ? 'Active' : info.status === 'draft' ? 'Draft' : info.status ?? '-'
 
   return (
-    <SectionCard title="Shopify 상태">
-      <div className="flex items-center gap-4">
-        <span className="text-sm text-muted-foreground">현재 상태:</span>
-        <Badge variant={status === 1 ? 'default' : 'secondary'}>
-          {shopifyStatusLabel(status)}
-        </Badge>
-      </div>
-      <div className="flex gap-2">
-        <Button
-          variant="default"
-          onClick={() => mutation.mutate('active')}
-          disabled={mutation.isPending}
-        >
-          활성
-        </Button>
-        <Button
-          variant="outline"
-          onClick={() => mutation.mutate('draft')}
-          disabled={mutation.isPending}
-        >
-          드래프트
-        </Button>
-      </div>
-    </SectionCard>
+    <span
+      className={cn(
+        'inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium',
+        statusClass,
+      )}
+    >
+      {statusLabel}
+    </span>
   )
 }
 
-// ---------------------------------------------------------------------------
-// Section: 에투알
-// ---------------------------------------------------------------------------
-
-function EtoileSection({
-  etoile,
+function ShopifyLiveInfoSection({
   bookId,
+  etoileInfo,
 }: {
-  etoile: NonNullable<import('@/types/book').BookDetail['etoile']>
   bookId: number
+  etoileInfo: import('@/types/book').EtoileInfo | null | undefined
 }) {
-  const statusMutation = useUpdateEtoileShopifyStatus(bookId)
+  const { data, isPending, isError } = useShopifyLiveInfo(bookId)
+  const booksenMutation = useUpdateShopifyStatus(bookId)
+  const etoileMutation = useUpdateEtoileShopifyStatus(bookId)
   const tagsMutation = useUpdateEtoileTags(bookId)
 
-  const initialTags = etoile.info?.tags ?? []
-  const [tagsInput, setTagsInput] = useState(initialTags.join(', '))
-
+  const [tagsInput, setTagsInput] = useState(etoileInfo?.tags.join(', ') ?? '')
   useEffect(() => {
-    setTagsInput(etoile.info?.tags.join(', ') ?? '')
-  }, [etoile.info?.tags])
+    setTagsInput(etoileInfo?.tags.join(', ') ?? '')
+  }, [etoileInfo?.tags])
 
-  const handleSaveTags = () => {
-    const tags = tagsInput
-      .split(',')
-      .map((t) => t.trim())
-      .filter(Boolean)
-    tagsMutation.mutate(tags)
+  if (isPending) {
+    return (
+      <SectionCard title="Shopify 실시간 정보">
+        <div className="space-y-2">
+          <div className="h-5 w-48 bg-muted animate-pulse rounded" />
+          <div className="h-5 w-48 bg-muted animate-pulse rounded" />
+        </div>
+      </SectionCard>
+    )
   }
 
-  return (
-    <SectionCard title="에투알 (Etoile)">
-      <div className="space-y-4">
-        {/* Shopify status */}
-        <div>
-          <p className="text-sm font-medium mb-2">에투알 Shopify 상태</p>
-          <div className="flex items-center gap-4">
-            <Badge variant={etoile.inven.status_of_shopify === 1 ? 'default' : 'secondary'}>
-              {shopifyStatusLabel(etoile.inven.status_of_shopify)}
-            </Badge>
-          </div>
-          <div className="flex gap-2 mt-3">
-            <Button
-              variant="default"
-              size="sm"
-              onClick={() => statusMutation.mutate('active')}
-              disabled={statusMutation.isPending}
-            >
-              활성
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => statusMutation.mutate('draft')}
-              disabled={statusMutation.isPending}
-            >
-              드래프트
-            </Button>
-          </div>
-        </div>
+  if (isError || !data) {
+    return (
+      <SectionCard title="Shopify 실시간 정보">
+        <p className="text-sm text-muted-foreground">실시간 정보를 불러올 수 없습니다.</p>
+      </SectionCard>
+    )
+  }
 
-        {/* Tags */}
-        {etoile.info && (
-          <div className="border-t pt-4">
-            <p className="text-sm font-medium mb-2">태그 (쉼표로 구분)</p>
-            <div className="flex gap-2">
-              <Input
-                value={tagsInput}
-                onChange={(e) => setTagsInput(e.target.value)}
-                placeholder="tag1, tag2, tag3"
-                className="flex-1"
-              />
-              <Button
-                onClick={handleSaveTags}
-                disabled={tagsMutation.isPending}
-                size="sm"
-              >
-                {tagsMutation.isPending ? '저장 중...' : '저장'}
-              </Button>
+  const stores: Array<{
+    label: string
+    info: ShopifyStoreInfo
+    mutation: ReturnType<typeof useUpdateShopifyStatus>
+    showTags?: boolean
+  }> = [
+    { label: 'GIMSSINE', info: data.booksen, mutation: booksenMutation },
+    ...(data.etoile.registered
+      ? [{ label: 'ETOILE', info: data.etoile, mutation: etoileMutation, showTags: !!etoileInfo }]
+      : []),
+  ]
+
+  return (
+    <SectionCard title="Shopify 실시간 정보">
+      <div className="space-y-4">
+        {stores.map(({ label, info, mutation, showTags }) => (
+          <div key={label} className="space-y-1.5">
+            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+              {label}
+            </p>
+            <div className="flex items-center gap-3 flex-wrap">
+              <ShopifyStoreBadge info={info} />
+              {info.registered && (
+                <span className="text-sm text-muted-foreground">
+                  {info.weight != null
+                    ? `${info.weight} ${info.weight_unit ?? ''}`
+                    : '중량 없음'}
+                </span>
+              )}
+              {info.registered && (
+                <div className="ml-auto flex gap-2">
+                  <Button
+                    variant="default"
+                    size="sm"
+                    onClick={() => mutation.mutate('active')}
+                    disabled={mutation.isPending}
+                  >
+                    Active로 변경
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => mutation.mutate('draft')}
+                    disabled={mutation.isPending}
+                  >
+                    Draft로 변경
+                  </Button>
+                </div>
+              )}
             </div>
+            {info.error && (
+              <p className="text-xs text-destructive">{info.error}</p>
+            )}
+            {showTags && (
+              <div className="flex gap-2 pt-1">
+                <Input
+                  value={tagsInput}
+                  onChange={(e) => setTagsInput(e.target.value)}
+                  placeholder="tag1, tag2, tag3"
+                  className="flex-1 h-8 text-sm"
+                />
+                <Button
+                  size="sm"
+                  onClick={() =>
+                    tagsMutation.mutate(
+                      tagsInput.split(',').map((t) => t.trim()).filter(Boolean),
+                    )
+                  }
+                  disabled={tagsMutation.isPending}
+                >
+                  {tagsMutation.isPending ? '저장 중...' : '태그 저장'}
+                </Button>
+              </div>
+            )}
           </div>
-        )}
+        ))}
       </div>
     </SectionCard>
   )
@@ -865,8 +890,7 @@ export function BookDetailPage() {
               <BasicInfoSection info={data.info} bookId={data.id} />
             </div>
             <div className="space-y-6">
-              <ShopifyStatusSection status={data.status_of_shopify} bookId={data.id} />
-              {data.etoile && <EtoileSection etoile={data.etoile} bookId={data.id} />}
+              <ShopifyLiveInfoSection bookId={data.id} etoileInfo={data.etoile?.info ?? null} />
               <WeightSection info={data.info} bookId={data.id} />
               <NotesSection notes={data.notes} bookId={data.id} />
             </div>
