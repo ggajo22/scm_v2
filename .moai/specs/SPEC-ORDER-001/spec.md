@@ -83,7 +83,7 @@ The 시스템 **shall** 기존 `backend/book/shopify_client.py`의 `_get(domain,
 ### 주문 데이터 저장
 
 **REQ-ORD-020** (Ubiquitous)
-The 시스템 **shall** 각 주문에 대해 `Order`, `Customer`, `ShippingAddress`, `BillingAddress`, `LineItem`, `ShippingLine` 모델에 관련 필드를 모두 저장한다.
+The 시스템 **shall** 각 주문에 대해 `Order`, `Customer`, `ShippingAddress`, `BillingAddress`, `LineItem`, `ShippingLine`, `Refund` 모델에 관련 필드를 모두 저장한다.
 
 **REQ-ORD-021** (Ubiquitous)
 The `Order` 모델 **shall** 다음 필드를 포함한다: `shopify_order_id`, `order_number`, `name`, `email`, `phone`, `financial_status`, `fulfillment_status`, `status`, `created_at`, `updated_at`, `closed_at`, `cancelled_at`, `processed_at`, `total_price`, `subtotal_price`, `total_tax`, `total_discounts`, `total_shipping_price_set`, `currency`, `gateway`, `note`, `tags`, `cancel_reason`, `source_name`, `store_type`.
@@ -102,6 +102,15 @@ The `ShippingLine` 모델 **shall** 다음 필드를 포함한다: `shopify_ship
 
 **REQ-ORD-026** (Ubiquitous)
 The `store_type` 필드 **shall** `"booksen"` 또는 `"etoile"` 값만 허용하며, 어느 스토어에서 수집한 주문인지를 식별한다.
+
+**REQ-ORD-027** (Ubiquitous)
+The `Refund` 모델 **shall** 다음 필드를 포함한다: `shopify_refund_id`, `created_at`, `note`, 그리고 환불 라인아이템(`refund_line_items`)의 `line_item_id`, `quantity`, `subtotal`, `total_tax`.
+
+**REQ-ORD-028** (Event-Driven)
+**When** 동기화 시 주문에 `refunds` 배열이 존재하면, the 시스템 **shall** 해당 환불 데이터를 `Refund` 모델에 upsert한다.
+
+**REQ-ORD-029** (Ubiquitous)
+The `GET /api/orders/` 목록 응답의 각 주문 **shall** `has_refund` 불리언 필드를 포함하며, 연결된 `Refund` 레코드가 하나 이상 존재할 경우 `true`를 반환한다.
 
 ---
 
@@ -149,6 +158,9 @@ The 주문 목록 **shall** 페이지네이션 컨트롤을 제공하며, 현재
 
 **REQ-ORD-048** (State-Driven)
 **While** 주문 목록 데이터를 로딩 중인 경우, the 테이블 **shall** 로딩 스켈레톤 또는 스피너를 표시한다.
+
+**REQ-ORD-049** (Ubiquitous)
+The 주문 목록 테이블의 결제상태 컬럼 **shall** `has_refund`가 `true`이거나 `financial_status`가 `"refunded"`인 주문을 **"취소"** 레이블로 표시한다. 다른 `financial_status` 값은 원래 값을 그대로 표시하되, 필요 시 한국어 레이블로 매핑할 수 있다.
 
 ---
 
@@ -302,6 +314,29 @@ class ShippingLine(models.Model):
     class Meta:
         unique_together = [("order", "shopify_shipping_line_id")]
 ```
+
+### Refund 모델
+
+```python
+class Refund(models.Model):
+    order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name="refunds")
+    shopify_refund_id = models.BigIntegerField()
+    note = models.TextField(null=True, blank=True)
+    shopify_created_at = models.DateTimeField(null=True, blank=True)
+
+    # refund_line_items 중첩 데이터 (환불 대상 라인아이템)
+    line_item_id = models.BigIntegerField(null=True, blank=True)
+    quantity = models.IntegerField(null=True, blank=True)
+    subtotal = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    total_tax = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = [("order", "shopify_refund_id")]
+```
+
+> **참고**: `has_refund` 필드는 `Order` 모델에 직접 추가하지 않고, 직렬화 시 `Refund.objects.filter(order=self).exists()`로 산출한다. 불필요한 역정규화를 방지한다.
 
 ---
 
@@ -462,9 +497,10 @@ Authorization: Bearer <access_token>
 
 ### 데이터 완전성
 
-- [ ] `Order`, `Customer`, `ShippingAddress`, `BillingAddress`, `LineItem`, `ShippingLine` 6개 모델이 마이그레이션으로 생성됨
-- [ ] Shopify API 응답의 `customer`, `shipping_address`, `billing_address`, `line_items`, `shipping_lines` 중첩 데이터가 각 관련 테이블에 저장됨
+- [ ] `Order`, `Customer`, `ShippingAddress`, `BillingAddress`, `LineItem`, `ShippingLine`, `Refund` 7개 모델이 마이그레이션으로 생성됨
+- [ ] Shopify API 응답의 `customer`, `shipping_address`, `billing_address`, `line_items`, `shipping_lines`, `refunds` 중첩 데이터가 각 관련 테이블에 저장됨
 - [ ] `store_type` 필드가 `"booksen"` 또는 `"etoile"` 값으로 올바르게 설정됨
+- [ ] 환불 내역이 있는 주문의 `has_refund`가 `true`로 반환됨
 
 ### 프론트엔드
 
@@ -478,3 +514,4 @@ Authorization: Bearer <access_token>
 - [ ] 페이지네이션 컨트롤로 페이지 이동이 가능함
 - [ ] 데이터 로딩 중 스켈레톤 또는 스피너가 표시됨
 - [ ] JWT 미인증 상태에서 `/orders` 접근 시 로그인 페이지로 리디렉션됨
+- [ ] `has_refund=true` 또는 `financial_status="refunded"` 주문의 결제상태 컬럼에 "취소" 레이블이 표시됨
