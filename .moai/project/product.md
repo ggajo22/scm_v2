@@ -60,7 +60,6 @@ Shopify 연동 도서 재고 및 주문 관리 관리자 애플리케이션
 - **상태별 집계 API** — `GET /api/book/etoile/dashboard/` — `EtoileBookInven.status_of_shopify` 기준 그룹별 건수 반환
 - **레이블 매핑** — `-1: gimssine 등록 대기 / 0: 리스팅 준비 / 12: 리스팅 제외 - 컨셉 / 80: 리스팅 완료 / 미정의: 정의되지 않은 상태 / null: 상태 없음`
 - **null 정렬** — `status_of_shopify IS NULL` 레코드는 테이블 맨 아래 배치 (`nulls_last`)
-- **전체 건수 카드** — Etoile 전체 재고 합계 MetricCard 표시
 - **상태별 현황 테이블** — 상태값 / 레이블 / 건수 3컬럼 테이블
 - **로딩/에러 상태** — 스켈레톤 애니메이션 + 에러 메시지 처리
 - 9개 pytest 테스트 (인증, 집계 정확성, 레이블 매핑, null 처리 등)

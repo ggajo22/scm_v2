@@ -51,7 +51,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### SPEC-ETOILE-DASHBOARD-001: Etoile 재고 현황 대시보드
 - Etoile 현황 집계 엔드포인트 (`GET /api/book/etoile/dashboard/`)
 - status_of_shopify 기준 그룹별 건수 + 레이블 매핑 + null 처리
-- React 페이지 `/books/etoile`: 전체 건수 카드 + 상태별 현황 테이블
+- React 페이지 `/books/etoile`: 상태별 현황 테이블
 - null status nulls_last 정렬, 로딩 스켈레톤, 에러 처리
 - 9개 pytest 테스트
 
