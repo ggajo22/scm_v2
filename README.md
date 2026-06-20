@@ -11,8 +11,12 @@ Shopify 연동 도서 재고 및 주문 관리 관리자 애플리케이션. 관
 | 관리자 인증 (JWT) | ✅ 구현 완료 (SPEC-AUTH-001) |
 | 역할 기반 접근 제어 (RBAC) | ✅ 구현 완료 (SPEC-AUTH-001) |
 | 관리자 계정 관리 API | ✅ 구현 완료 (SPEC-AUTH-001) |
-| Shopify 주문 동기화 | 🔜 예정 |
-| 도서 리스팅 관리 | 🔜 예정 |
+| 도서 검색 (ISBN + 제목) | ✅ 구현 완료 (SPEC-BOOK-SEARCH-001) |
+| 도서 정보 수정 | ✅ 구현 완료 (SPEC-BOOK-EDIT-001) |
+| 사이드바 내비게이션 | ✅ 구현 완료 (SPEC-NAV-SIDEBAR-001) |
+| ISBN 일괄 추가 | ✅ 구현 완료 (SPEC-INVEN-ADD-001) |
+| 빠른 리스팅 추가 | ✅ 구현 완료 (SPEC-FAST-LISTING-ADD-001) |
+| Etoile 재고 현황 대시보드 | ✅ 구현 완료 (SPEC-ETOILE-DASHBOARD-001) |
 
 ---
 
@@ -77,6 +81,38 @@ cd backend
 python manage.py runserver
 ```
 
+## 프론트엔드 설정
+
+### 설치
+
+```bash
+cd frontend
+npm install
+```
+
+### 개발 서버 실행
+
+```bash
+cd frontend
+npm run dev
+```
+
+개발 서버가 `http://localhost:5173`에서 실행됩니다.
+
+### 빌드
+
+```bash
+cd frontend
+npm run build
+```
+
+### 테스트
+
+```bash
+cd frontend
+npx vitest run
+```
+
 ---
 
 ## API 엔드포인트
@@ -90,6 +126,22 @@ python manage.py runserver
 | POST | `/api/auth/login/` | 관리자 로그인 (Access + Refresh Token 발급) | ❌ |
 | POST | `/api/auth/logout/` | 로그아웃 (Refresh Token 블랙리스트 처리) | ✅ |
 | POST | `/api/auth/token/refresh/` | Access Token 갱신 | ❌ |
+
+### 도서 관리 (Book Management)
+
+| 메서드 | 경로 | 설명 | 인증 필요 |
+|--------|------|------|-----------|
+| GET | `/api/book/search/` | 도서 검색 (ISBN 또는 제목) | ✅ |
+| GET | `/api/book/{id}/` | 도서 상세 조회 (통합 정보) | ✅ |
+| PATCH | `/api/book/{id}/info/` | 도서 기본 정보 수정 | ✅ |
+| POST | `/api/book/{id}/notes/` | 노트 생성 | ✅ |
+| PATCH | `/api/book/notes/{note_id}/resolve/` | 노트 완료 처리 | ✅ |
+| PATCH | `/api/book/{id}/shopify-status/` | 본관 Shopify 상태 변경 | ✅ |
+| PATCH | `/api/book/{id}/etoile-shopify-status/` | Etoile Shopify 상태 변경 | ✅ |
+| PATCH | `/api/book/{id}/etoile-tags/` | Etoile 태그 관리 | ✅ |
+| POST | `/api/book/inven-skus/` | ISBN 일괄 추가 | ✅ |
+| POST | `/api/book/fast-listing-skus/` | 빠른 리스팅 추가 | ✅ |
+| GET | `/api/book/etoile/dashboard/` | Etoile 재고 현황 조회 | ✅ |
 
 **로그인 요청:**
 ```json
@@ -147,6 +199,8 @@ POST /api/admin/users/
 
 ## 테스트 실행
 
+### 백엔드 테스트
+
 ```bash
 cd backend
 pytest
@@ -154,10 +208,23 @@ pytest
 
 커버리지 포함:
 ```bash
-pytest --cov=accounts --cov-report=term-missing
+pytest --cov=accounts --cov=book --cov-report=term-missing
 ```
 
-**현재 커버리지**: 99.78% (91개 테스트)
+**현재 커버리지**: 99.78% (accounts), 18+ (book)
+
+### 프론트엔드 테스트
+
+```bash
+cd frontend
+npx vitest run
+```
+
+실시간 모드:
+```bash
+cd frontend
+npx vitest
+```
 
 ### 테스트 파일 구성
 
@@ -201,6 +268,14 @@ scm_v2/
 │   │   ├── signals.py          # 계정 비활성화 시 토큰 즉시 무효화
 │   │   ├── urls.py             # API 라우팅
 │   │   └── tests/              # 테스트 파일
+│   ├── book/                   # 도서 관리 앱
+│   │   ├── models.py           # Book, BookNote, Shopify, Etoile 모델
+│   │   ├── views.py            # 도서 검색, CRUD, 대시보드 뷰
+│   │   ├── serializers.py      # 도서 정보 시리얼라이저
+│   │   ├── permissions.py      # 도서 접근 권한
+│   │   ├── urls.py             # 도서 API 라우팅
+│   │   ├── migrations/         # DB 마이그레이션
+│   │   └── tests/              # 테스트 파일
 │   ├── config/
 │   │   ├── settings/
 │   │   │   ├── base.py         # 공통 설정 (JWT, DRF, CORS)
@@ -208,8 +283,30 @@ scm_v2/
 │   │   └── urls.py             # 루트 URL 설정
 │   ├── pyproject.toml          # 의존성 관리
 │   └── pytest.ini              # 테스트 설정
+├── frontend/                   # React 프론트엔드
+│   ├── src/
+│   │   ├── components/         # React 컴포넌트
+│   │   │   └── ui/             # UI 컴포넌트 (Button, Select, etc.)
+│   │   ├── features/           # 기능별 컴포넌트
+│   │   │   └── book/           # 도서 관리 기능
+│   │   ├── pages/              # 페이지 컴포넌트
+│   │   │   └── BookDetailPage.tsx
+│   │   ├── hooks/              # 커스텀 훅 (TanStack Query)
+│   │   ├── services/           # API 호출 서비스
+│   │   └── App.tsx             # 메인 앱 컴포넌트
+│   ├── package.json            # 의존성 관리 (npm)
+│   ├── vite.config.ts          # Vite 설정
+│   ├── vitest.config.ts        # Vitest 설정
+│   └── tsconfig.json           # TypeScript 설정
 ├── .moai/                      # MoAI 프로젝트 메타데이터
-│   └── specs/SPEC-AUTH-001/    # 인증 SPEC 문서
+│   └── specs/                  # SPEC 문서
+│       ├── SPEC-AUTH-001/      # 인증 SPEC
+│       ├── SPEC-BOOK-SEARCH-001/
+│       ├── SPEC-BOOK-EDIT-001/
+│       ├── SPEC-NAV-SIDEBAR-001/
+│       ├── SPEC-INVEN-ADD-001/
+│       ├── SPEC-FAST-LISTING-ADD-001/
+│       └── SPEC-ETOILE-DASHBOARD-001/
 └── README.md
 ```
 
@@ -217,14 +314,30 @@ scm_v2/
 
 ## 기술 스택
 
+### 백엔드
+
 | 기술 | 버전 | 용도 |
 |------|------|------|
 | Python | 3.11+ | 런타임 |
-| Django | 5.0+ | 웹 프레임워크 |
+| Django | 5.2+ | 웹 프레임워크 |
 | Django REST Framework | 3.14+ | RESTful API |
 | djangorestframework-simplejwt | 5.3+ | JWT 인증 + 블랙리스트 |
 | pytest / pytest-django | 7.4+ / 4.7+ | 테스트 |
 | ruff | 0.1+ | 린트 및 포맷 |
+| MySQL | 8.0+ | 데이터베이스 |
+
+### 프론트엔드
+
+| 기술 | 버전 | 용도 |
+|------|------|------|
+| React | 19+ | UI 라이브러리 |
+| TypeScript | 5.0+ | 타입 안정성 |
+| Vite | 5.0+ | 번들러 |
+| TanStack Query | 5.0+ | 상태 관리 (서버 상태) |
+| React Router | 6.0+ | 라우팅 |
+| Tailwind CSS | 3.0+ | CSS 프레임워크 |
+| Vitest | 1.0+ | 단위 테스트 |
+| React Testing Library | 14.0+ | 컴포넌트 테스트 |
 
 ---
 

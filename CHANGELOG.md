@@ -31,6 +31,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 데이터베이스 마이그레이션
   - Info.name 전문 검색 인덱스 추가 (FULLTEXT NGRAM)
 
+#### SPEC-NAV-SIDEBAR-001: 사이드바 계층형 내비게이션
+- "도서관리" 그룹 헤더 — 클릭으로 접기/펼치기, 기본 펼침 상태
+- 하위 항목: 대시보드 / ISBN 추가 / 빠른 리스팅 / Etoile 현황
+- 현재 경로 정확 일치 시 `aria-current="page"` 활성 표시
+- 접근성: `role="group"`, `aria-label`, `aria-expanded` 적용
+
+#### SPEC-INVEN-ADD-001: ISBN 일괄 추가
+- ISBN 일괄 등록 엔드포인트 (`POST /api/book/inven-skus/`)
+- 중복 자동 감지 — 신규/중복 분리 반환
+- React UI: 결과 시각화 (생성됨 녹색 / 중복 회색), 다시 등록하기 버튼
+
+#### SPEC-FAST-LISTING-ADD-001: 빠른 리스팅 추가
+- 빠른 리스팅 일괄 지정 엔드포인트 (`POST /api/book/fast-listing-skus/`)
+- 3분기 처리 로직: 신규 생성 / 기존 업데이트 / 활성 도서(80·81·82) skip
+- 활성 도서 보호 — status_of_shopify IN (80, 81, 82) 레코드 덮어쓰기 금지
+- React UI: 결과 3섹션 (생성됨 녹색 / 업데이트됨 파란색 / 건너뜀 회색), 다시 등록하기 버튼
+
+#### SPEC-ETOILE-DASHBOARD-001: Etoile 재고 현황 대시보드
+- Etoile 현황 집계 엔드포인트 (`GET /api/book/etoile/dashboard/`)
+- status_of_shopify 기준 그룹별 건수 + 레이블 매핑 + null 처리
+- React 페이지 `/books/etoile`: 전체 건수 카드 + 상태별 현황 테이블
+- null status nulls_last 정렬, 로딩 스켈레톤, 에러 처리
+- 9개 pytest 테스트
+
 ### Security
 
 - 모든 도서 수정 API에 JWT 인증 적용 (`IsAuthenticated`)
@@ -45,16 +69,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-#### SPEC-BOOK-SEARCH-001: 도서 검색 기능
-- ISBN 및 제목 검색 엔드포인트 (`GET /api/book/search/`)
-- 페이지네이션 (50건/페이지)
-- 한국어 전문 검색 지원 (FULLTEXT MATCH AGAINST)
-
 #### SPEC-AUTH-001: 관리자 인증 및 RBAC
-- JWT 기반 인증 (Access Token + Refresh Token)
+- JWT 기반 인증 (Access Token 15분 + Refresh Token 24시간)
 - 2단계 RBAC (SuperAdmin, Admin)
 - 토큰 블랙리스트 (로그아웃 및 계정 비활성화)
 - 관리자 계정 관리 API
+- 테스트: 91개, 커버리지 99.78%
+
+#### SPEC-BOOK-SEARCH-001: 도서 검색 기능
+- ISBN(inven_SKU) 및 제목(info.name) OR 검색 엔드포인트 (`GET /api/book/search/`)
+- 페이지네이션 (50건/페이지)
+- 한국어 전문 검색 지원 (FULLTEXT NGRAM 인덱스)
+- 테스트: 18개
 
 ### Performance
 
