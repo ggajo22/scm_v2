@@ -40,14 +40,14 @@ def test_sync_success_both_stores(auth_client):
     assert res.data["status"] == "completed"
     assert res.data["total_synced"] == 6
     assert res.data["total_updated"] == 2
-    assert res.data["stores"]["booksen"]["error"] is None
+    assert res.data["stores"]["gimssine"]["error"] is None
     assert res.data["stores"]["etoile"]["error"] is None
 
 
 @pytest.mark.django_db
 def test_sync_partial_failure(auth_client):
     def side_effect(store_type):
-        if store_type == "booksen":
+        if store_type == "gimssine":
             raise Exception("Connection refused")
         return {"synced_count": 2, "updated_count": 0, "error": None}
 
@@ -56,17 +56,17 @@ def test_sync_partial_failure(auth_client):
 
     assert res.status_code == 200
     assert res.data["status"] == "partial"
-    assert res.data["stores"]["booksen"]["error"] is not None
+    assert res.data["stores"]["gimssine"]["error"] is not None
     assert res.data["stores"]["etoile"]["error"] is None
     assert res.data["total_synced"] == 2
 
 
 @pytest.mark.django_db
 def test_sync_upserts_existing_order(auth_client):
-    Order.objects.create(shopify_order_id=5001, store_type="booksen")
+    Order.objects.create(shopify_order_id=5001, store_type="gimssine")
 
     def side_effect(store_type):
-        if store_type == "booksen":
+        if store_type == "gimssine":
             return {"synced_count": 0, "updated_count": 1, "error": None}
         return {"synced_count": 0, "updated_count": 0, "error": None}
 

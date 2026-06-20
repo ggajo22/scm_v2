@@ -29,16 +29,16 @@ function getFulfillmentLabel(status: string | null): string {
   return map[status] ?? status
 }
 
-function StoreLabel({ store }: { store: 'booksen' | 'etoile' }) {
+function StoreLabel({ store }: { store: 'gimssine' | 'etoile' }) {
   return (
     <span
       className={
-        store === 'booksen'
+        store === 'gimssine'
           ? 'text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded'
           : 'text-xs bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded'
       }
     >
-      {store === 'booksen' ? '북센' : 'Etoile'}
+      {store === 'gimssine' ? 'GIMSSINE' : 'Etoile'}
     </span>
   )
 }
@@ -84,7 +84,7 @@ export function OrdersPage() {
           aria-label="스토어 필터"
         >
           <option value="">전체 스토어</option>
-          <option value="booksen">북센</option>
+          <option value="gimssine">GIMSSINE</option>
           <option value="etoile">Etoile</option>
         </select>
 

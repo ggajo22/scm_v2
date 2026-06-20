@@ -23,7 +23,7 @@ def auth_client(user):
     return client
 
 
-def make_order(shopify_order_id, store_type="booksen", financial_status="pending",
+def make_order(shopify_order_id, store_type="gimssine", financial_status="pending",
                fulfillment_status=None, shopify_created_at=None, **kwargs):
     return Order.objects.create(
         shopify_order_id=shopify_order_id,
@@ -52,12 +52,12 @@ def test_list_returns_empty(auth_client):
 
 @pytest.mark.django_db
 def test_list_filter_store_type(auth_client):
-    make_order(1001, store_type="booksen")
+    make_order(1001, store_type="gimssine")
     make_order(1002, store_type="etoile")
-    res = auth_client.get(URL, {"store_type": "booksen"})
+    res = auth_client.get(URL, {"store_type": "gimssine"})
     assert res.status_code == 200
     assert res.data["count"] == 1
-    assert res.data["results"][0]["store_type"] == "booksen"
+    assert res.data["results"][0]["store_type"] == "gimssine"
 
 
 @pytest.mark.django_db

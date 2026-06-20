@@ -11,14 +11,14 @@ class Customer(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        db_table = "order_customer"
+        db_table = "orders_customer"
 
 
 class Order(models.Model):
     shopify_order_id = models.BigIntegerField()
     store_type = models.CharField(
         max_length=20,
-        choices=[("booksen", "Booksen"), ("etoile", "Etoile")],
+        choices=[("gimssine", "Gimssine"), ("etoile", "Etoile")],
     )
     order_number = models.IntegerField(null=True, blank=True)
     name = models.CharField(max_length=50, null=True, blank=True)
@@ -55,7 +55,7 @@ class Order(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        db_table = "order_order"
+        db_table = "orders_order"
         unique_together = [("shopify_order_id", "store_type")]
         indexes = [
             models.Index(fields=["store_type"]),
@@ -81,7 +81,7 @@ class ShippingAddress(models.Model):
     phone = models.CharField(max_length=50, null=True, blank=True)
 
     class Meta:
-        db_table = "order_shipping_address"
+        db_table = "orders_shipping_address"
 
 
 class BillingAddress(models.Model):
@@ -100,7 +100,7 @@ class BillingAddress(models.Model):
     phone = models.CharField(max_length=50, null=True, blank=True)
 
     class Meta:
-        db_table = "order_billing_address"
+        db_table = "orders_billing_address"
 
 
 class LineItem(models.Model):
@@ -119,7 +119,7 @@ class LineItem(models.Model):
     grams = models.IntegerField(null=True, blank=True)
 
     class Meta:
-        db_table = "order_line_item"
+        db_table = "orders_line_item"
         unique_together = [("order", "shopify_line_item_id")]
 
 
@@ -132,7 +132,7 @@ class ShippingLine(models.Model):
     source = models.CharField(max_length=100, null=True, blank=True)
 
     class Meta:
-        db_table = "order_shipping_line"
+        db_table = "orders_shipping_line"
         unique_together = [("order", "shopify_shipping_line_id")]
 
 
@@ -148,5 +148,5 @@ class Refund(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        db_table = "order_refund"
+        db_table = "orders_refund"
         unique_together = [("order", "shopify_refund_id")]

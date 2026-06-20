@@ -18,7 +18,7 @@ class OrderSyncView(APIView):
 
     def post(self, request):
         store_results = {}
-        for store_type in ["booksen", "etoile"]:
+        for store_type in ["gimssine", "etoile"]:
             try:
                 with transaction.atomic():
                     result = sync_store(store_type)

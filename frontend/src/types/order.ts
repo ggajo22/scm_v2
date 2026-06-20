@@ -8,7 +8,7 @@ export interface OrderCustomer {
 export interface Order {
   id: number
   shopify_order_id: number
-  store_type: 'booksen' | 'etoile'
+  store_type: 'gimssine' | 'etoile'
   order_number: number | null
   name: string | null
   financial_status: string | null
@@ -37,7 +37,7 @@ export interface OrderSyncStoreResult {
 export interface OrderSyncResponse {
   status: 'completed' | 'partial'
   stores: {
-    booksen: OrderSyncStoreResult
+    gimssine: OrderSyncStoreResult
     etoile: OrderSyncStoreResult
   }
   total_synced: number
@@ -46,7 +46,7 @@ export interface OrderSyncResponse {
 
 export interface OrderListParams {
   page?: number
-  store_type?: 'booksen' | 'etoile' | ''
+  store_type?: 'gimssine' | 'etoile' | ''
   financial_status?: string
   fulfillment_status?: string
   date_from?: string

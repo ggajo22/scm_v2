@@ -33,7 +33,7 @@ class Migration(migrations.Migration):
             fields=[
                 ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
                 ('shopify_order_id', models.BigIntegerField()),
-                ('store_type', models.CharField(choices=[('booksen', 'Booksen'), ('etoile', 'Etoile')], max_length=20)),
+                ('store_type', models.CharField(choices=[('gimssine', 'Gimssine'), ('etoile', 'Etoile')], max_length=20)),
                 ('order_number', models.IntegerField(blank=True, null=True)),
                 ('name', models.CharField(blank=True, max_length=50, null=True)),
                 ('email', models.EmailField(blank=True, max_length=254, null=True)),

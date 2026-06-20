@@ -25,9 +25,12 @@ def _parse_next_page_info(link_header):
     return match.group(1) if match else None
 
 
-def fetch_all_open_orders(domain, token):
+def fetch_all_open_orders(domain, token, updated_at_min=None):
     all_orders = []
-    path = "orders.json?status=open&limit=250"
+    base = "orders.json?status=open&limit=250"
+    if updated_at_min:
+        base += f"&updated_at_min={updated_at_min}"
+    path = base
     while path:
         body, headers = _get_with_headers(domain, token, path)
         orders = body.get("orders", [])
@@ -177,14 +180,24 @@ def _sync_single_order(order_data, store_type):
 
 
 def sync_store(store_type):
-    if store_type == "booksen":
-        domain = settings.SHOPIFY_BOOKSEN_DOMAIN
-        token = settings.SHOPIFY_BOOKSEN_TOKEN
+    from .models import Order
+
+    if store_type == "gimssine":
+        domain = settings.SHOPIFY_GIMSSINE_DOMAIN
+        token = settings.SHOPIFY_GIMSSINE_TOKEN
     else:
         domain = settings.SHOPIFY_ETOILE_DOMAIN
         token = settings.SHOPIFY_ETOILE_TOKEN
 
-    orders = fetch_all_open_orders(domain, token)
+    last_updated = (
+        Order.objects.filter(store_type=store_type)
+        .order_by("-shopify_updated_at")
+        .values_list("shopify_updated_at", flat=True)
+        .first()
+    )
+    updated_at_min = last_updated.strftime("%Y-%m-%dT%H:%M:%SZ") if last_updated else None
+
+    orders = fetch_all_open_orders(domain, token, updated_at_min=updated_at_min)
     synced_count = 0
     updated_count = 0
     for order_data in orders:
@@ -193,4 +206,9 @@ def sync_store(store_type):
             synced_count += 1
         else:
             updated_count += 1
-    return {"synced_count": synced_count, "updated_count": updated_count, "error": None}
+    return {
+        "synced_count": synced_count,
+        "updated_count": updated_count,
+        "error": None,
+        "updated_at_min": updated_at_min,
+    }
