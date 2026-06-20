@@ -29,6 +29,7 @@ from book.serializers import (
     DashboardMetricsSerializer,
     EtoileBookInfoSerializer,
     EtoileBookInvenSerializer,
+    EtoileInvenSkuBulkAddSerializer,
     EtoileShopifyProductSerializer,
     FastListingSkuBulkSerializer,
     InfoSerializer,
@@ -750,3 +751,120 @@ class EtoileDashboardView(APIView):
             "status_counts": status_counts,
             "total": sum(row["count"] for row in status_counts),
         })
+
+
+# SPEC-ETOILE-INVEN-ADD-001: Etoile inventory bulk add
+class EtoileInvenSkuBulkAddView(APIView):
+    """
+    POST /api/book/etoile-inven-skus/
+    Bulk-add EtoileBookInven records. If Inven does not exist, create it first.
+    REQ-EIA-001 through REQ-EIA-015
+    """
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        from django.db import transaction
+
+        serializer = EtoileInvenSkuBulkAddSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=400)
+
+        raw_skus = serializer.validated_data["skus"]
+
+        # REQ-EIA-005: strip, remove empty, deduplicate preserving order
+        seen: set = set()
+        unique_skus: list = []
+        for sku in raw_skus:
+            s = sku.strip()
+            if s and s not in seen:
+                seen.add(s)
+                unique_skus.append(s)
+
+        if not unique_skus:
+            return Response({"skus": ["This field may not be blank."]}, status=400)
+
+        try:
+            with transaction.atomic():
+                result = self._process_etoile_inven_skus(unique_skus)
+        except Exception:
+            return Response({"error": "Database error during bulk insert."}, status=500)
+
+        return Response({
+            **result,
+            "book_created_count": len(result["book_created_skus"]),
+            "etoile_created_new_book_count": len(result["etoile_created_new_book_skus"]),
+            "etoile_created_existing_book_count": len(result["etoile_created_existing_book_skus"]),
+            "etoile_existing_count": len(result["etoile_existing_skus"]),
+        })
+
+    # @MX:ANCHOR: [AUTO] EtoileInvenSkuBulkAddView._process_etoile_inven_skus — core business logic
+    # @MX:REASON: REQ-EIA-006 through REQ-EIA-015 all executed here; invariant: Inven must exist before EtoileBookInven
+    def _process_etoile_inven_skus(self, skus: list) -> dict:
+        # REQ-EIA-006: classify SKUs already in EtoileBookInven
+        existing_book_invens = {
+            inven.inven_SKU: inven
+            for inven in Inven.objects.filter(inven_SKU__in=skus)
+        }
+        existing_etoile_skus = set(
+            EtoileBookInven.objects
+            .filter(inven__in=existing_book_invens.values())
+            .values_list("inven__inven_SKU", flat=True)
+        )
+
+        # REQ-EIA-007: SKUs not in Inven at all
+        missing_book_skus = [sku for sku in skus if sku not in existing_book_invens]
+
+        # REQ-EIA-008: bulk create Inven for missing SKUs
+        if missing_book_skus:
+            Inven.objects.bulk_create([
+                Inven(
+                    inven_SKU=sku,
+                    vendor="북센",
+                    store="책방",
+                    is_prepared=0,
+                    status_of_shopify=0,
+                    is_use=1,
+                )
+                for sku in missing_book_skus
+            ], ignore_conflicts=True)
+            existing_book_invens.update({
+                inven.inven_SKU: inven
+                for inven in Inven.objects.filter(inven_SKU__in=missing_book_skus)
+            })
+
+        # REQ-EIA-009: Inven 신규 생성 대상 → EtoileBookInven(status=-1)
+        new_book_inven_list = [
+            existing_book_invens[sku]
+            for sku in missing_book_skus
+            if sku in existing_book_invens
+        ]
+
+        # REQ-EIA-010: 본관만 있고 Etoile에 없는 대상 → EtoileBookInven(status=0)
+        existing_book_only_inven_list = [
+            existing_book_invens[sku]
+            for sku in skus
+            if (
+                sku in existing_book_invens
+                and sku not in missing_book_skus
+                and sku not in existing_etoile_skus
+            )
+        ]
+
+        # REQ-EIA-009 + REQ-EIA-010: bulk create EtoileBookInven
+        etoile_objects = [
+            EtoileBookInven(inven=inven, status_of_shopify=-1)
+            for inven in new_book_inven_list
+        ] + [
+            EtoileBookInven(inven=inven, status_of_shopify=0)
+            for inven in existing_book_only_inven_list
+        ]
+        if etoile_objects:
+            EtoileBookInven.objects.bulk_create(etoile_objects, ignore_conflicts=True)
+
+        return {
+            "book_created_skus": [inven.inven_SKU for inven in new_book_inven_list],
+            "etoile_created_new_book_skus": [inven.inven_SKU for inven in new_book_inven_list],
+            "etoile_created_existing_book_skus": [inven.inven_SKU for inven in existing_book_only_inven_list],
+            "etoile_existing_skus": [sku for sku in skus if sku in existing_etoile_skus],
+        }

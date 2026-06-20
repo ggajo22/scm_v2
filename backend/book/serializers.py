@@ -117,6 +117,15 @@ class InvenSkuBulkAddSerializer(serializers.Serializer):
     )
 
 
+# SPEC-ETOILE-INVEN-ADD-001 serializer
+class EtoileInvenSkuBulkAddSerializer(serializers.Serializer):
+    """Validate Etoile bulk SKU add request — skus must be a non-empty list."""
+    skus = serializers.ListField(
+        child=serializers.CharField(),
+        allow_empty=False,
+    )
+
+
 class InfoUpdateSerializer(serializers.ModelSerializer):
     """Used for PATCH /api/book/{id}/info/ — all fields optional (partial update)."""
     class Meta:

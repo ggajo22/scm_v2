@@ -10,6 +10,7 @@ from book.views import (
     BookShopifyStatusView,
     DashboardMetricsView,
     EtoileDashboardView,
+    EtoileInvenSkuBulkAddView,
     EtoileShopifyStatusView,
     EtoileTagsView,
     FastListingSkuView,
@@ -20,6 +21,8 @@ from book.views import (
 urlpatterns = [
     # SPEC-INVEN-ADD-001: bulk ISBN add
     path("book/inven-skus/", InvenSkuBulkAddView.as_view(), name="book-inven-skus"),
+    # SPEC-ETOILE-INVEN-ADD-001: Etoile inventory bulk add
+    path("book/etoile-inven-skus/", EtoileInvenSkuBulkAddView.as_view(), name="book-etoile-inven-skus"),
     # SPEC-FAST-LISTING-ADD-001: fast listing bulk add
     path("book/fast-listing-skus/", FastListingSkuView.as_view(), name="book-fast-listing-skus"),
     # SPEC-ETOILE-DASHBOARD-001: etoile inventory status dashboard

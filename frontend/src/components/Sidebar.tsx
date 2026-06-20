@@ -30,7 +30,8 @@ const bookGroup: NavGroup = {
     { label: '대시보드', href: '/books' },
     { label: 'ISBN 추가', href: '/books/add-isbn' },
     { label: '빠른 리스팅', href: '/books/fast-listing' },
-    { label: 'Etoile 현황', href: '/books/etoile' },
+    { label: 'Etoile 대시보드', href: '/books/etoile' },
+    { label: 'Etoile ISBN 추가', href: '/books/etoile-add-isbn' },
   ],
 }
 
