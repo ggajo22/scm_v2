@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { RefreshCw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useOrders } from '@/features/order/hooks/useOrders'
@@ -46,6 +47,7 @@ function StoreLabel({ store }: { store: 'gimssine' | 'etoile' }) {
 export function OrdersPage() {
   const [params, setParams] = useState<OrderListParams>({ page: 1 })
   const [searchInput, setSearchInput] = useState('')
+  const navigate = useNavigate()
   const { data, isPending, isError } = useOrders(params)
   const syncMutation = useOrderSync()
 
@@ -205,7 +207,11 @@ export function OrdersPage() {
                   </tr>
                 )}
                 {data.results.map((order) => (
-                  <tr key={order.id} className="border-b last:border-0 hover:bg-muted/30">
+                  <tr
+                    key={order.id}
+                    className="border-b last:border-0 hover:bg-muted/30 cursor-pointer"
+                    onClick={() => navigate(`/orders/${order.id}`)}
+                  >
                     <td className="py-2 px-3 font-mono text-xs">
                       {order.name ?? `#${order.order_number}`}
                     </td>

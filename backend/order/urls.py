@@ -10,7 +10,7 @@ from .purchase_order_views import (
     UploadVendorFileView,
     VendorComparisonView,
 )
-from .views import OrderListView, OrderSyncView
+from .views import OrderDetailView, OrderListView, OrderSyncView
 from .warehouse_views import (
     WarehouseStockBulkView,
     WarehouseStockDeleteView,
@@ -22,6 +22,7 @@ urlpatterns = [
     # Shopify order sync and list
     path("orders/sync/", OrderSyncView.as_view(), name="order-sync"),
     path("orders/", OrderListView.as_view(), name="order-list"),
+    path("orders/<int:pk>/", OrderDetailView.as_view(), name="order-detail"),
     # Purchase order endpoints (more specific paths must come before the generic list)
     path("purchase-orders/unordered/", UnorderedItemsView.as_view(), name="po-unordered"),
     path("purchase-orders/generate-order-file/", GenerateOrderFileView.as_view(), name="po-generate"),

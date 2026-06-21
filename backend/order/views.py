@@ -1,7 +1,7 @@
 from django.db import transaction
 from django.db.models import Q
 from rest_framework.exceptions import ValidationError
-from rest_framework.generics import ListAPIView
+from rest_framework.generics import ListAPIView, RetrieveAPIView
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -9,8 +9,25 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.authentication import JWTAuthentication
 
 from .models import Order
-from .serializers import OrderListSerializer
+from .serializers import OrderDetailSerializer, OrderListSerializer
 from .shopify_orders import sync_store
+
+
+class OrderDetailView(RetrieveAPIView):
+    """REQ-OD-002: GET /api/orders/{pk}/ — single order with full nested detail."""
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+    serializer_class = OrderDetailSerializer
+
+    def get_queryset(self):
+        # @MX:NOTE: [AUTO] select_related covers FK/O2O (single JOIN), prefetch_related covers
+        # reverse FK collections (separate queries, avoids cartesian product)
+        return Order.objects.select_related(
+            "customer", "shipping_address"
+        ).prefetch_related(
+            "line_items", "shipping_lines", "refunds"
+        )
 
 
 class OrderSyncView(APIView):
