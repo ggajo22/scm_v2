@@ -139,3 +139,93 @@ def test_list_ordered_by_created_desc(auth_client):
     assert res.status_code == 200
     ids = [r["shopify_order_id"] for r in res.data["results"]]
     assert ids[0] == 7002  # newer first
+
+
+# ---------------------------------------------------------------------------
+# SPEC-ORDER-002: search query parameter
+# ---------------------------------------------------------------------------
+
+@pytest.mark.django_db
+def test_search_by_order_number(auth_client):
+    """?search=1234 matches order with order_number=1234."""
+    make_order(8001, order_number=1234)
+    make_order(8002, order_number=9999)
+    res = auth_client.get(URL, {"search": "1234"})
+    assert res.status_code == 200
+    assert res.data["count"] == 1
+    assert res.data["results"][0]["shopify_order_id"] == 8001
+
+
+@pytest.mark.django_db
+def test_search_by_name_with_hash(auth_client):
+    """?search=#1234 (URL-decoded) matches order with name='#1234'."""
+    make_order(8003, name="#1234")
+    make_order(8004, name="#9999")
+    res = auth_client.get(URL, {"search": "#1234"})
+    assert res.status_code == 200
+    assert res.data["count"] == 1
+    assert res.data["results"][0]["shopify_order_id"] == 8003
+
+
+@pytest.mark.django_db
+def test_search_by_sku_isbn(auth_client):
+    """?search=9788901234567 (13-digit ISBN) matches order containing LineItem.sku."""
+    from order.models import LineItem
+    order = make_order(8005)
+    LineItem.objects.create(
+        order=order,
+        shopify_line_item_id=20001,
+        sku="9788901234567",
+    )
+    other = make_order(8006)
+    LineItem.objects.create(
+        order=other,
+        shopify_line_item_id=20002,
+        sku="9780000000000",
+    )
+    res = auth_client.get(URL, {"search": "9788901234567"})
+    assert res.status_code == 200
+    assert res.data["count"] == 1
+    assert res.data["results"][0]["shopify_order_id"] == 8005
+
+
+@pytest.mark.django_db
+def test_search_empty_returns_all(auth_client):
+    """?search= (empty string) returns all orders without filtering."""
+    make_order(8007)
+    make_order(8008)
+    res = auth_client.get(URL, {"search": ""})
+    assert res.status_code == 200
+    assert res.data["count"] == 2
+
+
+@pytest.mark.django_db
+def test_search_no_match_returns_empty(auth_client):
+    """?search=9999999 returns empty list when no order matches."""
+    make_order(8009, order_number=1111)
+    res = auth_client.get(URL, {"search": "9999999"})
+    assert res.status_code == 200
+    assert res.data["count"] == 0
+
+
+@pytest.mark.django_db
+def test_search_combined_with_store_type(auth_client):
+    """?search=1234&store_type=gimssine applies both filters with AND."""
+    make_order(8010, order_number=1234, store_type="gimssine")
+    make_order(8011, order_number=1234, store_type="etoile")
+    res = auth_client.get(URL, {"search": "1234", "store_type": "gimssine"})
+    assert res.status_code == 200
+    assert res.data["count"] == 1
+    assert res.data["results"][0]["shopify_order_id"] == 8010
+
+
+@pytest.mark.django_db
+def test_search_sku_no_duplicate_orders(auth_client):
+    """Order with multiple matching line items must appear only once."""
+    from order.models import LineItem
+    order = make_order(8012)
+    LineItem.objects.create(order=order, shopify_line_item_id=30001, sku="9788901234567")
+    LineItem.objects.create(order=order, shopify_line_item_id=30002, sku="9788901234567")
+    res = auth_client.get(URL, {"search": "9788901234567"})
+    assert res.status_code == 200
+    assert res.data["count"] == 1

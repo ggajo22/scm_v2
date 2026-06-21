@@ -1,4 +1,5 @@
 from django.db import transaction
+from django.db.models import Q
 from rest_framework.exceptions import ValidationError
 from rest_framework.generics import ListAPIView
 from rest_framework.pagination import PageNumberPagination
@@ -84,5 +85,21 @@ class OrderListView(ListAPIView):
             qs = qs.filter(shopify_created_at__date__gte=date_from)
         if date_to:
             qs = qs.filter(shopify_created_at__date__lte=date_to)
+
+        # @MX:ANCHOR: [AUTO] search filter — called by every GET /api/orders/ request
+        # @MX:REASON: fan_in >= 3 (view, tests, frontend); Q expression joins line_items so distinct() is mandatory
+        search: str = params.get("search", "").strip()
+        if search:
+            numeric = search.lstrip("#")
+            q = Q(name__icontains=search)
+            if numeric.isdigit():
+                try:
+                    q |= Q(order_number=int(numeric))
+                except (ValueError, OverflowError):
+                    pass
+            # ISBN / SKU pattern: 10–13 digits
+            if numeric.isdigit() and 10 <= len(numeric) <= 13:
+                q |= Q(line_items__sku=numeric)
+            qs = qs.filter(q).distinct()
 
         return qs

@@ -51,4 +51,5 @@ export interface OrderListParams {
   fulfillment_status?: string
   date_from?: string
   date_to?: string
+  search?: string
 }

@@ -45,6 +45,7 @@ function StoreLabel({ store }: { store: 'gimssine' | 'etoile' }) {
 
 export function OrdersPage() {
   const [params, setParams] = useState<OrderListParams>({ page: 1 })
+  const [searchInput, setSearchInput] = useState('')
   const { data, isPending, isError } = useOrders(params)
   const syncMutation = useOrderSync()
 
@@ -54,6 +55,17 @@ export function OrdersPage() {
 
   const setFilter = (key: keyof OrderListParams, value: string) => {
     setParams((prev) => ({ ...prev, [key]: value || undefined, page: 1 }))
+  }
+
+  const handleSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      setFilter('search', searchInput)
+    }
+  }
+
+  const handleSearchClear = () => {
+    setSearchInput('')
+    setFilter('search', '')
   }
 
   return (
@@ -77,6 +89,27 @@ export function OrdersPage() {
 
       {/* Filters */}
       <div className="flex flex-wrap gap-3">
+        <div className="relative">
+          <input
+            type="text"
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            onKeyDown={handleSearchKeyDown}
+            placeholder="주문번호 또는 ISBN (Enter로 검색)"
+            className="border rounded px-3 py-1.5 text-sm w-64 pr-8"
+            aria-label="주문 검색"
+          />
+          {searchInput && (
+            <button
+              onClick={handleSearchClear}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 text-xs"
+              aria-label="검색 초기화"
+            >
+              ✕
+            </button>
+          )}
+        </div>
+
         <select
           className="border rounded px-2 py-1 text-sm"
           value={params.store_type ?? ''}
@@ -165,7 +198,9 @@ export function OrdersPage() {
                 {data.results.length === 0 && (
                   <tr>
                     <td colSpan={7} className="py-8 text-center text-muted-foreground">
-                      주문이 없습니다.
+                      {params.search
+                        ? `"${params.search}"에 해당하는 주문이 없습니다.`
+                        : '주문이 없습니다.'}
                     </td>
                   </tr>
                 )}

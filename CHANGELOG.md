@@ -24,6 +24,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Django migration 0007 생성 (`orders_vendorcomparison` 컬럼 3개 추가)
 - pytest 신규 38개 테스트 추가 (전체 125개 통과)
 
+#### SPEC-ORDER-002: 주문 검색 기능
+
+- `GET /api/orders/`에 `search` 쿼리 파라미터 추가
+  - `name__icontains` 기본 포함
+  - 숫자 입력 시 `order_number` exact match (OR)
+  - 10~13자리 숫자 입력 시 `line_items__sku` ISBN 검색 (OR)
+  - `distinct()` 적용으로 LineItem JOIN 중복 제거
+  - 기존 필터(`store_type`, `financial_status` 등)와 AND 결합 유지
+- `OrderListParams` 타입에 `search?: string` 추가
+- `useOrders` 훅 `search` 파라미터 API 전달 구현
+- 주문 목록 페이지 검색 입력 UI 추가
+  - 검색어 없을 때 placeholder: "주문번호 또는 ISBN (Enter로 검색)"
+  - Enter 키로 검색 실행
+  - ✕ 버튼으로 검색 초기화
+  - 결과 0건 시 "\"검색어\"에 해당하는 주문이 없습니다." 메시지 표시
+- pytest 신규 7개 테스트 추가 (전체 161개 통과)
+
 #### SPEC-BOOK-EDIT-001: 도서 정보 수정 화면
 - 도서 상세 정보 조회 엔드포인트 (`GET /api/book/{id}/`)
   - Inven, Info, BookNote, Shopify 상품, Etoile 정보 통합 조회
