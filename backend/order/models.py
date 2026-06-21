@@ -36,6 +36,7 @@ class Order(models.Model):
     currency = models.CharField(max_length=10, null=True, blank=True)
     gateway = models.CharField(max_length=100, null=True, blank=True)
     note = models.TextField(null=True, blank=True)
+    note_resolved = models.BooleanField(default=False)
     tags = models.TextField(null=True, blank=True)
     cancel_reason = models.CharField(max_length=100, null=True, blank=True)
     source_name = models.CharField(max_length=100, null=True, blank=True)

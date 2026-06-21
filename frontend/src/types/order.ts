@@ -109,6 +109,18 @@ export interface Refund {
   total_tax: string | null
 }
 
+export interface OrderNote {
+  id: number
+  shopify_order_id: number
+  store_type: 'gimssine' | 'etoile'
+  order_number: number | null
+  name: string | null
+  note: string
+  note_resolved: boolean
+  shopify_created_at: string | null
+  customer: OrderCustomer | null
+}
+
 export interface OrderDetail {
   id: number
   shopify_order_id: number
@@ -135,6 +147,7 @@ export interface OrderDetail {
   closed_at: string | null
   cancelled_at: string | null
   processed_at: string | null
+  note_resolved?: boolean
   has_refund: boolean
   customer: OrderCustomerDetail | null
   shipping_address: ShippingAddress | null

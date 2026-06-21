@@ -1,5 +1,6 @@
 from django.db import transaction
 from django.db.models import Q
+from rest_framework import status
 from rest_framework.exceptions import ValidationError
 from rest_framework.generics import ListAPIView, RetrieveAPIView
 from rest_framework.pagination import PageNumberPagination
@@ -9,7 +10,7 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.authentication import JWTAuthentication
 
 from .models import Order
-from .serializers import OrderDetailSerializer, OrderListSerializer
+from .serializers import OrderDetailSerializer, OrderListSerializer, OrderNoteSerializer
 from .shopify_orders import sync_store
 
 
@@ -120,3 +121,36 @@ class OrderListView(ListAPIView):
             qs = qs.filter(q).distinct()
 
         return qs
+
+
+class OrderNoteListView(ListAPIView):
+    """List orders that have a non-empty note and note_resolved=False."""
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+    serializer_class = OrderNoteSerializer
+
+    def get_queryset(self):
+        return (
+            Order.objects
+            .filter(note__isnull=False, note_resolved=False)
+            .exclude(note="")
+            .select_related("customer")
+            .order_by("-shopify_created_at")
+        )
+
+
+class OrderNoteResolveView(APIView):
+    """Mark an order's note as resolved."""
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, pk):
+        try:
+            order = Order.objects.get(pk=pk)
+        except Order.DoesNotExist:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        order.note_resolved = True
+        order.save(update_fields=["note_resolved"])
+        return Response({"note_resolved": True}, status=status.HTTP_200_OK)

@@ -100,7 +100,7 @@ class OrderDetailSerializer(serializers.ModelSerializer):
             "id", "shopify_order_id", "store_type", "order_number", "name",
             "email", "phone", "financial_status", "fulfillment_status",
             "total_price", "subtotal_price", "total_tax", "total_discounts",
-            "total_shipping_price_set", "currency", "gateway", "note", "tags",
+            "total_shipping_price_set", "currency", "gateway", "note", "note_resolved", "tags",
             "cancel_reason", "source_name", "shopify_created_at",
             "shopify_updated_at", "closed_at", "cancelled_at", "processed_at",
             "has_refund", "customer", "shipping_address",
@@ -109,3 +109,14 @@ class OrderDetailSerializer(serializers.ModelSerializer):
 
     def get_has_refund(self, obj: Order) -> bool:
         return obj.refunds.exists()
+
+
+class OrderNoteSerializer(serializers.ModelSerializer):
+    customer = CustomerSummarySerializer(read_only=True)
+
+    class Meta:
+        model = Order
+        fields = [
+            "id", "shopify_order_id", "store_type", "order_number", "name",
+            "note", "note_resolved", "shopify_created_at", "customer",
+        ]
