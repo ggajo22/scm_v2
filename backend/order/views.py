@@ -129,6 +129,7 @@ class OrderNoteListView(ListAPIView):
     authentication_classes = [JWTAuthentication]
     permission_classes = [IsAuthenticated]
     serializer_class = OrderNoteSerializer
+    pagination_class = None  # return plain array, not paginated envelope
 
     def get_queryset(self):
         return (

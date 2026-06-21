@@ -111,8 +111,7 @@ def test_note_list_returns_orders_with_unresolved_notes(
     """Order with note and note_resolved=False must appear in the list."""
     res = auth_client.get(NOTE_LIST_URL)
     assert res.status_code == 200
-    results = res.data.get("results", res.data)
-    ids = [item["id"] for item in results]
+    ids = [item["id"] for item in res.data]
     assert order_with_note.pk in ids
 
 
@@ -123,8 +122,7 @@ def test_note_list_excludes_resolved_notes(
     """Order with note_resolved=True must NOT appear in the list."""
     res = auth_client.get(NOTE_LIST_URL)
     assert res.status_code == 200
-    results = res.data.get("results", res.data)
-    ids = [item["id"] for item in results]
+    ids = [item["id"] for item in res.data]
     assert order_with_resolved_note.pk not in ids
 
 
@@ -135,8 +133,7 @@ def test_note_list_excludes_orders_without_notes(
     """Orders with note=None or note='' must NOT appear in the list."""
     res = auth_client.get(NOTE_LIST_URL)
     assert res.status_code == 200
-    results = res.data.get("results", res.data)
-    ids = [item["id"] for item in results]
+    ids = [item["id"] for item in res.data]
     assert order_without_note.pk not in ids
     assert order_with_empty_note.pk not in ids
 
@@ -156,9 +153,8 @@ def test_note_list_response_contains_expected_fields(
     """Response items must contain required fields including nested customer."""
     res = auth_client.get(NOTE_LIST_URL)
     assert res.status_code == 200
-    results = res.data.get("results", res.data)
-    assert len(results) >= 1
-    item = next(i for i in results if i["id"] == order_with_customer_and_note.pk)
+    assert len(res.data) >= 1
+    item = next(i for i in res.data if i["id"] == order_with_customer_and_note.pk)
     assert "id" in item
     assert "shopify_order_id" in item
     assert "note" in item
@@ -222,8 +218,7 @@ def test_resolve_note_removes_order_from_note_list(
     # Verify order appears in list before resolving
     list_res = auth_client.get(NOTE_LIST_URL)
     assert list_res.status_code == 200
-    results_before = list_res.data.get("results", list_res.data)
-    ids_before = [item["id"] for item in results_before]
+    ids_before = [item["id"] for item in list_res.data]
     assert order_with_note.pk in ids_before
 
     # Resolve the note
@@ -234,6 +229,5 @@ def test_resolve_note_removes_order_from_note_list(
     # Verify order no longer appears in list
     list_res_after = auth_client.get(NOTE_LIST_URL)
     assert list_res_after.status_code == 200
-    results_after = list_res_after.data.get("results", list_res_after.data)
-    ids_after = [item["id"] for item in results_after]
+    ids_after = [item["id"] for item in list_res_after.data]
     assert order_with_note.pk not in ids_after
