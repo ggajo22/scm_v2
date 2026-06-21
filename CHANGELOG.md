@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### SPEC-AUTO-DIST-001: 발주처 자동 선택 로직 고도화
+
+- `auto_select_distributor()` 5단계 의사결정 로직으로 교체
+  - Step 0: DistributorVendorRule 우선 적용 (아가페 substring / 처음교육 exact match)
+  - Step 1: 창고 재고 우선 — 한국(`warehouse`) / 서부CA·NJ(`warehouse_west`) 자동 분기
+  - Step 2-A: 양사 재고 충분 — 가격·반품 8개 케이스 비교 (`candidate_basis` 레이블 포함)
+  - Step 2-B/C: 단독 재고 — 북센 또는 교보 단독 선택
+  - Step 2-D/E: 양사 재고 없음 — 북센 상태·가격 우위 기반 선택, 교보 반품 가능 시 오버라이드
+- `VendorComparison` 모델 필드 3개 추가: `candidate_basis`, `price_diff`, `price_diff_alert`
+- `VendorComparison.selected_distributor` choices 2개 → 7개 확장 (warehouse, warehouse_west, check_required, choeumgoyuk, agape 추가)
+- `GET /api/purchase-orders/comparison/` 응답 확장: `candidate_basis`, `price_diff`, `price_diff_alert`, `bookseen_returnable`(가능/불가), `kyobo_returnable`(Y/N), `kyobo_status`, `kyobo_publisher`, `bookseen_arrival`
+- 가격차이 알림: `abs(북센가 - 교보가) ≥ 3,000원` + 특정 조건 충족 시 `price_diff_alert = True`
+- Django migration 0007 생성 (`orders_vendorcomparison` 컬럼 3개 추가)
+- pytest 신규 38개 테스트 추가 (전체 125개 통과)
+
 #### SPEC-BOOK-EDIT-001: 도서 정보 수정 화면
 - 도서 상세 정보 조회 엔드포인트 (`GET /api/book/{id}/`)
   - Inven, Info, BookNote, Shopify 상품, Etoile 정보 통합 조회

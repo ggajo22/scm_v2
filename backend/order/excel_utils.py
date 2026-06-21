@@ -308,33 +308,186 @@ def _parse_generic_xlsx(file_bytes: bytes) -> list[dict]:
     return results
 
 
-def auto_select_distributor(
-    bookseen_available: bool | None,
-    bookseen_price: Decimal | None,
-    kyobo_available: bool | None,
-    kyobo_price: Decimal | None,
-) -> str | None:
-    """
-    Auto-select the best distributor based on availability and price.
+def _result(
+    selected: str | None,
+    basis: str,
+    price_diff: Decimal | None,
+    price_diff_alert: bool,
+) -> dict:
+    """Return a standardized auto_select_distributor result dict."""
+    return {
+        "selected_distributor": selected,
+        "candidate_basis": basis,
+        "price_diff": price_diff,
+        "price_diff_alert": price_diff_alert,
+    }
 
-    Priority:
-      1. Availability: prefer any available distributor over an unavailable one.
-      2. Price (tie-break): prefer the lower price when both are available.
-      3. Default to bookseen when both available but prices are missing.
+
+def _compare_both(
+    bs_price: Decimal | None,
+    ky_price: Decimal | None,
+    bs_ret: bool | None,
+    ky_ret: bool | None,
+) -> tuple[str, str]:
+    """
+    Select distributor when both vendors have sufficient stock (Step 2-A).
+
+    Returns (selected_distributor, candidate_basis).
+    """
+    if bs_price is not None and ky_price is not None:
+        if bs_price < ky_price:
+            return "bookseen", "양사재고/북센저가"
+        if ky_price < bs_price:
+            return "kyobo", "양사재고/교보저가"
+        # Same price → check returnability
+        if bs_ret is True and ky_ret is not True:
+            return "bookseen", "양사재고/동가/북센반품"
+        if ky_ret is True and bs_ret is not True:
+            return "kyobo", "양사재고/동가/교보반품"
+        return "bookseen", "양사재고/동가/반품동일"
+
+    if bs_price is None and ky_price is not None:
+        return "kyobo", "양사재고/교보가격만확인"
+    if ky_price is None and bs_price is not None:
+        return "bookseen", "양사재고/북센가격만확인"
+    return "bookseen", "양사재고/가격없음"
+
+
+def _no_stock_logic(
+    bs_status: str,
+    ky_status: str,
+    bs_price: Decimal | None,
+    ky_price: Decimal | None,
+    bs_ret: bool | None,
+    ky_ret: bool | None,
+) -> tuple[str, str]:
+    """
+    Select distributor when neither vendor has sufficient stock (Step 2-D then 2-E).
+
+    Returns (selected_distributor, candidate_basis).
+    """
+    basis = "양사재고없음"
+    bs_cheaper = (
+        bs_price is not None
+        and ky_price is not None
+        and bs_price <= ky_price
+    )
+
+    # Step 2-D: status/price heuristics
+    if bs_status == "정상":
+        if bs_cheaper:
+            selected = "bookseen"
+        else:
+            selected = "kyobo" if ky_status == "정상" else "check_required"
+    elif ky_status in ("정상", "주문판매"):
+        selected = "kyobo"
+    else:
+        selected = "check_required"
+
+    # Step 2-E: kyobo-returnable override
+    if ky_ret is True and bs_ret is not True:
+        if ky_status == "정상":
+            selected = "kyobo"
+        else:
+            selected = "check_required"
+
+    return selected, basis
+
+
+def auto_select_distributor(
+    vc: "VendorComparison",
+    total_qty: int,
+    korea_stock: int = 0,
+    ca_stock: int = 0,
+    nj_stock: int = 0,
+    vendor_rules: list[tuple[str, str]] | None = None,
+) -> dict:
+    """
+    Determine the best distributor for a VendorComparison record.
+
+    Implements a 5-step decision tree:
+      Step 0: DistributorVendorRule override (agape / choeumgoyuk)
+      Step 1: Warehouse stock priority (korea / west)
+      Step 2: Vendor comparison (stock, price, returnability, status)
+      Step 3: Price diff alert calculation
+
+    Args:
+        vc: VendorComparison instance (unsaved OK — only reads field values).
+        total_qty: Total quantity needed for this SKU.
+        korea_stock: Korea warehouse stock quantity.
+        ca_stock: CA warehouse stock quantity.
+        nj_stock: NJ warehouse stock quantity.
+        vendor_rules: Pre-fetched list of (publisher_name, distributor_code) tuples.
 
     Returns:
-        "bookseen", "kyobo", or None when neither is available.
+        dict with keys:
+            selected_distributor: str code or None
+            candidate_basis: str label describing the selection reason
+            price_diff: Decimal (bookseen_price - kyobo_price) or None
+            price_diff_alert: bool
     """
-    bs_ok = bool(bookseen_available)
-    ky_ok = bool(kyobo_available)
+    # Lazy import to avoid circular dependency at module level
+    # (VendorComparison is in models.py which imports nothing from excel_utils)
+    bs_price: Decimal | None = vc.bookseen_price
+    ky_price: Decimal | None = vc.kyobo_price
+    price_diff: Decimal | None = (
+        (bs_price - ky_price)
+        if (bs_price is not None and ky_price is not None)
+        else None
+    )
 
-    if bs_ok and ky_ok:
-        if bookseen_price is not None and kyobo_price is not None:
-            return "bookseen" if float(bookseen_price) <= float(kyobo_price) else "kyobo"
-        return "bookseen"  # Default when prices are missing
+    # ------------------------------------------------------------------
+    # Step 0: DistributorVendorRule override
+    # ------------------------------------------------------------------
+    if vendor_rules and vc.kyobo_publisher:
+        for pub_name, dist_code in vendor_rules:
+            if dist_code == "agape" and "아가페" in vc.kyobo_publisher:
+                return _result("agape", "아가페규칙", price_diff, False)
+            if dist_code == "choeumgoyuk" and vc.kyobo_publisher == pub_name:
+                return _result("choeumgoyuk", "처음교육규칙", price_diff, False)
 
-    if bs_ok:
-        return "bookseen"
-    if ky_ok:
-        return "kyobo"
-    return None
+    # ------------------------------------------------------------------
+    # Step 1: Warehouse stock priority
+    # ------------------------------------------------------------------
+    if korea_stock >= total_qty:
+        return _result("warehouse", "재고우선", price_diff, False)
+    if ca_stock >= total_qty or nj_stock >= total_qty:
+        return _result("warehouse_west", "서부창고확인", price_diff, False)
+
+    # ------------------------------------------------------------------
+    # Step 2: Vendor comparison
+    # ------------------------------------------------------------------
+    bs_stock: int = vc.bookseen_stock or 0
+    ky_stock: int = vc.kyobo_stock or 0
+    bs_ret: bool | None = vc.bookseen_returnable
+    ky_ret: bool | None = vc.kyobo_returnable
+    bs_status: str = vc.bookseen_status or ""
+    ky_status: str = vc.kyobo_status or ""
+
+    bs_enough = bs_stock >= total_qty
+    ky_enough = ky_stock >= total_qty
+
+    if bs_enough and ky_enough:
+        selected, basis = _compare_both(bs_price, ky_price, bs_ret, ky_ret)
+    elif bs_enough and not ky_enough:
+        selected, basis = "bookseen", "북센재고우선"
+    elif ky_enough and not bs_enough:
+        selected, basis = "kyobo", "교보재고우선"
+    else:
+        selected, basis = _no_stock_logic(
+            bs_status, ky_status, bs_price, ky_price, bs_ret, ky_ret
+        )
+
+    # ------------------------------------------------------------------
+    # Step 3: Price diff alert
+    # ------------------------------------------------------------------
+    price_diff_alert = False
+    if price_diff is not None and abs(price_diff) >= 3000:
+        if (
+            selected == "check_required"
+            or (selected == "bookseen" and bs_price is not None and ky_price is not None and bs_price > ky_price)
+            or (selected == "kyobo" and ky_price is not None and bs_price is not None and ky_price > bs_price)
+        ):
+            price_diff_alert = True
+
+    return _result(selected, basis, price_diff, price_diff_alert)

@@ -473,51 +473,66 @@ class TestUploadVendorFileView:
 
 
 class TestAutoSelectDistributor:
-    """SC-PO-005: Three cases for distributor auto-selection."""
+    """SC-PO-005: Distributor auto-selection with new SPEC-AUTO-DIST-001 API.
+
+    The function now accepts a VendorComparison instance and returns a dict.
+    Detailed logic tests are in test_auto_dist.py.
+    """
+
+    def _vc(self, **kwargs) -> VendorComparison:
+        defaults = {
+            "sku": "TEST",
+            "bookseen_stock": kwargs.pop("bookseen_stock", 10),
+            "kyobo_stock": kwargs.pop("kyobo_stock", 10),
+        }
+        defaults.update(kwargs)
+        return VendorComparison(**defaults)
 
     def test_both_available_lower_price_wins(self):
         from order.excel_utils import auto_select_distributor
 
-        result = auto_select_distributor(
-            bookseen_available=True,
+        vc = self._vc(
             bookseen_price=Decimal("10000"),
-            kyobo_available=True,
             kyobo_price=Decimal("11000"),
         )
-        assert result == "bookseen"
+        result = auto_select_distributor(vc=vc, total_qty=5)
+        assert result["selected_distributor"] == "bookseen"
 
     def test_both_available_kyobo_cheaper(self):
         from order.excel_utils import auto_select_distributor
 
-        result = auto_select_distributor(
-            bookseen_available=True,
+        vc = self._vc(
             bookseen_price=Decimal("12000"),
-            kyobo_available=True,
             kyobo_price=Decimal("10000"),
         )
-        assert result == "kyobo"
+        result = auto_select_distributor(vc=vc, total_qty=5)
+        assert result["selected_distributor"] == "kyobo"
 
-    def test_only_one_available(self):
+    def test_only_bookseen_has_stock(self):
         from order.excel_utils import auto_select_distributor
 
-        result = auto_select_distributor(
-            bookseen_available=False,
+        vc = self._vc(
+            bookseen_stock=10,
+            kyobo_stock=0,
             bookseen_price=None,
-            kyobo_available=True,
             kyobo_price=Decimal("11000"),
         )
-        assert result == "kyobo"
+        result = auto_select_distributor(vc=vc, total_qty=5)
+        assert result["selected_distributor"] == "bookseen"
 
-    def test_neither_available_returns_none(self):
+    def test_no_stock_check_required(self):
         from order.excel_utils import auto_select_distributor
 
-        result = auto_select_distributor(
-            bookseen_available=False,
+        vc = self._vc(
+            bookseen_stock=0,
+            kyobo_stock=0,
             bookseen_price=None,
-            kyobo_available=False,
             kyobo_price=None,
+            bookseen_status="품절",
+            kyobo_status="품절",
         )
-        assert result is None
+        result = auto_select_distributor(vc=vc, total_qty=5)
+        assert result["selected_distributor"] == "check_required"
 
 
 # ---------------------------------------------------------------------------

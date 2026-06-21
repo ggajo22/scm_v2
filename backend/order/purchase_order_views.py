@@ -33,7 +33,7 @@ from .excel_utils import (
     generate_order_excel,
     parse_vendor_excel,
 )
-from .models import DistributorVendorRule, LineItem, PurchaseOrder, VendorComparison
+from .models import DistributorVendorRule, LineItem, PurchaseOrder, VendorComparison, WarehouseStock
 
 VALID_DISTRIBUTORS = {"bookseen", "kyobo", "choeumgoyuk", "agape"}
 VENDOR_FILE_DISTRIBUTORS = {"bookseen", "kyobo"}
@@ -259,15 +259,34 @@ class UploadVendorFileView(APIView):
 
             # Re-fetch to compute auto-selection with latest values
             vc.refresh_from_db()
-            selected = auto_select_distributor(
-                bookseen_available=vc.bookseen_available,
-                bookseen_price=vc.bookseen_price,
-                kyobo_available=vc.kyobo_available,
-                kyobo_price=vc.kyobo_price,
+            rules = list(DistributorVendorRule.objects.values_list("publisher_name", "distributor"))
+            # Pre-fetch warehouse stock for this SKU
+            wstocks = WarehouseStock.objects.filter(isbn=sku)
+            wstock_map: dict[str, int] = {s.location: s.quantity for s in wstocks}
+            # Compute total_qty from unordered LineItems for this SKU
+            total_qty_row = (
+                LineItem.objects
+                .filter(sku=sku, purchase_orders__isnull=True)
+                .aggregate(total=Sum("quantity"))
             )
-            if selected != vc.selected_distributor:
-                vc.selected_distributor = selected
-                vc.save(update_fields=["selected_distributor"])
+            total_qty = total_qty_row["total"] or 0
+            result = auto_select_distributor(
+                vc=vc,
+                total_qty=total_qty,
+                korea_stock=wstock_map.get("korea", 0),
+                ca_stock=wstock_map.get("ca", 0),
+                nj_stock=wstock_map.get("nj", 0),
+                vendor_rules=rules,
+            )
+            update_fields = []
+            if result["selected_distributor"] != vc.selected_distributor:
+                vc.selected_distributor = result["selected_distributor"]
+                update_fields.append("selected_distributor")
+            vc.candidate_basis = result["candidate_basis"]
+            vc.price_diff = result["price_diff"]
+            vc.price_diff_alert = result["price_diff_alert"]
+            update_fields += ["candidate_basis", "price_diff", "price_diff_alert", "updated_at"]
+            vc.save(update_fields=update_fields)
 
             comparisons.append(
                 {"sku": sku, "available": available, "price": str(price) if price is not None else None}
@@ -298,27 +317,87 @@ class VendorComparisonView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request) -> Response:
-        qs = VendorComparison.objects.all().order_by("sku")
+        comparisons = list(VendorComparison.objects.all().order_by("sku"))
+
+        # Pre-fetch data for auto-selection (single queries, not per-row)
+        rules = list(DistributorVendorRule.objects.values_list("publisher_name", "distributor"))
+        all_stocks = WarehouseStock.objects.all()
+        stock_map: dict[str, dict[str, int]] = {}
+        for s in all_stocks:
+            stock_map.setdefault(s.isbn, {"korea": 0, "ca": 0, "nj": 0})
+            stock_map[s.isbn][s.location] = s.quantity
+
+        total_qty_qs = (
+            LineItem.objects
+            .filter(purchase_orders__isnull=True, sku__isnull=False)
+            .values("sku")
+            .annotate(total=Sum("quantity"))
+        )
+        qty_by_sku: dict[str, int] = {row["sku"]: row["total"] or 0 for row in total_qty_qs}
+
         results = []
-        for vc in qs:
+        for vc in comparisons:
+            isbn = vc.sku
+            total_qty = qty_by_sku.get(isbn, 0)
+            wstock = stock_map.get(isbn, {"korea": 0, "ca": 0, "nj": 0})
+            result = auto_select_distributor(
+                vc=vc,
+                total_qty=total_qty,
+                korea_stock=wstock["korea"],
+                ca_stock=wstock["ca"],
+                nj_stock=wstock["nj"],
+                vendor_rules=rules,
+            )
+            vc.selected_distributor = result["selected_distributor"]
+            vc.candidate_basis = result["candidate_basis"]
+            vc.price_diff = result["price_diff"]
+            vc.price_diff_alert = result["price_diff_alert"]
+            vc.save(
+                update_fields=[
+                    "selected_distributor", "candidate_basis",
+                    "price_diff", "price_diff_alert", "updated_at",
+                ]
+            )
+
+            # Serialize bookseen_returnable as "가능"/"불가"/null
+            if vc.bookseen_returnable is True:
+                bs_returnable_display = "가능"
+            elif vc.bookseen_returnable is False:
+                bs_returnable_display = "불가"
+            else:
+                bs_returnable_display = None
+
+            # Serialize kyobo_returnable as "Y"/"N"/null
+            if vc.kyobo_returnable is True:
+                ky_returnable_display = "Y"
+            elif vc.kyobo_returnable is False:
+                ky_returnable_display = "N"
+            else:
+                ky_returnable_display = None
+
             results.append(
                 {
                     "sku": vc.sku,
                     "bookseen_available": vc.bookseen_available,
                     "bookseen_price": str(vc.bookseen_price) if vc.bookseen_price is not None else None,
                     "bookseen_stock": vc.bookseen_stock,
-                    "bookseen_returnable": vc.bookseen_returnable,
+                    "bookseen_returnable": bs_returnable_display,
                     "bookseen_status": vc.bookseen_status,
                     "bookseen_arrival": vc.bookseen_arrival,
                     "kyobo_available": vc.kyobo_available,
                     "kyobo_price": str(vc.kyobo_price) if vc.kyobo_price is not None else None,
                     "kyobo_stock": vc.kyobo_stock,
-                    "kyobo_returnable": vc.kyobo_returnable,
+                    "kyobo_returnable": ky_returnable_display,
                     "kyobo_status": vc.kyobo_status,
                     "kyobo_publisher": vc.kyobo_publisher,
                     "kyobo_ordered_qty": vc.kyobo_ordered_qty,
-                    "kyobo_total_price": str(vc.kyobo_total_price) if vc.kyobo_total_price is not None else None,
+                    "kyobo_total_price": (
+                        str(vc.kyobo_total_price) if vc.kyobo_total_price is not None else None
+                    ),
                     "selected_distributor": vc.selected_distributor,
+                    "candidate_basis": vc.candidate_basis,
+                    "price_diff": str(vc.price_diff) if vc.price_diff is not None else None,
+                    "price_diff_alert": vc.price_diff_alert,
                 }
             )
         return Response({"count": len(results), "results": results})

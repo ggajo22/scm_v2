@@ -197,6 +197,11 @@ class VendorComparison(models.Model):
     DISTRIBUTOR_CHOICES = [
         ("bookseen", "북센"),
         ("kyobo", "교보"),
+        ("warehouse", "재고"),
+        ("warehouse_west", "재고-서부확인"),
+        ("check_required", "확인필요"),
+        ("choeumgoyuk", "처음교육"),
+        ("agape", "아가페"),
     ]
 
     sku = models.CharField(max_length=255)
@@ -219,6 +224,10 @@ class VendorComparison(models.Model):
     selected_distributor = models.CharField(
         max_length=20, choices=DISTRIBUTOR_CHOICES, null=True, blank=True
     )
+    # Auto-selection metadata fields (SPEC-AUTO-DIST-001)
+    candidate_basis = models.CharField(max_length=100, null=True, blank=True)
+    price_diff = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    price_diff_alert = models.BooleanField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
