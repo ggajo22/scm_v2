@@ -1,3 +1,5 @@
+import urllib.error
+
 from django.db import transaction
 from django.db.models import Q
 from rest_framework import status
@@ -11,7 +13,7 @@ from rest_framework_simplejwt.authentication import JWTAuthentication
 
 from .models import Order
 from .serializers import OrderDetailSerializer, OrderListSerializer, OrderNoteSerializer
-from .shopify_orders import sync_store
+from .shopify_orders import sync_single_order_from_shopify, sync_store
 
 
 class OrderDetailView(RetrieveAPIView):
@@ -155,3 +157,37 @@ class OrderNoteResolveView(APIView):
         order.note_resolved = True
         order.save(update_fields=["note_resolved"])
         return Response({"note_resolved": True}, status=status.HTTP_200_OK)
+
+
+class OrderResyncView(APIView):
+    """REQ-RS-001: POST /api/orders/{pk}/sync/ — re-fetch single order from Shopify."""
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk: int) -> Response:
+        try:
+            order = Order.objects.get(pk=pk)
+        except Order.DoesNotExist:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            sync_single_order_from_shopify(order.shopify_order_id, order.store_type)
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return Response(
+                    {"error": "Shopify에서 주문을 찾을 수 없습니다."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+            return Response({"error": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+        except urllib.error.URLError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+
+        qs = Order.objects.select_related(
+            "customer", "shipping_address"
+        ).prefetch_related(
+            "line_items", "shipping_lines", "refunds"
+        )
+        order = qs.get(pk=pk)
+        serializer = OrderDetailSerializer(order)
+        return Response(serializer.data, status=status.HTTP_200_OK)

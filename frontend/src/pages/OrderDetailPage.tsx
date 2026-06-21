@@ -1,6 +1,9 @@
+import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { useOrderDetail } from '@/features/order/hooks/useOrderDetail'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useOrderDetail, ORDER_DETAIL_QUERY_KEY } from '@/features/order/hooks/useOrderDetail'
 import type { AxiosError } from 'axios'
+import { api } from '@/lib/axios'
 
 const FINANCIAL_STATUS_LABELS: Record<string, string> = {
   paid: '결제완료',
@@ -43,6 +46,26 @@ export function OrderDetailPage() {
   const navigate = useNavigate()
   const orderId = Number(id)
   const { data, isPending, isError, error, refetch } = useOrderDetail(orderId)
+
+  const queryClient = useQueryClient()
+  const [syncError, setSyncError] = useState<string | null>(null)
+
+  const { mutate: resync, isPending: isSyncing } = useMutation({
+    mutationFn: async () => {
+      const res = await api.post(`/api/orders/${orderId}/sync/`)
+      return res.data
+    },
+    onSuccess: () => {
+      setSyncError(null)
+      queryClient.invalidateQueries({ queryKey: [...ORDER_DETAIL_QUERY_KEY, orderId] })
+    },
+    onError: (err: unknown) => {
+      const axiosErr = err as AxiosError<{ error?: string }>
+      setSyncError(
+        axiosErr.response?.data?.error ?? '동기화에 실패했습니다.',
+      )
+    },
+  })
 
   if (isPending) {
     return (
@@ -112,24 +135,36 @@ export function OrderDetailPage() {
           <h1 className="text-xl font-semibold">{orderTitle}</h1>
           <span className="text-sm text-muted-foreground">{storeLabel}</span>
         </div>
-        <div className="flex gap-2">
-          {data.financial_status && (
-            <span
-              className={`text-xs px-2 py-1 rounded border font-medium ${
-                isRefundStatus
-                  ? 'border-red-300 text-red-700 bg-red-50'
-                  : data.financial_status === 'paid'
-                    ? 'border-green-300 text-green-700 bg-green-50'
-                    : 'border-gray-300 text-gray-700 bg-gray-50'
-              }`}
+        <div className="flex gap-2 items-start flex-col">
+          <div className="flex gap-2">
+            {data.financial_status && (
+              <span
+                className={`text-xs px-2 py-1 rounded border font-medium ${
+                  isRefundStatus
+                    ? 'border-red-300 text-red-700 bg-red-50'
+                    : data.financial_status === 'paid'
+                      ? 'border-green-300 text-green-700 bg-green-50'
+                      : 'border-gray-300 text-gray-700 bg-gray-50'
+                }`}
+              >
+                {FINANCIAL_STATUS_LABELS[data.financial_status] ?? data.financial_status}
+              </span>
+            )}
+            {data.fulfillment_status && (
+              <span className="text-xs px-2 py-1 rounded border border-blue-300 text-blue-700 bg-blue-50 font-medium">
+                {FULFILLMENT_STATUS_LABELS[data.fulfillment_status] ?? data.fulfillment_status}
+              </span>
+            )}
+            <button
+              onClick={() => resync()}
+              disabled={isSyncing}
+              className="text-xs px-2 py-1 rounded border border-gray-300 text-gray-600 hover:border-blue-400 hover:text-blue-600 hover:bg-blue-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {FINANCIAL_STATUS_LABELS[data.financial_status] ?? data.financial_status}
-            </span>
-          )}
-          {data.fulfillment_status && (
-            <span className="text-xs px-2 py-1 rounded border border-blue-300 text-blue-700 bg-blue-50 font-medium">
-              {FULFILLMENT_STATUS_LABELS[data.fulfillment_status] ?? data.fulfillment_status}
-            </span>
+              {isSyncing ? '동기화 중...' : '다시 동기화'}
+            </button>
+          </div>
+          {syncError && (
+            <p className="text-xs text-destructive">{syncError}</p>
           )}
         </div>
       </div>

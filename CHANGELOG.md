@@ -62,6 +62,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 사이드바에 "미해결 메모" 메뉴 추가
 - TDD 테스트 10개 추가
 
+#### SPEC-ORDER-004: 주문 개별 재동기화
+
+- `POST /api/orders/{id}/sync/` 단일 주문 재동기화 엔드포인트 추가
+  - `sync_single_order_from_shopify()` 헬퍼 함수 — 개별 주문 Shopify API 조회 + DB 업서트
+  - Shopify 404 응답 시 HTTP 404 반환 (삭제된 주문 처리)
+  - 네트워크/서버 오류 시 HTTP 502 반환
+  - 성공 시 `OrderDetailSerializer` 최신 데이터 HTTP 200 반환
+- `OrderDetailPage` 헤더에 "다시 동기화" 버튼 추가
+  - TanStack Query v5 `useMutation` 기반 — API 호출 상태(로딩/성공/오류) 관리
+  - 성공 시 `queryClient.invalidateQueries({ queryKey: ['order-detail', id] })` 자동 리페치
+  - 로딩 중 버튼 비활성화 + "동기화 중..." 텍스트 표시
+  - 오류 시 API `error` 필드 또는 기본 메시지 표시
+- URL 패턴 `orders/<int:pk>/sync/` — `orders/<int:pk>/` 보다 앞에 등록 (Django URL 매칭 순서 보장)
+- TDD 테스트 6개 추가 (전체 185개 통과)
+
 #### SPEC-BOOK-EDIT-001: 도서 정보 수정 화면
 - 도서 상세 정보 조회 엔드포인트 (`GET /api/book/{id}/`)
   - Inven, Info, BookNote, Shopify 상품, Etoile 정보 통합 조회

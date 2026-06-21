@@ -179,6 +179,26 @@ def _sync_single_order(order_data, store_type):
     return "created" if created else "updated"
 
 
+def sync_single_order_from_shopify(shopify_order_id: int, store_type: str) -> dict:
+    """Fetch a single order from Shopify and sync it to the DB. Returns the raw order dict.
+
+    Raises urllib.error.HTTPError or urllib.error.URLError on failure — callers handle exceptions.
+    """
+    # @MX:ANCHOR: [AUTO] sync_single_order_from_shopify — called by OrderResyncView and future webhooks
+    # @MX:REASON: public API boundary; fan_in >= 3 expected (view, tests, future webhook handler)
+    if store_type == "gimssine":
+        domain = settings.SHOPIFY_GIMSSINE_DOMAIN
+        token = settings.SHOPIFY_GIMSSINE_TOKEN
+    else:
+        domain = settings.SHOPIFY_ETOILE_DOMAIN
+        token = settings.SHOPIFY_ETOILE_TOKEN
+
+    body, _ = _get_with_headers(domain, token, f"orders/{shopify_order_id}.json")
+    order_data = body["order"]
+    _sync_single_order(order_data, store_type)
+    return order_data
+
+
 def sync_store(store_type):
     from .models import Order
 
