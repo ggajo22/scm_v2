@@ -19,6 +19,8 @@ Shopify 연동 도서 재고 및 주문 관리 관리자 애플리케이션. 관
 | Etoile 재고 현황 대시보드 | ✅ 구현 완료 (SPEC-ETOILE-DASHBOARD-001) |
 | Shopify 주문 동기화 | ✅ 구현 완료 (SPEC-ORDER-001) |
 | 주문 목록 조회 | ✅ 구현 완료 (SPEC-ORDER-001) |
+| 주문 상세 페이지 | ✅ 구현 완료 (SPEC-ORDER-003) |
+| 주문 메모 해결 기능 | ✅ 구현 완료 |
 | 발주 관리 시스템 | ✅ 구현 완료 (SPEC-PURCHASE-ORDER-001) |
 | 창고 재고 관리 | ✅ 구현 완료 (SPEC-WAREHOUSE-001) |
 

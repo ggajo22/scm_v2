@@ -41,6 +41,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 결과 0건 시 "\"검색어\"에 해당하는 주문이 없습니다." 메시지 표시
 - pytest 신규 7개 테스트 추가 (전체 161개 통과)
 
+#### SPEC-ORDER-003: 주문 상세 페이지
+
+- `GET /api/orders/{id}/` 단일 주문 상세 조회 엔드포인트 추가
+  - `OrderDetailSerializer` — Customer·ShippingAddress·LineItem·ShippingLine·Refund 중첩 직렬화
+  - `select_related("customer", "shipping_address")` + `prefetch_related("line_items", "shipping_lines", "refunds")` N+1 쿼리 방지
+  - JWT 인증 필수 (`IsAuthenticated`)
+- `/orders/:id` 라우트 추가 — 주문 목록 행 클릭 시 이동
+- `OrderDetailPage` 6개 섹션: 주문정보·상품목록·결제정보·배송정보·고객정보·환불내역(조건부)
+- `useOrderDetail(id)` 훅 (TanStack Query v5)
+- 스켈레톤 로딩, 404 메시지, 에러 + 재시도 버튼 처리
+- TDD 테스트 8개 추가
+
+#### 주문 메모 해결 기능
+
+- `Order.note_resolved` 필드 추가 (`BooleanField(default=False)`, 마이그레이션 0008)
+- `GET /api/orders/notes/` — 미해결 메모 주문 목록 (note 있음 + note_resolved=False)
+- `PATCH /api/orders/{id}/resolve-note/` — 메모 해결 처리
+- `/orders/notes` 전용 페이지 — 낙관적 업데이트, 해결 버튼 (hover 시 녹색)
+- 사이드바에 "미해결 메모" 메뉴 추가
+- TDD 테스트 10개 추가
+
 #### SPEC-BOOK-EDIT-001: 도서 정보 수정 화면
 - 도서 상세 정보 조회 엔드포인트 (`GET /api/book/{id}/`)
   - Inven, Info, BookNote, Shopify 상품, Etoile 정보 통합 조회
