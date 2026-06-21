@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link, useNavigate, useLocation } from 'react-router-dom'
-import { Users, LogOut, BookOpen, ChevronDown, ShoppingCart } from 'lucide-react'
+import { Users, LogOut, BookOpen, ChevronDown, ShoppingCart, Package, Warehouse } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useAuthStore } from '@/store/authStore'
 import { cn } from '@/lib/utils'
@@ -39,6 +39,16 @@ const flatNavItems: FlatNavItem[] = [
     label: '주문관리',
     href: '/orders',
     icon: ShoppingCart,
+  },
+  {
+    label: '발주 관리',
+    href: '/purchase-orders',
+    icon: Package,
+  },
+  {
+    label: '창고 재고',
+    href: '/warehouse',
+    icon: Warehouse,
   },
   {
     label: '관리자 계정 관리',

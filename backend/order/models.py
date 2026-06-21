@@ -150,3 +150,125 @@ class Refund(models.Model):
     class Meta:
         db_table = "orders_refund"
         unique_together = [("order", "shopify_refund_id")]
+
+
+class PurchaseOrder(models.Model):
+    """Purchase order issued to a distributor for one or more SKUs."""
+
+    DISTRIBUTOR_CHOICES = [
+        ("bookseen", "북센"),
+        ("kyobo", "교보"),
+        ("choeumgoyuk", "처음교육"),
+        ("agape", "아가페"),
+    ]
+    STATUS_CHOICES = [
+        ("pending", "발주 대기"),
+        ("confirmed", "발주 확정"),
+        ("cancelled", "취소"),
+    ]
+
+    sku = models.CharField(max_length=255)
+    title = models.CharField(max_length=500)
+    distributor = models.CharField(max_length=20, choices=DISTRIBUTOR_CHOICES)
+    quantity = models.IntegerField()
+    unit_price = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending")
+    # M2M to LineItem: links the purchase order to the sale line items that triggered it
+    line_items = models.ManyToManyField("LineItem", related_name="purchase_orders", blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "orders_purchaseorder"
+        indexes = [
+            models.Index(fields=["distributor"]),
+            models.Index(fields=["status"]),
+            models.Index(fields=["created_at"]),
+            models.Index(fields=["sku"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"PurchaseOrder({self.sku}, {self.distributor}, qty={self.quantity})"
+
+
+class VendorComparison(models.Model):
+    """Stores availability and price comparison between Bookseen and Kyobo for a SKU."""
+
+    DISTRIBUTOR_CHOICES = [
+        ("bookseen", "북센"),
+        ("kyobo", "교보"),
+    ]
+
+    sku = models.CharField(max_length=255)
+    # Bookseen fields
+    bookseen_available = models.BooleanField(null=True, blank=True)
+    bookseen_price = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    bookseen_stock = models.IntegerField(null=True, blank=True)
+    bookseen_returnable = models.BooleanField(null=True, blank=True)
+    bookseen_status = models.CharField(max_length=50, null=True, blank=True)
+    bookseen_arrival = models.CharField(max_length=100, null=True, blank=True)
+    # Kyobo fields
+    kyobo_available = models.BooleanField(null=True, blank=True)
+    kyobo_price = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    kyobo_stock = models.IntegerField(null=True, blank=True)
+    kyobo_returnable = models.BooleanField(null=True, blank=True)
+    kyobo_status = models.CharField(max_length=50, null=True, blank=True)
+    kyobo_publisher = models.CharField(max_length=255, null=True, blank=True)
+    kyobo_ordered_qty = models.IntegerField(null=True, blank=True)
+    kyobo_total_price = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    selected_distributor = models.CharField(
+        max_length=20, choices=DISTRIBUTOR_CHOICES, null=True, blank=True
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "orders_vendorcomparison"
+        unique_together = [("sku",)]
+        indexes = [models.Index(fields=["sku"])]
+
+    def __str__(self) -> str:
+        return f"VendorComparison({self.sku})"
+
+
+class WarehouseStock(models.Model):
+    """Warehouse inventory by ISBN and location."""
+
+    LOCATION_CHOICES = [
+        ("korea", "한국"),
+        ("ca", "CA"),
+        ("nj", "NJ"),
+    ]
+
+    isbn = models.CharField(max_length=20)
+    quantity = models.IntegerField(default=0)
+    location = models.CharField(max_length=10, choices=LOCATION_CHOICES)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "orders_warehousestock"
+        unique_together = [("isbn", "location")]
+        indexes = [models.Index(fields=["isbn"])]
+
+    def __str__(self) -> str:
+        return f"WarehouseStock({self.isbn} @ {self.location}: {self.quantity})"
+
+
+class DistributorVendorRule(models.Model):
+    """Maps a publisher name to a secondary distributor (처음교육 or 아가페)."""
+
+    SECONDARY_DISTRIBUTOR_CHOICES = [
+        ("choeumgoyuk", "처음교육"),
+        ("agape", "아가페"),
+    ]
+
+    publisher_name = models.CharField(max_length=255, unique=True)
+    distributor = models.CharField(max_length=20, choices=SECONDARY_DISTRIBUTOR_CHOICES)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "orders_distributorvendorrule"
+        indexes = [models.Index(fields=["publisher_name"])]
+
+    def __str__(self) -> str:
+        return f"DistributorVendorRule({self.publisher_name} -> {self.distributor})"

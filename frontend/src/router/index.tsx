@@ -78,6 +78,20 @@ export const router = createBrowserRouter([
             },
           },
           {
+            path: '/purchase-orders',
+            lazy: async () => {
+              const { PurchaseOrdersPage } = await import('@/pages/PurchaseOrders')
+              return { Component: PurchaseOrdersPage }
+            },
+          },
+          {
+            path: '/warehouse',
+            lazy: async () => {
+              const { WarehouseStockPage } = await import('@/pages/WarehouseStockPage')
+              return { Component: WarehouseStockPage }
+            },
+          },
+          {
             element: <SuperAdminRoute />,
             children: [
               {
