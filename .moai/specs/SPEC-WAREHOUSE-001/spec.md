@@ -151,6 +151,33 @@ The 창고 재고 페이지 **shall** ISBN 검색 입력 필드를 제공하며,
 
 ---
 
+### 도서명 표시
+
+**REQ-WH-023** (Ubiquitous)
+The 재고 목록 응답 **shall** 각 ISBN에 대해 `book_info` 테이블(`Inven.inven_SKU` → `Info.name`)에서 조회한 도서명 `title` 필드를 포함하며, 매핑되지 않는 ISBN의 경우 빈 문자열을 반환한다.
+
+**REQ-WH-024** (Ubiquitous)
+The 창고 재고 페이지 **shall** 피벗 테이블의 ISBN 컬럼 옆에 도서명 컬럼을 표시하며, `book_info`에 없는 ISBN은 `—`으로 표시한다.
+
+---
+
+### 재고 합계 요약
+
+**REQ-WH-025** (Ubiquitous)
+The 창고 재고 페이지 **shall** 테이블 상단에 한국·CA·NJ 위치별 재고 합계와 전체 총 합계를 카드 형태로 표시한다.
+
+---
+
+### 일괄 등록 파싱 개선
+
+**REQ-WH-026** (Ubiquitous)
+The 일괄 등록 텍스트 파서 **shall** 위치 값으로 `korea`·`ca`·`nj` 외에 `한국`·`kor`·`kr` 별칭을 대소문자 구분 없이 허용한다.
+
+**REQ-WH-027** (Unwanted Behavior)
+**If** 일괄 등록 텍스트 입력에서 유효한 항목이 하나도 파싱되지 않은 경우, **then** the 시스템 **shall** "유효한 항목이 없습니다" 에러 토스트를 표시하고 API 호출을 생략한다.
+
+---
+
 ## 인수 조건
 
 ### AC-WH-001 — 피벗 재고 목록 조회

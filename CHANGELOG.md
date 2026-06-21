@@ -105,13 +105,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `WarehouseStock` 모델 신규 추가 — ISBN × 위치(한국/CA/NJ) 재고 관리 (migration 0006)
 - 재고 목록 조회 (`GET /api/warehouse/stock/`) — ISBN별 피벗 응답 (한국·CA·NJ 컬럼, 셀 PK 포함)
+  - **도서명 표시**: `book_info` 테이블 연동 (`Inven.inven_SKU` → `Info.name`) — 등록되지 않은 ISBN은 빈 칸 표시
 - 단건 등록/수정 (`POST /api/warehouse/stock/upsert/`) — `update_or_create` 로직
 - 일괄 등록 (`POST /api/warehouse/stock/bulk/`) — `[{isbn, location, quantity}]` 배열
 - 단건 삭제 (`DELETE /api/warehouse/stock/<pk>/`)
 - React 창고 재고 화면 (`/warehouse`)
-  - ISBN × 위치 피벗 테이블, 셀별 삭제 버튼 (Trash2 아이콘)
+  - ISBN × 위치 피벗 테이블, **도서명 컬럼** 추가, 셀별 삭제 버튼 (Trash2 아이콘)
+  - **재고 합계 카드**: 테이블 상단에 한국/CA/NJ별 합계 및 총 합계 표시
   - 재고 추가 모달 (ISBN·위치 선택·수량)
-  - 일괄 등록 모달 (줄당 `ISBN 위치 수량` 형식 텍스트 입력)
+  - 일괄 등록 모달 개선 — 위치 별칭 허용 (`한국`/`kor`/`kr` → `korea`), 파싱 실패 시 에러 토스트 표시
   - ISBN 검색 필터
 - 사이드바 "창고 재고" 메뉴 추가 (Warehouse 아이콘)
 - 11개 pytest 테스트

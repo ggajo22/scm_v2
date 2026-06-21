@@ -2,6 +2,7 @@ import { api } from '@/lib/axios'
 
 export interface WarehouseStockRow {
   isbn: string
+  title: string
   korea: number | null
   korea_pk: number | null
   ca: number | null

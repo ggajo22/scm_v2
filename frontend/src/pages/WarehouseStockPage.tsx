@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Trash2 } from 'lucide-react'
+import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -24,9 +25,15 @@ interface AddModalState {
 
 const EMPTY_FORM: AddModalState = { isbn: '', location: 'korea', quantity: '' }
 
+const LOCATION_ALIASES: Record<string, 'korea' | 'ca' | 'nj'> = {
+  korea: 'korea', '한국': 'korea', kor: 'korea', kr: 'korea',
+  ca: 'ca',
+  nj: 'nj',
+}
+
 // Bulk input textarea format: each line = "ISBN 위치 수량" (e.g. "9788901234567 korea 10")
+// 위치는 korea/한국/kor/kr, ca, nj 모두 허용
 function parseBulkText(text: string): WarehouseStockUpsertPayload[] {
-  const validLocations = new Set(['korea', 'ca', 'nj'])
   return text
     .split('\n')
     .map((line) => line.trim())
@@ -34,10 +41,11 @@ function parseBulkText(text: string): WarehouseStockUpsertPayload[] {
     .flatMap((line) => {
       const parts = line.split(/\s+/)
       if (parts.length < 3) return []
-      const [isbn, location, rawQty] = parts
+      const [isbn, rawLocation, rawQty] = parts
+      const location = LOCATION_ALIASES[rawLocation.toLowerCase()] ?? LOCATION_ALIASES[rawLocation]
       const quantity = parseInt(rawQty, 10)
-      if (!isbn || !validLocations.has(location) || isNaN(quantity)) return []
-      return [{ isbn, location: location as 'korea' | 'ca' | 'nj', quantity }]
+      if (!isbn || !location || isNaN(quantity)) return []
+      return [{ isbn, location, quantity }]
     })
 }
 
@@ -58,6 +66,13 @@ export function WarehouseStockPage() {
     ? rows.filter((r) => r.isbn.includes(search.trim()))
     : rows
 
+  const totals = {
+    korea: rows.reduce((s, r) => s + (r.korea ?? 0), 0),
+    ca: rows.reduce((s, r) => s + (r.ca ?? 0), 0),
+    nj: rows.reduce((s, r) => s + (r.nj ?? 0), 0),
+  }
+  const grandTotal = totals.korea + totals.ca + totals.nj
+
   function handleAddSubmit(e: React.FormEvent) {
     e.preventDefault()
     const quantity = parseInt(form.quantity, 10)
@@ -76,7 +91,10 @@ export function WarehouseStockPage() {
   function handleBulkSubmit(e: React.FormEvent) {
     e.preventDefault()
     const items = parseBulkText(bulkText)
-    if (!items.length) return
+    if (!items.length) {
+      toast.error('유효한 항목이 없습니다. 형식: ISBN 위치 수량 (예: 9788901234567 korea 10)')
+      return
+    }
     bulkUpsert.mutate(items, {
       onSuccess: () => {
         setShowBulkModal(false)
@@ -97,6 +115,25 @@ export function WarehouseStockPage() {
         </div>
       </div>
 
+      {!isLoading && (
+        <div className="grid grid-cols-4 gap-3">
+          {[
+            { label: '한국', value: totals.korea },
+            { label: 'CA', value: totals.ca },
+            { label: 'NJ', value: totals.nj },
+            { label: '총 합계', value: grandTotal, highlight: true },
+          ].map(({ label, value, highlight }) => (
+            <div
+              key={label}
+              className={`rounded-lg border px-4 py-3 text-center ${highlight ? 'bg-muted/60' : ''}`}
+            >
+              <p className="text-xs text-muted-foreground mb-1">{label}</p>
+              <p className="text-xl font-semibold tabular-nums">{value.toLocaleString()}</p>
+            </div>
+          ))}
+        </div>
+      )}
+
       <div className="flex gap-2">
         <Input
           placeholder="ISBN 검색"
@@ -114,6 +151,7 @@ export function WarehouseStockPage() {
             <thead>
               <tr className="border-b bg-muted/50">
                 <th className="px-4 py-3 text-left font-medium">ISBN</th>
+                <th className="px-4 py-3 text-left font-medium">도서명</th>
                 <th className="px-4 py-3 text-center font-medium">한국</th>
                 <th className="px-4 py-3 text-center font-medium">CA</th>
                 <th className="px-4 py-3 text-center font-medium">NJ</th>
@@ -122,7 +160,7 @@ export function WarehouseStockPage() {
             <tbody>
               {filtered.length === 0 ? (
                 <tr>
-                  <td colSpan={4} className="px-4 py-8 text-center text-muted-foreground">
+                  <td colSpan={5} className="px-4 py-8 text-center text-muted-foreground">
                     {search ? '검색 결과가 없습니다.' : '등록된 재고가 없습니다.'}
                   </td>
                 </tr>
@@ -130,6 +168,9 @@ export function WarehouseStockPage() {
                 filtered.map((row) => (
                   <tr key={row.isbn} className="border-b hover:bg-muted/30">
                     <td className="px-4 py-3 font-mono">{row.isbn}</td>
+                    <td className="px-4 py-3 text-sm text-muted-foreground max-w-xs truncate">
+                      {row.title || <span className="italic">—</span>}
+                    </td>
                     {(['korea', 'ca', 'nj'] as const).map((loc) => {
                       const qty = row[loc]
                       const pk = row[`${loc}_pk` as keyof typeof row] as number | null

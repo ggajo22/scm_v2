@@ -3,6 +3,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from book.models import Inven
 from .models import WarehouseStock
 
 _VALID_LOCATIONS = {"korea", "ca", "nj"}
@@ -10,6 +11,7 @@ _VALID_LOCATIONS = {"korea", "ca", "nj"}
 
 # @MX:NOTE: [AUTO] Response is pivoted by location — one row per ISBN with korea/ca/nj columns
 # each with its own PK for targeted delete. Flat rows (one per isbn+location) are stored in DB.
+# Title is enriched from book.Info via Inven.inven_SKU lookup; missing ISBNs get empty string.
 class WarehouseStockListView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -21,12 +23,24 @@ class WarehouseStockListView(APIView):
             if s.isbn not in isbn_map:
                 isbn_map[s.isbn] = {
                     "isbn": s.isbn,
+                    "title": "",
                     "korea": None, "korea_pk": None,
                     "ca": None, "ca_pk": None,
                     "nj": None, "nj_pk": None,
                 }
             isbn_map[s.isbn][s.location] = s.quantity
             isbn_map[s.isbn][f"{s.location}_pk"] = s.pk
+
+        if isbn_map:
+            title_map = {
+                inven.inven_SKU: inven.info.name
+                for inven in Inven.objects.filter(
+                    inven_SKU__in=isbn_map.keys()
+                ).select_related("info")
+                if hasattr(inven, "info")
+            }
+            for isbn, row in isbn_map.items():
+                row["title"] = title_map.get(isbn, "")
 
         results = list(isbn_map.values())
         return Response({"count": len(results), "results": results})
