@@ -71,11 +71,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 사이드바 "주문관리" 내비게이션 항목 추가
 - 29개 pytest 테스트 (모델 4 + Shopify 클라이언트 10 + 동기화 뷰 4 + 목록 뷰 11)
 
+#### SPEC-PURCHASE-ORDER-001: 발주 관리 시스템
+
+- 미발주 현황 조회 엔드포인트 (`GET /api/purchase-orders/unordered/`)
+  - `PurchaseOrder`와 미연결 `LineItem`을 SKU별 집계, 주문시간 역순 정렬
+  - 주문번호·SKU·수량·자동발주처 포함
+- 발주 파일 생성 (`POST /api/purchase-orders/generate-order-file/`)
+  - 북센: `ISBN/주문수량/도서명/출판사/저자/정가` 컬럼 Excel (.xlsx)
+  - 교보: `ISBN/수량` 컬럼 Excel (.xlsx)
+  - 파일명: `YYYYMMDD_{스토어명}_{주문N차}.xlsx` 형식
+- 업체 자료 업로드 (`POST /api/purchase-orders/upload-vendor-file/`)
+  - magic bytes (`0xD0CF11E0…`) 기반 `.xls`/`.xlsx` 자동 감지
+  - 북센 파서 (xlrd): 고정 컬럼 위치 — ISBN(14), 출고가(6), 재고(7), 반품(10), 상태(11), 입고예정(15)
+  - 교보 파서 (openpyxl): 출고가합(col14) ÷ 주문수량(col11) = 단가 자동 계산
+- 발주처 비교 (`GET /api/purchase-orders/comparison/`)
+  - 가용성·가격 기준 발주처 자동 추천 (동가이면 북센 우선)
+  - 북센 상세: 재고량, 반품 가능 여부, 상태, 입고예정
+  - 교보 상세: 재고량, 반품 가능 여부, 상태, 출판사, 주문수량, 출고가합
+- 발주 확정 (`POST /api/purchase-orders/confirm/`) — `PurchaseOrder` 생성 및 `LineItem` M2M 연결
+- 발주처 규칙 관리 (`GET/POST/DELETE /api/purchase-orders/vendor-rules/`)
+  - 출판사명 → 처음교육/아가페 자동 라우팅 규칙 CRUD
+- 발주 이력 조회 (`GET /api/purchase-orders/`) — 배포처·상태·날짜 필터, 페이지네이션
+- `VendorComparison` 모델 북센/교보 상세 필드 확장 (migrations 0003~0005)
+- `xlrd >= 2.0` 의존성 추가 (북센 .xls 파일 파싱)
+- React 발주 관리 화면 (`/purchase-orders`) — 5탭 구조
+  - 미발주 현황 탭: 전체/부분 선택, 발주처별 Excel 파일 생성
+  - 업체 자료 업로드 탭: 파일 업로드, 발주처 선택
+  - 발주 확정 탭: 비교 테이블, 발주처 수동 선택
+  - 발주 이력 탭: 필터·페이지네이션
+  - 발주처 규칙 설정 탭: 출판사→발주처 규칙 CRUD
+
+#### SPEC-WAREHOUSE-001: 창고 재고 관리
+
+- `WarehouseStock` 모델 신규 추가 — ISBN × 위치(한국/CA/NJ) 재고 관리 (migration 0006)
+- 재고 목록 조회 (`GET /api/warehouse/stock/`) — ISBN별 피벗 응답 (한국·CA·NJ 컬럼, 셀 PK 포함)
+- 단건 등록/수정 (`POST /api/warehouse/stock/upsert/`) — `update_or_create` 로직
+- 일괄 등록 (`POST /api/warehouse/stock/bulk/`) — `[{isbn, location, quantity}]` 배열
+- 단건 삭제 (`DELETE /api/warehouse/stock/<pk>/`)
+- React 창고 재고 화면 (`/warehouse`)
+  - ISBN × 위치 피벗 테이블, 셀별 삭제 버튼 (Trash2 아이콘)
+  - 재고 추가 모달 (ISBN·위치 선택·수량)
+  - 일괄 등록 모달 (줄당 `ISBN 위치 수량` 형식 텍스트 입력)
+  - ISBN 검색 필터
+- 사이드바 "창고 재고" 메뉴 추가 (Warehouse 아이콘)
+- 11개 pytest 테스트
+
 ### Security
 
 - 모든 도서 수정 API에 JWT 인증 적용 (`IsAuthenticated`)
 - 노트 생성 시 작성자 자동 기록 (`created_by`)
 - Shopify API 호출 실패 시 DB 상태 미변경 보장
+- 발주 관리 및 창고 재고 전 엔드포인트 JWT `IsAuthenticated` 적용
 
 ### Fixed
 
