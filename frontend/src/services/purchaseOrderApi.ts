@@ -51,6 +51,7 @@ export interface PurchaseOrder {
   title: string
   distributor: string
   quantity: number
+  net_quantity: number
   unit_price: string | null
   status: string
   created_at: string

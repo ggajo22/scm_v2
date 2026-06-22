@@ -36,6 +36,7 @@ from order.models import (
     LineItem,
     Order,
     PurchaseOrder,
+    Refund,
     VendorComparison,
 )
 
@@ -287,6 +288,40 @@ class TestUnorderedItemsView:
         assert res.status_code == 200
         assert res.data["count"] == 0
 
+    def test_partial_refund_reduces_quantity(self, auth_client):
+        """Partial refund: qty=2, refund=1 → response shows quantity=1."""
+        order = _make_order(shopify_order_id=91010)
+        li = _make_line_item(order, shopify_line_item_id=500, sku="SKU-R1", quantity=2)
+        _make_refund(order, shopify_line_item_id=500, quantity=1, shopify_refund_id=701)
+
+        res = auth_client.get(UNORDERED_URL)
+        assert res.status_code == 200
+        result = next((r for r in res.data["results"] if r["sku"] == "SKU-R1"), None)
+        assert result is not None
+        assert result["quantity"] == 1
+
+    def test_fully_refunded_line_item_excluded(self, auth_client):
+        """Full refund: qty=3, refund=3 → LineItem excluded from unordered list."""
+        order = _make_order(shopify_order_id=91011)
+        _make_line_item(order, shopify_line_item_id=501, sku="SKU-R2", quantity=3)
+        _make_refund(order, shopify_line_item_id=501, quantity=3, shopify_refund_id=702)
+
+        res = auth_client.get(UNORDERED_URL)
+        assert res.status_code == 200
+        skus = [r["sku"] for r in res.data["results"]]
+        assert "SKU-R2" not in skus
+
+    def test_no_refund_shows_original_quantity(self, auth_client):
+        """No refund: quantity returned unchanged."""
+        order = _make_order(shopify_order_id=91012)
+        _make_line_item(order, shopify_line_item_id=502, sku="SKU-R3", quantity=5)
+
+        res = auth_client.get(UNORDERED_URL)
+        assert res.status_code == 200
+        result = next((r for r in res.data["results"] if r["sku"] == "SKU-R3"), None)
+        assert result is not None
+        assert result["quantity"] == 5
+
 
 # ---------------------------------------------------------------------------
 # M3: POST /api/purchase-orders/generate-order-file/
@@ -365,6 +400,33 @@ class TestGenerateOrderFileView:
         payload = {"skus": ["9788901234567"]}
         res = auth_client.post(GENERATE_URL, data=payload, format="json")
         assert res.status_code == 400
+
+    def test_partial_refund_reduces_excel_quantity(self, auth_client):
+        """Excel quantity reflects net (original − refund): qty=2, refund=1 → Excel shows 1."""
+        order = _make_order(shopify_order_id=92010)
+        li = _make_line_item(order, shopify_line_item_id=600, sku="9788901299991", quantity=2)
+        _make_refund(order, shopify_line_item_id=600, quantity=1, shopify_refund_id=801)
+        payload = {"distributor": "bookseen", "skus": ["9788901299991"]}
+        res = auth_client.post(GENERATE_URL, data=payload, format="json")
+        assert res.status_code == 200
+        assert EXCEL_CONTENT_TYPE in res["Content-Type"]
+        wb = openpyxl.load_workbook(io.BytesIO(res.content))
+        ws = wb.active
+        rows = list(ws.iter_rows(values_only=True))
+        data_row = next((r for r in rows if r[0] == "9788901299991"), None)
+        assert data_row is not None
+        assert data_row[1] == 1  # quantity column = net 1
+
+    def test_fully_refunded_sku_treated_as_unknown(self, auth_client):
+        """All quantity refunded → SKU appears in unknown_skus (not in Excel)."""
+        order = _make_order(shopify_order_id=92011)
+        _make_line_item(order, shopify_line_item_id=601, sku="9788901299992", quantity=3)
+        _make_refund(order, shopify_line_item_id=601, quantity=3, shopify_refund_id=802)
+        payload = {"distributor": "bookseen", "skus": ["9788901299992"]}
+        res = auth_client.post(GENERATE_URL, data=payload, format="json")
+        assert res.status_code == 200
+        assert "unknown_skus" in res.data
+        assert "9788901299992" in res.data["unknown_skus"]
 
 
 # ---------------------------------------------------------------------------
@@ -880,3 +942,147 @@ class TestParseVendorExcel:
             results = parse_vendor_excel(_XLS_MAGIC + b"\x00" * 100, "bookseen")
 
         assert results[0]["available"] is False
+
+
+# ---------------------------------------------------------------------------
+# SPEC-PURCHASE-ORDER-003: Refund exclusion & net_quantity field
+# ---------------------------------------------------------------------------
+
+
+def _make_refund(
+    order: Order,
+    shopify_line_item_id: int,
+    quantity: int,
+    shopify_refund_id: int = 1,
+) -> Refund:
+    return Refund.objects.create(
+        order=order,
+        shopify_refund_id=shopify_refund_id,
+        line_item_id=shopify_line_item_id,
+        quantity=quantity,
+    )
+
+
+@pytest.mark.django_db
+class TestPurchaseOrderListRefundExclusion:
+    """SPEC-PURCHASE-ORDER-003: PO list excludes fully-refunded POs and exposes net_quantity."""
+
+    def test_ac01_fully_refunded_po_excluded(self, auth_client):
+        """AC-01: LineItem qty=5, Refund qty=5 → PO excluded from response."""
+        order = _make_order(shopify_order_id=80001)
+        li = _make_line_item(order, shopify_line_item_id=10, quantity=5)
+        po = PurchaseOrder.objects.create(sku=li.sku, title=li.title, distributor="bookseen", quantity=5)
+        po.line_items.add(li)
+        _make_refund(order, shopify_line_item_id=10, quantity=5, shopify_refund_id=101)
+
+        res = auth_client.get(PO_LIST_URL)
+        assert res.status_code == 200
+        ids = [item["id"] for item in res.data["results"]]
+        assert po.id not in ids
+
+    def test_ac02_partially_refunded_po_shown_with_net_quantity(self, auth_client):
+        """AC-02: LineItem qty=5, Refund qty=3 → shown, net_quantity=2."""
+        order = _make_order(shopify_order_id=80002)
+        li = _make_line_item(order, shopify_line_item_id=20, quantity=5)
+        po = PurchaseOrder.objects.create(sku=li.sku, title=li.title, distributor="bookseen", quantity=5)
+        po.line_items.add(li)
+        _make_refund(order, shopify_line_item_id=20, quantity=3, shopify_refund_id=201)
+
+        res = auth_client.get(PO_LIST_URL)
+        assert res.status_code == 200
+        po_data = next(item for item in res.data["results"] if item["id"] == po.id)
+        assert po_data["net_quantity"] == 2
+
+    def test_ac03_po_with_no_line_items_shown_with_original_quantity(self, auth_client):
+        """AC-03: PO with no LineItems → shown, net_quantity = PO.quantity."""
+        po = PurchaseOrder.objects.create(sku="9780000000001", title="노라인아이템", distributor="bookseen", quantity=7)
+
+        res = auth_client.get(PO_LIST_URL)
+        assert res.status_code == 200
+        po_data = next(item for item in res.data["results"] if item["id"] == po.id)
+        assert po_data["net_quantity"] == 7
+
+    def test_ac04_multiple_line_items_all_fully_refunded_excluded(self, auth_client):
+        """AC-04: 2 LineItems (qty=3, qty=2) both fully refunded → PO excluded."""
+        order = _make_order(shopify_order_id=80004)
+        li1 = _make_line_item(order, shopify_line_item_id=41, sku="SKU-AC04-A", quantity=3)
+        li2 = _make_line_item(order, shopify_line_item_id=42, sku="SKU-AC04-B", quantity=2)
+        po = PurchaseOrder.objects.create(sku="SKU-AC04-A", title="멀티라인 전환불", distributor="bookseen", quantity=5)
+        po.line_items.add(li1, li2)
+        _make_refund(order, shopify_line_item_id=41, quantity=3, shopify_refund_id=401)
+        _make_refund(order, shopify_line_item_id=42, quantity=2, shopify_refund_id=402)
+
+        res = auth_client.get(PO_LIST_URL)
+        assert res.status_code == 200
+        ids = [item["id"] for item in res.data["results"]]
+        assert po.id not in ids
+
+    def test_ac05_multiple_line_items_partially_refunded(self, auth_client):
+        """AC-05: qty=3,qty=2; Refund=3,1 → shown, net_quantity=1 (2-1=1)."""
+        order = _make_order(shopify_order_id=80005)
+        li1 = _make_line_item(order, shopify_line_item_id=51, sku="SKU-AC05-A", quantity=3)
+        li2 = _make_line_item(order, shopify_line_item_id=52, sku="SKU-AC05-B", quantity=2)
+        po = PurchaseOrder.objects.create(sku="SKU-AC05-A", title="멀티라인 부분환불", distributor="bookseen", quantity=5)
+        po.line_items.add(li1, li2)
+        _make_refund(order, shopify_line_item_id=51, quantity=3, shopify_refund_id=501)
+        _make_refund(order, shopify_line_item_id=52, quantity=1, shopify_refund_id=502)
+
+        res = auth_client.get(PO_LIST_URL)
+        assert res.status_code == 200
+        po_data = next(item for item in res.data["results"] if item["id"] == po.id)
+        assert po_data["net_quantity"] == 1
+
+    def test_ac06_refund_exceeds_quantity_treated_as_fully_refunded(self, auth_client):
+        """AC-06: LineItem qty=5, Refund qty=6 → treated fully refunded, PO excluded."""
+        order = _make_order(shopify_order_id=80006)
+        li = _make_line_item(order, shopify_line_item_id=60, quantity=5)
+        po = PurchaseOrder.objects.create(sku=li.sku, title=li.title, distributor="bookseen", quantity=5)
+        po.line_items.add(li)
+        _make_refund(order, shopify_line_item_id=60, quantity=6, shopify_refund_id=601)
+
+        res = auth_client.get(PO_LIST_URL)
+        assert res.status_code == 200
+        ids = [item["id"] for item in res.data["results"]]
+        assert po.id not in ids
+
+    def test_ac07_filter_with_refund_exclusion(self, auth_client):
+        """AC-07: distributor filter + fully refunded PO → fully refunded PO excluded."""
+        order = _make_order(shopify_order_id=80007)
+        li = _make_line_item(order, shopify_line_item_id=70, quantity=3)
+        po_fully_refunded = PurchaseOrder.objects.create(
+            sku=li.sku, title=li.title, distributor="bookseen", quantity=3
+        )
+        po_fully_refunded.line_items.add(li)
+        _make_refund(order, shopify_line_item_id=70, quantity=3, shopify_refund_id=701)
+
+        po_normal = PurchaseOrder.objects.create(
+            sku="SKU-AC07-NORMAL", title="일반 PO", distributor="bookseen", quantity=2
+        )
+
+        res = auth_client.get(PO_LIST_URL, {"distributor": "bookseen"})
+        assert res.status_code == 200
+        ids = [item["id"] for item in res.data["results"]]
+        assert po_fully_refunded.id not in ids
+        assert po_normal.id in ids
+
+    def test_ac08_po_with_line_item_no_refund_shown(self, auth_client):
+        """AC-08: PO with LineItem but no Refund records → shown, net_quantity=LineItem.quantity."""
+        order = _make_order(shopify_order_id=80008)
+        li = _make_line_item(order, shopify_line_item_id=80, quantity=4)
+        po = PurchaseOrder.objects.create(sku=li.sku, title=li.title, distributor="bookseen", quantity=4)
+        po.line_items.add(li)
+
+        res = auth_client.get(PO_LIST_URL)
+        assert res.status_code == 200
+        po_data = next(item for item in res.data["results"] if item["id"] == po.id)
+        assert po_data["net_quantity"] == 4
+
+    def test_ac09_net_quantity_field_present_in_response(self, auth_client):
+        """AC-09: net_quantity field present in API response for non-excluded POs."""
+        po = PurchaseOrder.objects.create(sku="9780000000009", title="필드존재확인", distributor="bookseen", quantity=3)
+
+        res = auth_client.get(PO_LIST_URL)
+        assert res.status_code == 200
+        assert res.data["count"] >= 1
+        po_data = next(item for item in res.data["results"] if item["id"] == po.id)
+        assert "net_quantity" in po_data

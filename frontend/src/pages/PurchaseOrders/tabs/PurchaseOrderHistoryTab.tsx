@@ -123,7 +123,7 @@ export function PurchaseOrderHistoryTab() {
                     <td className="py-2 px-3 max-w-xs truncate" title={order.title}>
                       {order.title}
                     </td>
-                    <td className="py-2 px-3 text-right">{order.quantity}</td>
+                    <td className="py-2 px-3 text-right">{order.net_quantity}</td>
                     <td className="py-2 px-3 text-right">
                       {order.unit_price ? Number(order.unit_price).toLocaleString() : '-'}
                     </td>

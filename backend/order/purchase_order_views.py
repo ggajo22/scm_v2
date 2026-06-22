@@ -19,7 +19,8 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 
 from django.db import IntegrityError, transaction
-from django.db.models import Count, Sum
+from django.db.models import Count, Exists, F, IntegerField, OuterRef, Subquery, Sum
+from django.db.models.functions import Coalesce
 from django.http import HttpResponse
 from rest_framework import serializers, status
 from rest_framework.pagination import PageNumberPagination
@@ -33,7 +34,7 @@ from .excel_utils import (
     generate_order_excel,
     parse_vendor_excel,
 )
-from .models import DistributorVendorRule, LineItem, PurchaseOrder, VendorComparison, WarehouseStock
+from .models import DistributorVendorRule, LineItem, PurchaseOrder, Refund, VendorComparison, WarehouseStock
 
 VALID_DISTRIBUTORS = {"bookseen", "kyobo", "choeumgoyuk", "agape"}
 VENDOR_FILE_DISTRIBUTORS = {"bookseen", "kyobo"}
@@ -61,9 +62,26 @@ class UnorderedItemsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request) -> Response:
+        # Subquery: total refunded qty for each (order_id, shopify_line_item_id) pair
+        refund_sum_sq = (
+            Refund.objects.filter(
+                order_id=OuterRef("order_id"),
+                line_item_id=OuterRef("shopify_line_item_id"),
+            )
+            .values("order_id", "line_item_id")
+            .annotate(total=Sum("quantity"))
+            .values("total")[:1]
+        )
+
         line_items = (
             LineItem.objects.filter(sku__isnull=False)
             .exclude(purchase_orders__isnull=False)
+            .annotate(
+                refunded_qty=Coalesce(
+                    Subquery(refund_sum_sq, output_field=IntegerField()),
+                    0,
+                )
+            )
             .select_related("order")
             .order_by("-order__shopify_created_at")
         )
@@ -74,6 +92,9 @@ class UnorderedItemsView(APIView):
 
         results = []
         for li in line_items:
+            net_qty = max((li.quantity or 0) - li.refunded_qty, 0)
+            if net_qty == 0:
+                continue  # Fully refunded — exclude from unordered list
             order = li.order
             order_name = order.name or (f"#{order.order_number}" if order.order_number else None)
             results.append(
@@ -83,7 +104,7 @@ class UnorderedItemsView(APIView):
                     "sku": li.sku,
                     "title": li.title or "",
                     "vendor": li.vendor or "",
-                    "quantity": li.quantity or 0,
+                    "quantity": net_qty,
                     "auto_distributor": rule_map.get(li.vendor or ""),
                 }
             )
@@ -132,15 +153,37 @@ class GenerateOrderFileView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Aggregate quantities for requested SKUs from unordered LineItems
+        # Aggregate net quantities (after refunds) for requested SKUs from unordered LineItems
         requested = set(skus)
-        agg_qs = (
+        refund_sum_sq = (
+            Refund.objects.filter(
+                order_id=OuterRef("order_id"),
+                line_item_id=OuterRef("shopify_line_item_id"),
+            )
+            .values("order_id", "line_item_id")
+            .annotate(total=Sum("quantity"))
+            .values("total")[:1]
+        )
+        li_qs = (
             LineItem.objects.filter(sku__in=requested)
             .exclude(purchase_orders__isnull=False)
-            .values("sku", "title")
-            .annotate(total_quantity=Sum("quantity"))
+            .annotate(
+                refunded_qty=Coalesce(
+                    Subquery(refund_sum_sq, output_field=IntegerField()),
+                    0,
+                )
+            )
+            .values("sku", "title", "quantity", "refunded_qty")
         )
-        found_map: dict[str, dict] = {row["sku"]: row for row in agg_qs}
+        found_map: dict[str, dict] = {}
+        for row in li_qs:
+            net = max((row["quantity"] or 0) - row["refunded_qty"], 0)
+            if net == 0:
+                continue
+            sku = row["sku"]
+            if sku not in found_map:
+                found_map[sku] = {"sku": sku, "title": row["title"] or "", "total_quantity": 0}
+            found_map[sku]["total_quantity"] += net
         unknown_skus = [s for s in skus if s not in found_map]
 
         if unknown_skus:
@@ -591,12 +634,74 @@ class PurchaseOrderPagination(PageNumberPagination):
 
 
 class PurchaseOrderSerializer(serializers.ModelSerializer):
+    net_quantity = serializers.IntegerField(read_only=True)
+
     class Meta:
         model = PurchaseOrder
         fields = [
             "id", "sku", "title", "distributor", "quantity",
+            "net_quantity",
             "unit_price", "status", "created_at", "updated_at",
         ]
+
+
+def _attach_net_quantity(purchase_orders: list) -> None:
+    """
+    Attach net_quantity to each PurchaseOrder instance in-place.
+
+    net_quantity = (sum of LineItem.quantity for linked items)
+                   - (sum of Refund.quantity for those items)
+
+    Falls back to PurchaseOrder.quantity when no LineItems are linked.
+
+    Uses Python-level aggregation to stay compatible with both SQLite (tests)
+    and MySQL (production), avoiding raw SQL with dialect-specific quoting.
+
+    # @MX:ANCHOR: [AUTO] Computes net_quantity for the PO list response page
+    # @MX:REASON: Called by PurchaseOrderListView.get(); fan-in from test suite and view
+    """
+    if not purchase_orders:
+        return
+
+    po_ids = [po.pk for po in purchase_orders]
+
+    # Fetch all line items linked to these POs with their refund sums
+    li_qs = (
+        LineItem.objects.filter(purchase_orders__in=po_ids)
+        .prefetch_related("purchase_orders")
+        .annotate(
+            refunded_qty=Coalesce(
+                Subquery(
+                    Refund.objects.filter(
+                        order_id=OuterRef("order_id"),
+                        line_item_id=OuterRef("shopify_line_item_id"),
+                    )
+                    .values("order_id", "line_item_id")
+                    .annotate(total=Sum("quantity"))
+                    .values("total")[:1],
+                    output_field=IntegerField(),
+                ),
+                0,
+            )
+        )
+        .values("id", "quantity", "refunded_qty", "purchase_orders__id")
+    )
+
+    # Aggregate per PO
+    po_net: dict[int, int] = {}
+    for row in li_qs:
+        po_id = row["purchase_orders__id"]
+        li_qty = row["quantity"] or 0
+        refunded = row["refunded_qty"] or 0
+        net = max(li_qty - refunded, 0)
+        po_net[po_id] = po_net.get(po_id, 0) + net
+
+    for po in purchase_orders:
+        if po.pk in po_net:
+            po.net_quantity = po_net[po.pk]
+        else:
+            # No linked LineItems → use PO's own quantity
+            po.net_quantity = po.quantity
 
 
 class PurchaseOrderListView(APIView):
@@ -616,7 +721,40 @@ class PurchaseOrderListView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request) -> Response:
-        qs = PurchaseOrder.objects.all().order_by("-created_at")
+        # SPEC-PURCHASE-ORDER-003: exclude fully-refunded POs
+        # Subquery: total refunded quantity for a specific (order_id, shopify_line_item_id)
+        refund_sum_sq = (
+            Refund.objects.filter(
+                order_id=OuterRef("order_id"),
+                line_item_id=OuterRef("shopify_line_item_id"),
+            )
+            .values("order_id", "line_item_id")
+            .annotate(total=Sum("quantity"))
+            .values("total")[:1]
+        )
+
+        # LineItem with remaining quantity (refunded_qty < original quantity)
+        unrefunded_li = LineItem.objects.annotate(
+            refunded_qty=Coalesce(
+                Subquery(refund_sum_sq, output_field=IntegerField()),
+                0,
+            )
+        ).filter(
+            purchase_orders=OuterRef("pk"),
+            refunded_qty__lt=F("quantity"),
+        )
+
+        # Any LineItem linked to this PO
+        any_li = LineItem.objects.filter(purchase_orders=OuterRef("pk"))
+
+        # Exclude POs where all linked LineItems are fully refunded
+        qs = (
+            PurchaseOrder.objects.exclude(
+                Exists(any_li) & ~Exists(unrefunded_li)
+            )
+            .order_by("-created_at")
+        )
+
         params = request.query_params
 
         distributor = params.get("distributor")
@@ -637,5 +775,9 @@ class PurchaseOrderListView(APIView):
 
         paginator = PurchaseOrderPagination()
         page = paginator.paginate_queryset(qs, request)
+
+        # Compute net_quantity for each PO in the current page
+        _attach_net_quantity(page)
+
         serializer = PurchaseOrderSerializer(page, many=True)
         return paginator.get_paginated_response(serializer.data)
