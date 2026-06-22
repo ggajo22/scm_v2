@@ -90,6 +90,17 @@ class OrderListView(ListAPIView):
         if financial_status:
             qs = qs.filter(financial_status=financial_status)
 
+        location = params.get("location")
+        if location:
+            parts = [p for p in location.split("/") if p]
+            if len(parts) > 1:
+                q = Q()
+                for part in parts:
+                    q &= Q(location__contains=part)
+                qs = qs.filter(q)
+            else:
+                qs = qs.filter(location=location)
+
         fulfillment_status = params.get("fulfillment_status")
         if fulfillment_status:
             if fulfillment_status == "unfulfilled":

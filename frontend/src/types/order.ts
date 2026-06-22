@@ -50,6 +50,7 @@ export interface OrderListParams {
   store_type?: 'gimssine' | 'etoile' | ''
   financial_status?: string
   fulfillment_status?: string
+  location?: string
   date_from?: string
   date_to?: string
   search?: string

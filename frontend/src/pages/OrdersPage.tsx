@@ -139,6 +139,19 @@ export function OrdersPage() {
 
         <select
           className="border rounded px-2 py-1 text-sm"
+          value={params.location ?? ''}
+          onChange={(e) => setFilter('location', e.target.value)}
+          aria-label="위치 필터"
+        >
+          <option value="">전체 위치</option>
+          <option value="CA">CA</option>
+          <option value="NJ">NJ</option>
+          <option value="KR">KR</option>
+          <option value="CA/NJ">CA/NJ</option>
+        </select>
+
+        <select
+          className="border rounded px-2 py-1 text-sm"
           value={params.fulfillment_status ?? ''}
           onChange={(e) => setFilter('fulfillment_status', e.target.value)}
           aria-label="출고 상태 필터"
