@@ -116,10 +116,31 @@ export function OrderDetailPage() {
     0,
   )
 
+  const totalRefunded = data.refunds.reduce(
+    (sum, r) => sum + Number(r.subtotal ?? 0) + Number(r.total_tax ?? 0),
+    0,
+  )
+  const netPaidAmount = Number(data.total_price ?? 0) - totalRefunded
+
   const isRefundStatus =
     data.has_refund ||
     data.financial_status === 'refunded' ||
     data.financial_status === 'partially_refunded'
+
+  const refundedLineItemIds = new Set(
+    data.refunds
+      .filter(r => r.line_item_id != null)
+      .map(r => r.line_item_id as number)
+  )
+  const normalItems = data.line_items.filter(
+    item => !refundedLineItemIds.has(item.shopify_line_item_id)
+  )
+  const refundedItems = data.line_items.filter(
+    item => refundedLineItemIds.has(item.shopify_line_item_id)
+  )
+  const unmatchedRefunds = data.refunds.filter(
+    r => r.line_item_id == null || !refundedLineItemIds.has(r.line_item_id)
+  )
 
   return (
     <div className="p-6 max-w-4xl mx-auto space-y-6">
@@ -204,14 +225,14 @@ export function OrderDetailPage() {
               </tr>
             </thead>
             <tbody>
-              {data.line_items.length === 0 && (
+              {normalItems.length === 0 && (
                 <tr>
                   <td colSpan={6} className="py-4 text-center text-muted-foreground text-xs">
                     상품 없음
                   </td>
                 </tr>
               )}
-              {data.line_items.map((item) => {
+              {normalItems.map((item) => {
                 const subtotal =
                   Number(item.price ?? 0) * (item.quantity ?? 0) -
                   Number(item.total_discount ?? 0)
@@ -244,35 +265,74 @@ export function OrderDetailPage() {
         </div>
       </section>
 
+      {/* Section 2-B: 환불 목록 */}
+      {(refundedItems.length > 0 || unmatchedRefunds.length > 0) && (
+        <section className="border rounded-lg p-4 space-y-3 border-red-200">
+          <h2 className="text-sm font-semibold text-red-600 uppercase tracking-wide">환불 목록</h2>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm border-collapse">
+              <thead>
+                <tr className="border-b bg-red-50/50">
+                  <th className="py-2 px-3 text-left font-medium">도서명</th>
+                  <th className="py-2 px-3 text-left font-medium">SKU</th>
+                  <th className="py-2 px-3 text-right font-medium">수량</th>
+                  <th className="py-2 px-3 text-right font-medium">환불금액</th>
+                  <th className="py-2 px-3 text-left font-medium">메모</th>
+                </tr>
+              </thead>
+              <tbody>
+                {refundedItems.map((item) => {
+                  const refund = data.refunds.find(
+                    r => r.line_item_id === item.shopify_line_item_id
+                  )
+                  return (
+                    <tr key={item.id} className="border-b last:border-0">
+                      <td className="py-2 px-3">
+                        <div>{item.title ?? '-'}</div>
+                        {item.variant_title && (
+                          <div className="text-xs text-muted-foreground">{item.variant_title}</div>
+                        )}
+                      </td>
+                      <td className="py-2 px-3 font-mono text-xs text-muted-foreground">
+                        {item.sku ?? '-'}
+                      </td>
+                      <td className="py-2 px-3 text-right">{refund?.quantity ?? item.quantity ?? '-'}</td>
+                      <td className="py-2 px-3 text-right font-medium text-red-600">
+                        {refund?.subtotal ? formatPrice(refund.subtotal) : '-'}
+                      </td>
+                      <td className="py-2 px-3 text-muted-foreground text-xs">
+                        {refund?.note ?? '-'}
+                      </td>
+                    </tr>
+                  )
+                })}
+                {unmatchedRefunds.map((refund) => (
+                  <tr key={refund.shopify_refund_id} className="border-b last:border-0">
+                    <td className="py-2 px-3 text-muted-foreground italic" colSpan={2}>
+                      상품 정보 없음
+                    </td>
+                    <td className="py-2 px-3 text-right">-</td>
+                    <td className="py-2 px-3 text-right font-medium text-red-600">
+                      {refund.subtotal ? formatPrice(refund.subtotal) : '-'}
+                    </td>
+                    <td className="py-2 px-3 text-muted-foreground text-xs">
+                      {refund.note ?? '-'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
       {/* Section 3: 결제 정보 */}
       <section className="border rounded-lg p-4 space-y-2">
         <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">결제 정보</h2>
         <div className="text-sm space-y-1 max-w-xs ml-auto">
-          <div className="flex justify-between">
-            <span className="text-muted-foreground">소계</span>
-            <span>{formatPrice(data.subtotal_price, data.currency)}</span>
-          </div>
-          {data.total_discounts && Number(data.total_discounts) > 0 && (
-            <div className="flex justify-between text-red-600">
-              <span>할인</span>
-              <span>-{formatPrice(data.total_discounts)}</span>
-            </div>
-          )}
-          {shippingTotal > 0 && (
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">배송비</span>
-              <span>{shippingTotal.toLocaleString()}</span>
-            </div>
-          )}
-          {data.total_tax && Number(data.total_tax) > 0 && (
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">세금</span>
-              <span>{formatPrice(data.total_tax)}</span>
-            </div>
-          )}
-          <div className="flex justify-between font-semibold border-t pt-1 mt-1">
-            <span>합계</span>
-            <span>{formatPrice(data.total_price, data.currency)}</span>
+          <div className="flex justify-between font-semibold">
+            <span>최종 결제 금액</span>
+            <span>{netPaidAmount.toLocaleString()}{data.currency ? ` ${data.currency}` : ''}</span>
           </div>
         </div>
       </section>
@@ -324,30 +384,6 @@ export function OrderDetailPage() {
         </section>
       )}
 
-      {/* Section 6: 환불 내역 (conditional) */}
-      {data.has_refund && data.refunds.length > 0 && (
-        <section className="border rounded-lg p-4 space-y-3 border-red-200">
-          <h2 className="text-sm font-semibold text-red-600 uppercase tracking-wide">환불 내역</h2>
-          <div className="space-y-3">
-            {data.refunds.map((refund) => (
-              <div
-                key={refund.shopify_refund_id}
-                className="text-sm border-b last:border-0 pb-2"
-              >
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">
-                    {formatDate(refund.shopify_created_at)}
-                  </span>
-                  <span className="font-medium">{formatPrice(refund.subtotal)}</span>
-                </div>
-                {refund.note && (
-                  <p className="text-muted-foreground mt-1">{refund.note}</p>
-                )}
-              </div>
-            ))}
-          </div>
-        </section>
-      )}
     </div>
   )
 }

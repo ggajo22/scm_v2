@@ -62,6 +62,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 사이드바에 "미해결 메모" 메뉴 추가
 - TDD 테스트 10개 추가
 
+#### SPEC-ORDER-005: 재동기화 시 환불 미반영 버그 수정
+
+- `_sync_single_order()` 함수의 refunds 처리를 Clean-Slate 방식으로 통일
+  - 환불 루프 직전에 `order_obj.refunds.all().delete()` 추가
+  - 기존 line_items·shipping_lines 처리 방식(delete → recreate)과 동일한 패턴 적용
+  - 환불 취소 시 DB 잔류 레코드 문제 해결: "다시 동기화" 후 취소 배지 정상 해제
+- TDD 테스트 3개 추가 (케이스 A: 신규환불 생성, B: 환불 삭제, C: 중복 방지)
+
+#### SPEC-ORDER-005 연계 UI 개선
+
+- 주문 상세 페이지 환불 목록 분리 표시
+  - 환불된 상품을 상품 목록에서 제거하고 "환불 목록" 섹션을 별도로 표시 (빨간 테두리)
+  - 환불 목록 컬럼: 도서명, SKU, 수량, 환불금액, 메모
+  - `Refund.line_item_id` ↔ `LineItem.shopify_line_item_id` 프론트엔드 Set 매핑으로 연결
+  - 상품 정보가 없는 환불(line_item_id=null)은 "상품 정보 없음"으로 별도 표시
+- 결제 정보 섹션 간소화
+  - 소계·할인·배송비·세금·합계 다단계 표시 제거
+  - `total_price - Σ(refund.subtotal + refund.total_tax)` 계산 후 "최종 결제 금액" 단일 값만 표시
+  - 환불 내역 섹션(Section 6) 제거 (환불 목록 섹션으로 통합)
+
 #### SPEC-ORDER-004: 주문 개별 재동기화
 
 - `POST /api/orders/{id}/sync/` 단일 주문 재동기화 엔드포인트 추가

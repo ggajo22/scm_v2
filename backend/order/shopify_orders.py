@@ -160,6 +160,7 @@ def _sync_single_order(order_data, store_type):
     if shipping_lines:
         ShippingLine.objects.bulk_create(shipping_lines)
 
+    order_obj.refunds.all().delete()
     for refund_data in order_data.get("refunds", []):
         refund_line_items = refund_data.get("refund_line_items", [])
         first_rli = refund_line_items[0] if refund_line_items else {}
