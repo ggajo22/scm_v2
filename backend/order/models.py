@@ -40,6 +40,7 @@ class Order(models.Model):
     tags = models.TextField(null=True, blank=True)
     cancel_reason = models.CharField(max_length=100, null=True, blank=True)
     source_name = models.CharField(max_length=100, null=True, blank=True)
+    location = models.CharField(max_length=10, blank=True, default="")
     shopify_created_at = models.DateTimeField(null=True, blank=True)
     shopify_updated_at = models.DateTimeField(null=True, blank=True)
     closed_at = models.DateTimeField(null=True, blank=True)
@@ -118,6 +119,7 @@ class LineItem(models.Model):
     fulfillment_status = models.CharField(max_length=50, null=True, blank=True)
     vendor = models.CharField(max_length=255, null=True, blank=True)
     grams = models.IntegerField(null=True, blank=True)
+    location = models.CharField(max_length=10, blank=True, default="")
 
     class Meta:
         db_table = "orders_line_item"

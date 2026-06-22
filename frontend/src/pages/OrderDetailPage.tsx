@@ -218,6 +218,7 @@ export function OrderDetailPage() {
               <tr className="border-b bg-muted/50">
                 <th className="py-2 px-3 text-left font-medium">도서명</th>
                 <th className="py-2 px-3 text-left font-medium">SKU</th>
+                <th className="py-2 px-3 text-left font-medium">위치</th>
                 <th className="py-2 px-3 text-right font-medium">수량</th>
                 <th className="py-2 px-3 text-right font-medium">단가</th>
                 <th className="py-2 px-3 text-right font-medium">할인</th>
@@ -227,7 +228,7 @@ export function OrderDetailPage() {
             <tbody>
               {normalItems.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="py-4 text-center text-muted-foreground text-xs">
+                  <td colSpan={7} className="py-4 text-center text-muted-foreground text-xs">
                     상품 없음
                   </td>
                 </tr>
@@ -246,6 +247,11 @@ export function OrderDetailPage() {
                     </td>
                     <td className="py-2 px-3 font-mono text-xs text-muted-foreground">
                       {item.sku ?? '-'}
+                    </td>
+                    <td className="py-2 px-3">
+                      {item.location
+                        ? <span className="text-xs font-mono">{item.location}</span>
+                        : <span className="text-xs text-muted-foreground">-</span>}
                     </td>
                     <td className="py-2 px-3 text-right">{item.quantity ?? '-'}</td>
                     <td className="py-2 px-3 text-right">{formatPrice(item.price)}</td>

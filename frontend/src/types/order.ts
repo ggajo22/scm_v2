@@ -19,6 +19,7 @@ export interface Order {
   customer: OrderCustomer | null
   has_refund: boolean
   line_items_count: number
+  location?: string
 }
 
 export interface OrderListResponse {
@@ -90,6 +91,7 @@ export interface LineItemDetail {
   fulfillment_status: string | null
   vendor: string | null
   grams: number | null
+  location: string
 }
 
 export interface ShippingLine {

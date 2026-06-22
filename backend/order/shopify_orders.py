@@ -47,7 +47,39 @@ def _decimal_or_none(value):
     return value
 
 
-def _sync_single_order(order_data, store_type):
+def _build_fulfillment_location_data(domain, token, order_id):
+    """Return (order_location, line_item_location_map) from fulfillment_orders API.
+
+    order_location: unique location codes joined with "/" (e.g. "NJ" or "NJ/CA")
+    line_item_location_map: {shopify_line_item_id: location_code}
+    Returns ("", {}) on any error.
+    """
+    try:
+        body, _ = _get_with_headers(domain, token, f"orders/{order_id}/fulfillment_orders.json")
+        fulfillment_orders = body.get("fulfillment_orders", [])
+
+        line_item_map = {}
+        seen = []
+
+        for fo in fulfillment_orders:
+            name = fo.get("assigned_location", {}).get("name", "")
+            parts = name.split("_")
+            loc_code = parts[1] if len(parts) > 1 else ""
+
+            if loc_code and loc_code not in seen:
+                seen.append(loc_code)
+
+            for fo_li in fo.get("line_items", []):
+                line_item_id = fo_li.get("line_item_id")
+                if line_item_id:
+                    line_item_map[line_item_id] = loc_code
+
+        return "/".join(seen), line_item_map
+    except Exception:
+        return "", {}
+
+
+def _sync_single_order(order_data, store_type, location_code="", line_item_location_map=None):
     from .models import (
         BillingAddress,
         Customer,
@@ -100,6 +132,7 @@ def _sync_single_order(order_data, store_type):
             "cancelled_at": order_data.get("cancelled_at"),
             "processed_at": order_data.get("processed_at"),
             "customer": customer_obj,
+            "location": location_code,
         },
     )
 
@@ -139,6 +172,7 @@ def _sync_single_order(order_data, store_type):
             fulfillment_status=li.get("fulfillment_status"),
             vendor=li.get("vendor"),
             grams=li.get("grams"),
+            location=line_item_location_map.get(li["id"], "") if line_item_location_map else "",
         )
         for li in order_data.get("line_items", [])
     ]
@@ -196,7 +230,8 @@ def sync_single_order_from_shopify(shopify_order_id: int, store_type: str) -> di
 
     body, _ = _get_with_headers(domain, token, f"orders/{shopify_order_id}.json")
     order_data = body["order"]
-    _sync_single_order(order_data, store_type)
+    order_location, line_item_map = _build_fulfillment_location_data(domain, token, shopify_order_id)
+    _sync_single_order(order_data, store_type, location_code=order_location, line_item_location_map=line_item_map)
     return order_data
 
 
@@ -222,7 +257,8 @@ def sync_store(store_type):
     synced_count = 0
     updated_count = 0
     for order_data in orders:
-        result = _sync_single_order(order_data, store_type)
+        order_location, line_item_map = _build_fulfillment_location_data(domain, token, order_data["id"])
+        result = _sync_single_order(order_data, store_type, location_code=order_location, line_item_location_map=line_item_map)
         if result == "created":
             synced_count += 1
         else:

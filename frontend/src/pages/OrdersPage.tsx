@@ -7,13 +7,14 @@ import { useOrderSync } from '@/features/order/hooks/useOrderSync'
 import type { Order, OrderListParams } from '@/types/order'
 
 function getDisplayStatus(order: Order): string {
-  // REQ-ORD-049: has_refund=true OR financial_status="refunded" → "취소"
-  if (order.has_refund || order.financial_status === 'refunded') return '취소'
+  if (order.financial_status === 'refunded') return '취소'
+  if (order.financial_status === 'partially_refunded') return '부분취소'
+  // paid + has_refund: $0 cancellation — Shopify keeps status 'paid' but refund record exists
+  if (order.has_refund) return '부분취소'
   const map: Record<string, string> = {
     paid: '결제완료',
     pending: '결제대기',
     partially_paid: '부분결제',
-    partially_refunded: '부분취소',
     voided: '무효',
     authorized: '승인대기',
   }
@@ -189,6 +190,7 @@ export function OrdersPage() {
                 <tr className="border-b bg-muted/50">
                   <th className="py-2 px-3 text-left font-medium">주문번호</th>
                   <th className="py-2 px-3 text-left font-medium">스토어</th>
+                  <th className="py-2 px-3 text-left font-medium">위치</th>
                   <th className="py-2 px-3 text-left font-medium">고객</th>
                   <th className="py-2 px-3 text-left font-medium">결제상태</th>
                   <th className="py-2 px-3 text-left font-medium">출고상태</th>
@@ -199,7 +201,7 @@ export function OrdersPage() {
               <tbody>
                 {data.results.length === 0 && (
                   <tr>
-                    <td colSpan={7} className="py-8 text-center text-muted-foreground">
+                    <td colSpan={8} className="py-8 text-center text-muted-foreground">
                       {params.search
                         ? `"${params.search}"에 해당하는 주문이 없습니다.`
                         : '주문이 없습니다.'}
@@ -217,6 +219,13 @@ export function OrdersPage() {
                     </td>
                     <td className="py-2 px-3">
                       <StoreLabel store={order.store_type} />
+                    </td>
+                    <td className="py-2 px-3">
+                      {order.location ? (
+                        <span className="text-xs font-mono">{order.location}</span>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">-</span>
+                      )}
                     </td>
                     <td className="py-2 px-3">
                       {order.customer

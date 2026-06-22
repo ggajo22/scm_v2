@@ -30,6 +30,7 @@ class OrderListSerializer(serializers.ModelSerializer):
             "customer",
             "has_refund",
             "line_items_count",
+            "location",
         ]
 
     def get_has_refund(self, obj):
@@ -66,6 +67,7 @@ class LineItemDetailSerializer(serializers.ModelSerializer):
         fields = [
             "id", "shopify_line_item_id", "title", "variant_title", "sku",
             "quantity", "price", "total_discount", "fulfillment_status", "vendor", "grams",
+            "location",
         ]
 
 
