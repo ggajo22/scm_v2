@@ -40,6 +40,9 @@ export function UnorderedItemsTab() {
   const allSkus = [...new Set(data?.results.map((item) => item.sku) ?? [])]
   const allSelected = allSkus.length > 0 && allSkus.every((s) => selectedSkus.includes(s))
   const checkedRowCount = data?.results.filter((item) => selectedSkus.includes(item.sku)).length ?? 0
+  const selectedQuantityTotal = data?.results
+    .filter((item) => selectedSkus.includes(item.sku))
+    .reduce((sum, item) => sum + item.quantity, 0) ?? 0
 
   const handleSelectAll = () => {
     if (allSelected) {
@@ -78,7 +81,9 @@ export function UnorderedItemsTab() {
       {/* Action buttons */}
       <div className="flex items-center justify-between">
         <p className="text-sm text-muted-foreground">
-          {checkedRowCount > 0 ? `${checkedRowCount}건 선택됨` : '항목을 선택하세요'}
+          {checkedRowCount > 0
+            ? `${checkedRowCount}건 / 수량 ${selectedQuantityTotal}개`
+            : '항목을 선택하세요'}
         </p>
         <div className="flex gap-2">
           <Button
