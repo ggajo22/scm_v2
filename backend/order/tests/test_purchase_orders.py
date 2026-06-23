@@ -31,8 +31,12 @@ from django.contrib.auth import get_user_model
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
 
+from types import SimpleNamespace
+
 from order.models import (
+    BookseenData,
     DistributorVendorRule,
+    KyoboData,
     LineItem,
     Order,
     PurchaseOrder,
@@ -456,11 +460,10 @@ class TestUploadVendorFileView:
         assert res.status_code == 200
         assert res.data["parsed_count"] == 2
         assert res.data["distributor"] == "bookseen"
-        assert len(res.data["comparisons"]) == 2
 
-        vc = VendorComparison.objects.get(sku="9788901234567")
-        assert vc.bookseen_available is True
-        assert vc.bookseen_price == Decimal("12000")
+        bd = BookseenData.objects.get(sku="9788901234567")
+        assert bd.available is True
+        assert bd.price == Decimal("12000")
 
     def test_upload_kyobo_file(self, auth_client):
         """SC-PO-004: Upload kyobo Excel (교보 format) → VendorComparison kyobo fields updated."""
@@ -477,18 +480,18 @@ class TestUploadVendorFileView:
             format="multipart",
         )
         assert res.status_code == 200
-        vc = VendorComparison.objects.get(sku="9788901234567")
-        assert vc.kyobo_available is True
-        assert vc.kyobo_price == Decimal("11500")  # 23000 / 2
-        assert vc.kyobo_stock == 10
-        assert vc.kyobo_returnable is True
-        assert vc.kyobo_status == "정상"
-        assert vc.kyobo_publisher == "테스트출판사"
-        assert vc.kyobo_ordered_qty == 2
-        assert vc.kyobo_total_price == Decimal("23000")
+        kd = KyoboData.objects.get(sku="9788901234567")
+        assert kd.available is True
+        assert kd.price == Decimal("11500")  # 23000 / 2
+        assert kd.stock == 10
+        assert kd.returnable is True
+        assert kd.status == "정상"
+        assert kd.publisher == "테스트출판사"
+        assert kd.ordered_qty == 2
+        assert kd.total_price == Decimal("23000")
 
     def test_only_bookseen_uploaded_kyobo_fields_null(self, auth_client):
-        """EC-PO-003: Only bookseen uploaded → kyobo fields remain null."""
+        """EC-PO-003: Only bookseen uploaded → no KyoboData record created."""
         excel_bytes = _make_excel([["9788901234569", True, 10000]])
         file_obj = io.BytesIO(excel_bytes)
         file_obj.name = "bookseen.xlsx"
@@ -497,9 +500,8 @@ class TestUploadVendorFileView:
             data={"distributor": "bookseen", "file": file_obj},
             format="multipart",
         )
-        vc = VendorComparison.objects.get(sku="9788901234569")
-        assert vc.kyobo_available is None
-        assert vc.kyobo_price is None
+        assert BookseenData.objects.filter(sku="9788901234569").exists()
+        assert not KyoboData.objects.filter(sku="9788901234569").exists()
 
     def test_invalid_file_format_returns_400(self, auth_client):
         """SC-PO-015: Non-.xlsx/.xls file → HTTP 400."""
@@ -513,9 +515,9 @@ class TestUploadVendorFileView:
         assert res.status_code == 400
 
     def test_upsert_updates_existing_record(self, auth_client):
-        """SC-PO-004: Re-upload updates existing VendorComparison record."""
-        VendorComparison.objects.create(
-            sku="9788901234567", bookseen_available=False, bookseen_price=Decimal("9000")
+        """SC-PO-004: Re-upload updates existing BookseenData record."""
+        BookseenData.objects.create(
+            sku="9788901234567", available=False, price=Decimal("9000")
         )
         excel_bytes = _make_excel([["9788901234567", True, 12000]])
         file_obj = io.BytesIO(excel_bytes)
@@ -525,10 +527,10 @@ class TestUploadVendorFileView:
             data={"distributor": "bookseen", "file": file_obj},
             format="multipart",
         )
-        vc = VendorComparison.objects.get(sku="9788901234567")
-        assert vc.bookseen_available is True
-        assert vc.bookseen_price == Decimal("12000")
-        assert VendorComparison.objects.filter(sku="9788901234567").count() == 1
+        bd = BookseenData.objects.get(sku="9788901234567")
+        assert bd.available is True
+        assert bd.price == Decimal("12000")
+        assert BookseenData.objects.filter(sku="9788901234567").count() == 1
 
 
 # ---------------------------------------------------------------------------
@@ -543,14 +545,20 @@ class TestAutoSelectDistributor:
     Detailed logic tests are in test_auto_dist.py.
     """
 
-    def _vc(self, **kwargs) -> VendorComparison:
+    def _vc(self, **kwargs) -> SimpleNamespace:
         defaults = {
-            "sku": "TEST",
+            "bookseen_price": None,
             "bookseen_stock": kwargs.pop("bookseen_stock", 10),
+            "bookseen_returnable": None,
+            "bookseen_status": None,
+            "kyobo_price": None,
             "kyobo_stock": kwargs.pop("kyobo_stock", 10),
+            "kyobo_returnable": None,
+            "kyobo_status": None,
+            "kyobo_publisher": None,
         }
         defaults.update(kwargs)
-        return VendorComparison(**defaults)
+        return SimpleNamespace(**defaults)
 
     def test_both_available_lower_price_wins(self):
         from order.excel_utils import auto_select_distributor
@@ -614,10 +622,11 @@ class TestVendorComparisonView:
         assert res.data["count"] == 0
 
     def test_returns_comparison_records(self, auth_client):
-        VendorComparison.objects.create(
+        VendorComparison.objects.create(sku="9788901234567")
+        BookseenData.objects.create(
             sku="9788901234567",
-            bookseen_available=True,
-            bookseen_price=Decimal("12000"),
+            available=True,
+            price=Decimal("12000"),
         )
         res = auth_client.get(COMPARISON_URL)
         assert res.status_code == 200

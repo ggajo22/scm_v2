@@ -80,14 +80,29 @@ file=<유효한 xlsx 파일>
 
 **Then**:
 - HTTP 200 응답을 반환한다
-- `VendorComparison` 레코드가 `sku="9788901234567"`, `bookseen_available=True`, `bookseen_price=12000.00`으로 저장된다
+- `BookseenData` 레코드가 `sku="9788901234567"`, `available=True`, `price=12000.00`으로 저장된다
+- `KyoboData` 레코드는 영향받지 않는다 (테이블 분리 — 데이터 독립)
 - 응답의 `parsed_count`가 파일에서 파싱된 행 수와 일치한다
 - 응답에 `comparisons` 배열이 포함되지 않는다 (데이터 저장만 수행)
 - `VendorComparison.selected_distributor`는 이 시점에 갱신되지 않는다
 
 ---
 
-### SC-PO-004a: run-comparison — 미발주 LineItem과 VendorComparison 매칭
+### SC-PO-004e: 업로드 테이블 독립성 — 교보 업로드가 북센 데이터에 영향 없음
+
+**Given**:
+- 북센 파일 업로드 완료: `BookseenData(sku="9788901234567", price=12000, stock=20)` 저장됨
+
+**When** 관리자가 교보 파일을 업로드한다 (`distributor=kyobo`)
+
+**Then**:
+- `KyoboData(sku="9788901234567", price=11500, stock=15)` 레코드가 생성 또는 갱신된다
+- `BookseenData(sku="9788901234567")` 레코드는 변경되지 않는다 (`price=12000`, `stock=20` 유지)
+- 응답의 `distributor`는 `"kyobo"`이다
+
+---
+
+### SC-PO-004a: run-comparison — 미발주 LineItem과 BookseenData/KyoboData 매칭
 
 **Given**:
 - 미발주 LineItem: SKU `"9788901234567"`, 주문 #1001(수량 3), 주문 #1002(수량 2)

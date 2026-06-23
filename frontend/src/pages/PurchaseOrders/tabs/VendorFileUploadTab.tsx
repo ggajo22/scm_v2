@@ -26,6 +26,7 @@ const DISTRIBUTOR_LABEL: Record<string, string> = {
 export function VendorFileUploadTab() {
   const [distributor, setDistributor] = useState<Distributor>('북센')
   const [isDragging, setIsDragging] = useState(false)
+  const [uploadedCounts, setUploadedCounts] = useState<Partial<Record<Distributor, number>>>({})
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const uploadMutation = useUploadVendorFile()
@@ -36,7 +37,11 @@ export function VendorFileUploadTab() {
     const formData = new FormData()
     formData.append('file', file)
     formData.append('distributor', DISTRIBUTOR_API_KEY[distributor])
-    uploadMutation.mutate(formData)
+    uploadMutation.mutate(formData, {
+      onSuccess: (data) => {
+        setUploadedCounts((prev) => ({ ...prev, [distributor]: data.parsed_count }))
+      },
+    })
   }
 
   const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -125,11 +130,21 @@ export function VendorFileUploadTab() {
         />
       </div>
 
-      {/* Upload status */}
-      {uploadMutation.isSuccess && (
-        <p className="text-sm text-green-600">
-          {uploadMutation.data.parsed_count}건 업로드 완료 ({DISTRIBUTOR_API_KEY[distributor] === 'bookseen' ? '북센' : '교보'})
-        </p>
+      {/* Upload status — per-distributor counts */}
+      {Object.keys(uploadedCounts).length > 0 && (
+        <div className="flex items-center gap-4 text-sm">
+          {DISTRIBUTOR_OPTIONS.map((d) =>
+            uploadedCounts[d] !== undefined ? (
+              <span key={d} className="text-green-600">
+                {d} {uploadedCounts[d]}건
+              </span>
+            ) : (
+              <span key={d} className="text-muted-foreground">
+                {d} 미업로드
+              </span>
+            )
+          )}
+        </div>
       )}
 
       {/* Run comparison button */}

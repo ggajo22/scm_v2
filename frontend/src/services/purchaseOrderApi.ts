@@ -106,8 +106,8 @@ export interface WarningResponse {
 }
 
 export interface UploadVendorResponse {
-  message: string
-  processed_count: number
+  parsed_count: number
+  distributor: string
 }
 
 export interface PurchaseOrderParams {

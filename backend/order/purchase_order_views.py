@@ -17,6 +17,7 @@ Endpoints:
 
 from datetime import date, timezone
 from decimal import Decimal, InvalidOperation
+from types import SimpleNamespace
 
 from django.db import IntegrityError, transaction
 from django.db.models import Count, Exists, F, IntegerField, OuterRef, Subquery, Sum
@@ -34,7 +35,7 @@ from .excel_utils import (
     generate_order_excel,
     parse_vendor_excel,
 )
-from .models import DistributorVendorRule, LineItem, PurchaseOrder, Refund, VendorComparison, WarehouseStock
+from .models import BookseenData, DistributorVendorRule, KyoboData, LineItem, PurchaseOrder, Refund, VendorComparison, WarehouseStock
 
 VALID_DISTRIBUTORS = {"bookseen", "kyobo", "choeumgoyuk", "agape"}
 VENDOR_FILE_DISTRIBUTORS = {"bookseen", "kyobo"}
@@ -280,26 +281,26 @@ class UploadVendorFileView(APIView):
 
             if distributor == "bookseen":
                 defaults = {
-                    "bookseen_available": available,
-                    "bookseen_price": price,
-                    "bookseen_stock": stock,
-                    "bookseen_returnable": returnable,
-                    "bookseen_status": vendor_status,
-                    "bookseen_arrival": arrival,
+                    "available": available,
+                    "price": price,
+                    "stock": stock,
+                    "returnable": returnable,
+                    "status": vendor_status,
+                    "arrival": arrival,
                 }
+                BookseenData.objects.update_or_create(sku=sku, defaults=defaults)
             else:  # kyobo
                 defaults = {
-                    "kyobo_available": available,
-                    "kyobo_price": price,
-                    "kyobo_stock": stock,
-                    "kyobo_returnable": returnable,
-                    "kyobo_status": vendor_status,
-                    "kyobo_publisher": publisher,
-                    "kyobo_ordered_qty": ordered_qty,
-                    "kyobo_total_price": total_price,
+                    "available": available,
+                    "price": price,
+                    "stock": stock,
+                    "returnable": returnable,
+                    "status": vendor_status,
+                    "publisher": publisher,
+                    "ordered_qty": ordered_qty,
+                    "total_price": total_price,
                 }
-
-            VendorComparison.objects.update_or_create(sku=sku, defaults=defaults)
+                KyoboData.objects.update_or_create(sku=sku, defaults=defaults)
             upserted_skus.append(sku)
 
         return Response(
@@ -377,43 +378,57 @@ class RunComparisonView(APIView):
             wstock_map.setdefault(s.isbn, {})
             wstock_map[s.isbn][s.location] = s.quantity
 
-        vc_map: dict[str, VendorComparison] = {
-            vc.sku: vc for vc in VendorComparison.objects.filter(sku__in=all_skus)
+        bs_map: dict[str, BookseenData] = {
+            bd.sku: bd for bd in BookseenData.objects.filter(sku__in=all_skus)
+        }
+        ky_map: dict[str, KyoboData] = {
+            kd.sku: kd for kd in KyoboData.objects.filter(sku__in=all_skus)
         }
 
         results = []
         for sku, data in sku_data.items():
-            vc = vc_map.get(sku)
+            bs = bs_map.get(sku)
+            ky = ky_map.get(sku)
             total_qty = data["total_qty"]
             stocks = wstock_map.get(sku, {})
 
-            now = timezone.now()
-            if vc:
+            if bs is not None or ky is not None:
+                vc_ns = SimpleNamespace(
+                    bookseen_price=bs.price if bs else None,
+                    bookseen_stock=bs.stock if bs else None,
+                    bookseen_returnable=bs.returnable if bs else None,
+                    bookseen_status=bs.status if bs else None,
+                    kyobo_price=ky.price if ky else None,
+                    kyobo_stock=ky.stock if ky else None,
+                    kyobo_returnable=ky.returnable if ky else None,
+                    kyobo_status=ky.status if ky else None,
+                    kyobo_publisher=ky.publisher if ky else None,
+                )
                 sel = auto_select_distributor(
-                    vc=vc,
+                    vc=vc_ns,
                     total_qty=total_qty,
                     korea_stock=stocks.get("korea", 0),
                     ca_stock=stocks.get("ca", 0),
                     nj_stock=stocks.get("nj", 0),
                     vendor_rules=rules,
                 )
-                update_fields = []
-                if sel["selected_distributor"] != vc.selected_distributor:
-                    vc.selected_distributor = sel["selected_distributor"]
-                    update_fields.append("selected_distributor")
-                vc.candidate_basis = sel["candidate_basis"]
-                vc.price_diff = sel["price_diff"]
-                vc.price_diff_alert = sel["price_diff_alert"]
-                update_fields += ["candidate_basis", "price_diff", "price_diff_alert", "updated_at"]
-                vc.save(update_fields=update_fields)
 
-                # Determine price to record on each LineItem based on selected distributor
+                # Save comparison result back to VendorComparison
+                vc_obj, _ = VendorComparison.objects.get_or_create(sku=sku)
+                vc_obj.selected_distributor = sel["selected_distributor"]
+                vc_obj.candidate_basis = sel["candidate_basis"]
+                vc_obj.price_diff = sel["price_diff"]
+                vc_obj.price_diff_alert = sel["price_diff_alert"]
+                vc_obj.save()
+
+                # Confirmed price on LineItem
+                now = timezone.now()
                 selected = sel["selected_distributor"]
-                if selected in ("BOOXEN",):
-                    confirmed_price = vc.bookseen_price
+                if selected == "bookseen":
+                    confirmed_price = bs.price if bs else None
                     confirmed_dist = "bookseen"
-                elif selected == "교보":
-                    confirmed_price = vc.kyobo_price
+                elif selected == "kyobo":
+                    confirmed_price = ky.price if ky else None
                     confirmed_dist = "kyobo"
                 else:
                     confirmed_price = None
@@ -431,16 +446,16 @@ class RunComparisonView(APIView):
                     "title": data["title"],
                     "total_qty": total_qty,
                     "line_items": data["line_items"],
-                    "bookseen_available": vc.bookseen_available,
-                    "bookseen_price": str(vc.bookseen_price) if vc.bookseen_price is not None else None,
-                    "bookseen_stock": vc.bookseen_stock,
-                    "kyobo_available": vc.kyobo_available,
-                    "kyobo_price": str(vc.kyobo_price) if vc.kyobo_price is not None else None,
-                    "kyobo_stock": vc.kyobo_stock,
-                    "selected_distributor": vc.selected_distributor,
-                    "candidate_basis": vc.candidate_basis,
-                    "price_diff": str(vc.price_diff) if vc.price_diff is not None else None,
-                    "price_diff_alert": vc.price_diff_alert,
+                    "bookseen_available": bs.available if bs else None,
+                    "bookseen_price": str(bs.price) if bs and bs.price is not None else None,
+                    "bookseen_stock": bs.stock if bs else None,
+                    "kyobo_available": ky.available if ky else None,
+                    "kyobo_price": str(ky.price) if ky and ky.price is not None else None,
+                    "kyobo_stock": ky.stock if ky else None,
+                    "selected_distributor": sel["selected_distributor"],
+                    "candidate_basis": sel["candidate_basis"],
+                    "price_diff": str(sel["price_diff"]) if sel["price_diff"] is not None else None,
+                    "price_diff_alert": sel["price_diff_alert"],
                     "confirmed_price": str(confirmed_price) if confirmed_price is not None else None,
                     "confirmed_distributor": confirmed_dist,
                 })
@@ -484,6 +499,15 @@ class VendorComparisonView(APIView):
 
     def get(self, request) -> Response:
         comparisons = list(VendorComparison.objects.all().order_by("sku"))
+        all_skus = [vc.sku for vc in comparisons]
+
+        # Pre-fetch vendor data from the new split tables
+        bs_map: dict[str, BookseenData] = {
+            bd.sku: bd for bd in BookseenData.objects.filter(sku__in=all_skus)
+        }
+        ky_map: dict[str, KyoboData] = {
+            kd.sku: kd for kd in KyoboData.objects.filter(sku__in=all_skus)
+        }
 
         # Pre-fetch data for auto-selection (single queries, not per-row)
         rules = list(DistributorVendorRule.objects.values_list("publisher_name", "distributor"))
@@ -504,10 +528,24 @@ class VendorComparisonView(APIView):
         results = []
         for vc in comparisons:
             isbn = vc.sku
+            bs = bs_map.get(isbn)
+            ky = ky_map.get(isbn)
             total_qty = qty_by_sku.get(isbn, 0)
             wstock = stock_map.get(isbn, {"korea": 0, "ca": 0, "nj": 0})
+
+            vc_ns = SimpleNamespace(
+                bookseen_price=bs.price if bs else None,
+                bookseen_stock=bs.stock if bs else None,
+                bookseen_returnable=bs.returnable if bs else None,
+                bookseen_status=bs.status if bs else None,
+                kyobo_price=ky.price if ky else None,
+                kyobo_stock=ky.stock if ky else None,
+                kyobo_returnable=ky.returnable if ky else None,
+                kyobo_status=ky.status if ky else None,
+                kyobo_publisher=ky.publisher if ky else None,
+            )
             result = auto_select_distributor(
-                vc=vc,
+                vc=vc_ns,
                 total_qty=total_qty,
                 korea_stock=wstock["korea"],
                 ca_stock=wstock["ca"],
@@ -526,17 +564,19 @@ class VendorComparisonView(APIView):
             )
 
             # Serialize bookseen_returnable as "가능"/"불가"/null
-            if vc.bookseen_returnable is True:
+            bs_returnable = bs.returnable if bs else None
+            if bs_returnable is True:
                 bs_returnable_display = "가능"
-            elif vc.bookseen_returnable is False:
+            elif bs_returnable is False:
                 bs_returnable_display = "불가"
             else:
                 bs_returnable_display = None
 
             # Serialize kyobo_returnable as "Y"/"N"/null
-            if vc.kyobo_returnable is True:
+            ky_returnable = ky.returnable if ky else None
+            if ky_returnable is True:
                 ky_returnable_display = "Y"
-            elif vc.kyobo_returnable is False:
+            elif ky_returnable is False:
                 ky_returnable_display = "N"
             else:
                 ky_returnable_display = None
@@ -544,21 +584,21 @@ class VendorComparisonView(APIView):
             results.append(
                 {
                     "sku": vc.sku,
-                    "bookseen_available": vc.bookseen_available,
-                    "bookseen_price": str(vc.bookseen_price) if vc.bookseen_price is not None else None,
-                    "bookseen_stock": vc.bookseen_stock,
+                    "bookseen_available": bs.available if bs else None,
+                    "bookseen_price": str(bs.price) if bs and bs.price is not None else None,
+                    "bookseen_stock": bs.stock if bs else None,
                     "bookseen_returnable": bs_returnable_display,
-                    "bookseen_status": vc.bookseen_status,
-                    "bookseen_arrival": vc.bookseen_arrival,
-                    "kyobo_available": vc.kyobo_available,
-                    "kyobo_price": str(vc.kyobo_price) if vc.kyobo_price is not None else None,
-                    "kyobo_stock": vc.kyobo_stock,
+                    "bookseen_status": bs.status if bs else None,
+                    "bookseen_arrival": bs.arrival if bs else None,
+                    "kyobo_available": ky.available if ky else None,
+                    "kyobo_price": str(ky.price) if ky and ky.price is not None else None,
+                    "kyobo_stock": ky.stock if ky else None,
                     "kyobo_returnable": ky_returnable_display,
-                    "kyobo_status": vc.kyobo_status,
-                    "kyobo_publisher": vc.kyobo_publisher,
-                    "kyobo_ordered_qty": vc.kyobo_ordered_qty,
+                    "kyobo_status": ky.status if ky else None,
+                    "kyobo_publisher": ky.publisher if ky else None,
+                    "kyobo_ordered_qty": ky.ordered_qty if ky else None,
                     "kyobo_total_price": (
-                        str(vc.kyobo_total_price) if vc.kyobo_total_price is not None else None
+                        str(ky.total_price) if ky and ky.total_price is not None else None
                     ),
                     "selected_distributor": vc.selected_distributor,
                     "candidate_basis": vc.candidate_basis,

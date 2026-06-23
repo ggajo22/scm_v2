@@ -206,7 +206,7 @@ def _parse_kyobo_xlsx(file_bytes: bytes) -> list[dict]:
 
         raw_sku = row[_KYOBO_COL_ISBN]
         sku = str(raw_sku).strip() if raw_sku is not None else None
-        if not sku:
+        if not sku or not sku.isdigit():
             continue
 
         # 출고여부 'Y' → available

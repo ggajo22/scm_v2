@@ -214,8 +214,50 @@ class PurchaseOrder(models.Model):
         return f"PurchaseOrder({self.sku}, {self.distributor}, qty={self.quantity})"
 
 
+class BookseenData(models.Model):
+    """Bookseen distributor vendor data, keyed by SKU."""
+
+    sku = models.CharField(max_length=255, unique=True)
+    available = models.BooleanField(null=True, blank=True)
+    price = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    stock = models.IntegerField(null=True, blank=True)
+    returnable = models.BooleanField(null=True, blank=True)
+    status = models.CharField(max_length=50, null=True, blank=True)
+    arrival = models.CharField(max_length=100, null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "orders_bookseendata"
+        indexes = [models.Index(fields=["sku"])]
+
+    def __str__(self) -> str:
+        return f"BookseenData({self.sku})"
+
+
+class KyoboData(models.Model):
+    """Kyobo distributor vendor data, keyed by SKU."""
+
+    sku = models.CharField(max_length=255, unique=True)
+    available = models.BooleanField(null=True, blank=True)
+    price = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    stock = models.IntegerField(null=True, blank=True)
+    returnable = models.BooleanField(null=True, blank=True)
+    status = models.CharField(max_length=50, null=True, blank=True)
+    publisher = models.CharField(max_length=255, null=True, blank=True)
+    ordered_qty = models.IntegerField(null=True, blank=True)
+    total_price = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "orders_kyobodata"
+        indexes = [models.Index(fields=["sku"])]
+
+    def __str__(self) -> str:
+        return f"KyoboData({self.sku})"
+
+
 class VendorComparison(models.Model):
-    """Stores availability and price comparison between Bookseen and Kyobo for a SKU."""
+    """Stores auto-selection results (selected distributor) for a SKU."""
 
     DISTRIBUTOR_CHOICES = [
         ("bookseen", "북센"),
@@ -228,22 +270,6 @@ class VendorComparison(models.Model):
     ]
 
     sku = models.CharField(max_length=255)
-    # Bookseen fields
-    bookseen_available = models.BooleanField(null=True, blank=True)
-    bookseen_price = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
-    bookseen_stock = models.IntegerField(null=True, blank=True)
-    bookseen_returnable = models.BooleanField(null=True, blank=True)
-    bookseen_status = models.CharField(max_length=50, null=True, blank=True)
-    bookseen_arrival = models.CharField(max_length=100, null=True, blank=True)
-    # Kyobo fields
-    kyobo_available = models.BooleanField(null=True, blank=True)
-    kyobo_price = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
-    kyobo_stock = models.IntegerField(null=True, blank=True)
-    kyobo_returnable = models.BooleanField(null=True, blank=True)
-    kyobo_status = models.CharField(max_length=50, null=True, blank=True)
-    kyobo_publisher = models.CharField(max_length=255, null=True, blank=True)
-    kyobo_ordered_qty = models.IntegerField(null=True, blank=True)
-    kyobo_total_price = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
     selected_distributor = models.CharField(
         max_length=20, choices=DISTRIBUTOR_CHOICES, null=True, blank=True
     )

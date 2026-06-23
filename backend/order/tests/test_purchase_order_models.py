@@ -2,8 +2,10 @@ import pytest
 from django.db import IntegrityError
 
 from order.models import (
+    BookseenData,
     Customer,
     DistributorVendorRule,
+    KyoboData,
     LineItem,
     Order,
     PurchaseOrder,
@@ -151,12 +153,9 @@ class TestPurchaseOrder:
 @pytest.mark.django_db
 class TestVendorComparison:
     def test_create_vendor_comparison(self):
-        """Basic creation should persist the record."""
+        """Basic creation should persist the record with selection metadata."""
         vc = VendorComparison.objects.create(
             sku="ISBN-9780001",
-            bookseen_available=True,
-            bookseen_price=15000,
-            kyobo_available=False,
             selected_distributor="bookseen",
         )
         assert vc.pk is not None
@@ -172,30 +171,9 @@ class TestVendorComparison:
         """All optional fields should accept NULL without error."""
         vc = VendorComparison.objects.create(
             sku="ISBN-9780003",
-            bookseen_available=None,
-            bookseen_price=None,
-            kyobo_available=None,
-            kyobo_price=None,
             selected_distributor=None,
         )
-        assert vc.bookseen_available is None
-        assert vc.bookseen_price is None
-        assert vc.kyobo_available is None
-        assert vc.kyobo_price is None
         assert vc.selected_distributor is None
-
-    def test_both_prices_stored(self):
-        """bookseen_price and kyobo_price should both be storable in the same row."""
-        from decimal import Decimal
-
-        vc = VendorComparison.objects.create(
-            sku="ISBN-9780004",
-            bookseen_price=Decimal("12000.00"),
-            kyobo_price=Decimal("11500.00"),
-        )
-        vc.refresh_from_db()
-        assert vc.bookseen_price == Decimal("12000.00")
-        assert vc.kyobo_price == Decimal("11500.00")
 
     def test_db_table_name(self):
         """The underlying DB table should follow the orders_ naming convention."""
@@ -206,6 +184,63 @@ class TestVendorComparison:
         vc = VendorComparison.objects.create(sku="ISBN-9780005")
         assert vc.created_at is not None
         assert vc.updated_at is not None
+
+
+@pytest.mark.django_db
+class TestBookseenData:
+    def test_create_bookseen_data(self):
+        """BookseenData stores bookseen vendor info independently."""
+        from decimal import Decimal
+
+        bd = BookseenData.objects.create(
+            sku="ISBN-9780010",
+            available=True,
+            price=Decimal("15000.00"),
+            stock=5,
+        )
+        bd.refresh_from_db()
+        assert bd.available is True
+        assert bd.price == Decimal("15000.00")
+        assert bd.stock == 5
+
+    def test_sku_uniqueness(self):
+        """BookseenData SKU must be unique."""
+        BookseenData.objects.create(sku="ISBN-9780011")
+        with pytest.raises(IntegrityError):
+            BookseenData.objects.create(sku="ISBN-9780011")
+
+    def test_db_table_name(self):
+        """Table name must match declared db_table."""
+        assert BookseenData._meta.db_table == "orders_bookseendata"
+
+
+@pytest.mark.django_db
+class TestKyoboData:
+    def test_create_kyobo_data(self):
+        """KyoboData stores kyobo vendor info independently."""
+        from decimal import Decimal
+
+        kd = KyoboData.objects.create(
+            sku="ISBN-9780020",
+            available=True,
+            price=Decimal("11500.00"),
+            stock=10,
+            publisher="테스트출판사",
+        )
+        kd.refresh_from_db()
+        assert kd.available is True
+        assert kd.price == Decimal("11500.00")
+        assert kd.publisher == "테스트출판사"
+
+    def test_sku_uniqueness(self):
+        """KyoboData SKU must be unique."""
+        KyoboData.objects.create(sku="ISBN-9780021")
+        with pytest.raises(IntegrityError):
+            KyoboData.objects.create(sku="ISBN-9780021")
+
+    def test_db_table_name(self):
+        """Table name must match declared db_table."""
+        assert KyoboData._meta.db_table == "orders_kyobodata"
 
 
 # ---------------------------------------------------------------------------

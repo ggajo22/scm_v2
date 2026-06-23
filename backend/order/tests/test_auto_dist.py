@@ -13,33 +13,30 @@ Test scenarios cover all 5 decision steps:
 """
 
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 
 from order.excel_utils import auto_select_distributor
-from order.models import VendorComparison
 
 
-def _vc(**kwargs) -> VendorComparison:
-    """Helper: create an unsaved VendorComparison instance with given fields."""
+def _vc(**kwargs) -> SimpleNamespace:
+    """Helper: create a SimpleNamespace mimicking vendor comparison fields."""
     defaults = {
-        "sku": "TEST-001",
         "bookseen_available": None,
         "bookseen_price": None,
         "bookseen_stock": None,
         "bookseen_returnable": None,
         "bookseen_status": None,
-        "bookseen_arrival": None,
         "kyobo_available": None,
         "kyobo_price": None,
         "kyobo_stock": None,
         "kyobo_returnable": None,
         "kyobo_status": None,
         "kyobo_publisher": None,
-        "selected_distributor": None,
     }
     defaults.update(kwargs)
-    return VendorComparison(**defaults)
+    return SimpleNamespace(**defaults)
 
 
 # ---------------------------------------------------------------------------
