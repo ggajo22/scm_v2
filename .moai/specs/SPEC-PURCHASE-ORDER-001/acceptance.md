@@ -82,6 +82,25 @@ file=<유효한 xlsx 파일>
 - HTTP 200 응답을 반환한다
 - `VendorComparison` 레코드가 `sku="9788901234567"`, `bookseen_available=True`, `bookseen_price=12000.00`으로 저장된다
 - 응답의 `parsed_count`가 파일에서 파싱된 행 수와 일치한다
+- 응답에 `comparisons` 배열이 포함되지 않는다 (데이터 저장만 수행)
+- `VendorComparison.selected_distributor`는 이 시점에 갱신되지 않는다
+
+---
+
+### SC-PO-004a: run-comparison — 미발주 LineItem과 VendorComparison 매칭
+
+**Given**:
+- 미발주 LineItem: SKU `"9788901234567"`, 주문 #1001(수량 3), 주문 #1002(수량 2)
+- `VendorComparison`: bookseen_price=12000, bookseen_stock=20, kyobo_price=11500, kyobo_stock=15
+
+**When** 관리자가 `POST /api/purchase-orders/run-comparison/`을 호출한다
+
+**Then**:
+- HTTP 200 응답을 반환한다
+- 응답 `results`에 `sku="9788901234567"`, `total_qty=5` 항목이 포함된다
+- `line_items`에 `[{id: ..., order_name: "#1001", quantity: 3}, {id: ..., order_name: "#1002", quantity: 2}]`가 포함된다
+- `selected_distributor`는 `"kyobo"` (교보 가격이 더 저렴)
+- `VendorComparison` 레코드의 `selected_distributor`가 `"kyobo"`로 갱신된다
 
 ---
 
@@ -92,7 +111,9 @@ file=<유효한 xlsx 파일>
 - SKU `"B"`: bookseen_available=False, bookseen_price=null, kyobo_available=True, kyobo_price=9500
 - SKU `"C"`: bookseen_available=True, bookseen_price=11000, kyobo_available=True, kyobo_price=10500
 
-**When** 관리자가 `GET /api/purchase-orders/comparison/`을 요청한다
+각 SKU에 해당하는 미발주 LineItem이 존재한다
+
+**When** 관리자가 `POST /api/purchase-orders/run-comparison/`을 요청한다
 
 **Then**:
 - SKU `"A"`의 `selected_distributor`는 `"bookseen"`이다 (유일하게 재고 있는 업체)
@@ -204,17 +225,29 @@ POST /api/purchase-orders/vendor-rules/
 
 ---
 
-### SC-PO-012: 프론트엔드 — 업체 자료 업로드 및 비교
+### SC-PO-012: 프론트엔드 — 업체 자료 업로드
 
 **Given** 업체 자료 업로드 탭이 열려 있다
 
 **When** 관리자가 "교보" 유통사를 선택하고 Excel 파일을 업로드한다
 
 **Then**:
-- `POST /api/purchase-orders/upload-vendor-file/`이 호출된다
-- 업로드 완료 후 비교 결과 테이블이 표시된다
-- 각 행에 현재 선택된 발주처를 변경할 수 있는 드롭다운이 존재한다
-- 자동 선택된 발주처가 드롭다운에 기본값으로 표시된다
+- `POST /api/purchase-orders/upload-vendor-file/`에 `distributor=kyobo`로 호출된다 (UI의 "교보"가 API 값 "kyobo"로 변환됨)
+- 업로드 완료 후 파싱 건수(`parsed_count`)가 화면에 표시된다
+- 비교 결과 테이블은 표시되지 않는다
+
+---
+
+### SC-PO-012a: 프론트엔드 — 비교 실행 및 미발주 매칭 결과 표시
+
+**Given** 업체 자료 업로드 탭에서 북센/교보 파일이 모두 업로드된 상태이다
+
+**When** 관리자가 "비교 실행" 버튼을 클릭한다
+
+**Then**:
+- `POST /api/purchase-orders/run-comparison/`이 호출된다
+- 결과 테이블에 SKU별로 미발주 주문 목록(order_name × 수량), 북센/교보 재고·단가, 자동 선택 발주처, 선택 근거가 표시된다
+- "발주 확정 탭으로 이동" 버튼이 표시된다
 
 ---
 
@@ -293,8 +326,9 @@ POST /api/purchase-orders/vendor-rules/
 - [ ] 모든 API 엔드포인트 JWT 인증 적용 확인
 - [ ] `GET /api/purchase-orders/unordered/` — SKU별 집계 정상 동작
 - [ ] `POST /api/purchase-orders/generate-order-file/` — Excel 다운로드 정상 동작
-- [ ] `POST /api/purchase-orders/upload-vendor-file/` — Excel 파싱 및 VendorComparison 저장 정상 동작
-- [ ] 자동 발주처 선택 로직 (재고 우선, 단가 비교) 정확성 검증
+- [ ] `POST /api/purchase-orders/upload-vendor-file/` — Excel 파싱 및 VendorComparison 저장 정상 동작 (auto_select 호출 없음)
+- [ ] `POST /api/purchase-orders/run-comparison/` — 미발주 LineItem 집계 → auto_select → 결과 반환 정상 동작
+- [ ] 자동 발주처 선택 로직 (재고 우선, 단가 비교) 정확성 검증 — run-comparison 호출 시 동작
 - [ ] `POST /api/purchase-orders/confirm/` — PurchaseOrder 생성 및 LineItem 연결 정상 동작
 - [ ] 이중 발주 방지 (HTTP 409) 동작 확인
 - [ ] `GET/POST /api/purchase-orders/vendor-rules/` — CRUD 정상 동작
@@ -311,8 +345,9 @@ POST /api/purchase-orders/vendor-rules/
 - [ ] 미발주 현황 테이블 데이터 표시 (로딩 상태 포함)
 - [ ] 체크박스 선택 및 발주 파일 생성 버튼 활성화 동작
 - [ ] Excel 파일 다운로드 정상 동작
-- [ ] 업체 자료 파일 업로드 및 비교 테이블 표시
-- [ ] 발주처 수동 변경 드롭다운 동작
+- [ ] 업체 자료 파일 업로드 후 parsed_count 표시
+- [ ] "비교 실행" 버튼 클릭 시 run-comparison 호출 및 미발주 LineItem 매칭 결과 테이블 표시
+- [ ] 유통사 선택 UI 값(북센/교보)이 API 전송 시 bookseen/kyobo로 변환됨 확인
 - [ ] 발주 확정 후 TanStack Query 캐시 무효화 및 UI 갱신
 - [ ] 발주 이력 테이블 표시 및 필터 동작
 - [ ] 발주처 규칙 추가/삭제 동작

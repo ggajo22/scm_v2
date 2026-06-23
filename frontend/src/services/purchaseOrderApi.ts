@@ -43,6 +43,29 @@ export interface ComparisonItem {
   selected_distributor: string | null
 }
 
+export interface ComparisonLineItem {
+  id: number
+  order_name: string | null
+  quantity: number
+}
+
+export interface ComparisonResult {
+  sku: string
+  title: string
+  total_qty: number
+  line_items: ComparisonLineItem[]
+  bookseen_available: boolean | null
+  bookseen_price: string | null
+  bookseen_stock: number | null
+  kyobo_available: boolean | null
+  kyobo_price: string | null
+  kyobo_stock: number | null
+  selected_distributor: string | null
+  candidate_basis: string | null
+  price_diff: string | null
+  price_diff_alert: boolean | null
+}
+
 export interface ConfirmItem {
   sku: string
   distributor: string
@@ -131,6 +154,11 @@ export async function uploadVendorFile(formData: FormData): Promise<UploadVendor
 
 export async function getComparison(): Promise<{ count: number; results: ComparisonItem[] }> {
   const res = await api.get('/api/purchase-orders/comparison/')
+  return res.data
+}
+
+export async function runComparison(): Promise<{ count: number; results: ComparisonResult[] }> {
+  const res = await api.post('/api/purchase-orders/run-comparison/')
   return res.data
 }
 

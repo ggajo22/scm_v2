@@ -264,7 +264,7 @@ class UploadVendorFileView(APIView):
                 status=status.HTTP_422_UNPROCESSABLE_ENTITY,
             )
 
-        comparisons = []
+        upserted_skus = []
         for row in parsed_rows:
             sku = row["sku"]
             available = row["available"]
@@ -299,54 +299,152 @@ class UploadVendorFileView(APIView):
                     "kyobo_total_price": total_price,
                 }
 
-            vc, _ = VendorComparison.objects.update_or_create(sku=sku, defaults=defaults)
-
-            # Re-fetch to compute auto-selection with latest values
-            vc.refresh_from_db()
-            rules = list(DistributorVendorRule.objects.values_list("publisher_name", "distributor"))
-            # Pre-fetch warehouse stock for this SKU
-            wstocks = WarehouseStock.objects.filter(isbn=sku)
-            wstock_map: dict[str, int] = {s.location: s.quantity for s in wstocks}
-            # Compute total_qty from unordered LineItems for this SKU
-            total_qty_row = (
-                LineItem.objects
-                .filter(sku=sku, purchase_orders__isnull=True)
-                .aggregate(total=Sum("quantity"))
-            )
-            total_qty = total_qty_row["total"] or 0
-            result = auto_select_distributor(
-                vc=vc,
-                total_qty=total_qty,
-                korea_stock=wstock_map.get("korea", 0),
-                ca_stock=wstock_map.get("ca", 0),
-                nj_stock=wstock_map.get("nj", 0),
-                vendor_rules=rules,
-            )
-            update_fields = []
-            if result["selected_distributor"] != vc.selected_distributor:
-                vc.selected_distributor = result["selected_distributor"]
-                update_fields.append("selected_distributor")
-            vc.candidate_basis = result["candidate_basis"]
-            vc.price_diff = result["price_diff"]
-            vc.price_diff_alert = result["price_diff_alert"]
-            update_fields += ["candidate_basis", "price_diff", "price_diff_alert", "updated_at"]
-            vc.save(update_fields=update_fields)
-
-            comparisons.append(
-                {"sku": sku, "available": available, "price": str(price) if price is not None else None}
-            )
+            VendorComparison.objects.update_or_create(sku=sku, defaults=defaults)
+            upserted_skus.append(sku)
 
         return Response(
             {
-                "parsed_count": len(comparisons),
+                "parsed_count": len(upserted_skus),
                 "distributor": distributor,
-                "comparisons": comparisons,
             }
         )
 
 
 # ---------------------------------------------------------------------------
-# M4b: Vendor comparison list
+# M4b: Run comparison — match unordered LineItems with vendor data
+# ---------------------------------------------------------------------------
+
+
+class RunComparisonView(APIView):
+    """
+    POST /api/purchase-orders/run-comparison/
+
+    Runs auto_select_distributor for every SKU that has unordered LineItems,
+    saves the result back to VendorComparison, and returns the matched data.
+    """
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request) -> Response:
+        refund_sum_sq = (
+            Refund.objects.filter(
+                order_id=OuterRef("order_id"),
+                line_item_id=OuterRef("shopify_line_item_id"),
+            )
+            .values("order_id", "line_item_id")
+            .annotate(total=Sum("quantity"))
+            .values("total")[:1]
+        )
+
+        line_items = (
+            LineItem.objects.filter(sku__isnull=False, purchase_status="unordered")
+            .exclude(purchase_orders__isnull=False)
+            .annotate(
+                refunded_qty=Coalesce(
+                    Subquery(refund_sum_sq, output_field=IntegerField()),
+                    0,
+                )
+            )
+            .select_related("order")
+        )
+
+        # Group unordered LineItems by SKU
+        sku_data: dict[str, dict] = {}
+        for li in line_items:
+            net_qty = max((li.quantity or 0) - li.refunded_qty, 0)
+            if net_qty == 0:
+                continue
+            sku = li.sku
+            if sku not in sku_data:
+                sku_data[sku] = {"total_qty": 0, "line_items": [], "title": li.title or ""}
+            sku_data[sku]["total_qty"] += net_qty
+            order = li.order
+            order_name = order.name or (f"#{order.order_number}" if order.order_number else None)
+            sku_data[sku]["line_items"].append(
+                {"id": li.pk, "order_name": order_name, "quantity": net_qty}
+            )
+
+        if not sku_data:
+            return Response({"count": 0, "results": []})
+
+        all_skus = list(sku_data.keys())
+
+        rules = list(DistributorVendorRule.objects.values_list("publisher_name", "distributor"))
+
+        wstock_map: dict[str, dict[str, int]] = {}
+        for s in WarehouseStock.objects.filter(isbn__in=all_skus):
+            wstock_map.setdefault(s.isbn, {})
+            wstock_map[s.isbn][s.location] = s.quantity
+
+        vc_map: dict[str, VendorComparison] = {
+            vc.sku: vc for vc in VendorComparison.objects.filter(sku__in=all_skus)
+        }
+
+        results = []
+        for sku, data in sku_data.items():
+            vc = vc_map.get(sku)
+            total_qty = data["total_qty"]
+            stocks = wstock_map.get(sku, {})
+
+            if vc:
+                sel = auto_select_distributor(
+                    vc=vc,
+                    total_qty=total_qty,
+                    korea_stock=stocks.get("korea", 0),
+                    ca_stock=stocks.get("ca", 0),
+                    nj_stock=stocks.get("nj", 0),
+                    vendor_rules=rules,
+                )
+                update_fields = []
+                if sel["selected_distributor"] != vc.selected_distributor:
+                    vc.selected_distributor = sel["selected_distributor"]
+                    update_fields.append("selected_distributor")
+                vc.candidate_basis = sel["candidate_basis"]
+                vc.price_diff = sel["price_diff"]
+                vc.price_diff_alert = sel["price_diff_alert"]
+                update_fields += ["candidate_basis", "price_diff", "price_diff_alert", "updated_at"]
+                vc.save(update_fields=update_fields)
+
+                results.append({
+                    "sku": sku,
+                    "title": data["title"],
+                    "total_qty": total_qty,
+                    "line_items": data["line_items"],
+                    "bookseen_available": vc.bookseen_available,
+                    "bookseen_price": str(vc.bookseen_price) if vc.bookseen_price is not None else None,
+                    "bookseen_stock": vc.bookseen_stock,
+                    "kyobo_available": vc.kyobo_available,
+                    "kyobo_price": str(vc.kyobo_price) if vc.kyobo_price is not None else None,
+                    "kyobo_stock": vc.kyobo_stock,
+                    "selected_distributor": vc.selected_distributor,
+                    "candidate_basis": vc.candidate_basis,
+                    "price_diff": str(vc.price_diff) if vc.price_diff is not None else None,
+                    "price_diff_alert": vc.price_diff_alert,
+                })
+            else:
+                results.append({
+                    "sku": sku,
+                    "title": data["title"],
+                    "total_qty": total_qty,
+                    "line_items": data["line_items"],
+                    "bookseen_available": None,
+                    "bookseen_price": None,
+                    "bookseen_stock": None,
+                    "kyobo_available": None,
+                    "kyobo_price": None,
+                    "kyobo_stock": None,
+                    "selected_distributor": None,
+                    "candidate_basis": None,
+                    "price_diff": None,
+                    "price_diff_alert": None,
+                })
+
+        return Response({"count": len(results), "results": results})
+
+
+# ---------------------------------------------------------------------------
+# M4c: Vendor comparison list (legacy — full VendorComparison records)
 # ---------------------------------------------------------------------------
 
 

@@ -165,13 +165,41 @@
 
 ---
 
+### 시나리오 15: RunComparisonView — 미발주 LineItem 매칭
+
+**Given**:
+- 미발주 LineItem: SKU `"9788901234567"`, 주문 2건(수량 각 3, 2)
+- `VendorComparison`: bookseen_stock=20, bookseen_price=12000, kyobo_stock=15, kyobo_price=11500
+- 창고 재고 없음, DistributorVendorRule 해당 없음
+
+**When** `POST /api/purchase-orders/run-comparison/`이 호출된다
+
+**Then**:
+- 응답 `results`에 `sku`, `total_qty=5`, `line_items`(2건), `selected_distributor="kyobo"` 포함
+- `VendorComparison.selected_distributor`가 `"kyobo"`로 갱신된다
+- `UploadVendorFileView`에서는 `auto_select_distributor`가 호출되지 않는다
+
+---
+
+### 시나리오 16: RunComparisonView — VendorComparison 없는 SKU
+
+**Given** 미발주 LineItem은 있지만 해당 SKU의 `VendorComparison` 레코드가 없다
+
+**When** `POST /api/purchase-orders/run-comparison/`이 호출된다
+
+**Then** 해당 SKU의 결과에 `bookseen_available=null`, `kyobo_available=null`, `selected_distributor=null`이 포함된다
+
+---
+
 ## Definition of Done
 
 - [ ] REQ-AD-001 ~ REQ-AD-011 시나리오 테스트 전체 통과
+- [ ] 시나리오 15, 16 (RunComparisonView) 테스트 통과
 - [ ] `python manage.py migrate` 성공
 - [ ] `GET /api/purchase-orders/comparison/` 응답에 신규 필드 포함 확인
-- [ ] 기존 `auto_select_distributor()` 호출부 (`UploadVendorFileView`) 신규 인터페이스로 갱신
+- [ ] `POST /api/purchase-orders/run-comparison/` 정상 동작 확인
+- [ ] `UploadVendorFileView`에서 `auto_select_distributor` 호출이 제거되었음 확인
 - [ ] `_BOOKSEEN_COL_PRICE_COMPARISON` TBD 해소 (파일 샘플 확인 완료)
 - [ ] `ruff check backend/` 경고 없음
 - [ ] `@MX:WARN` 태그 추가 (`auto_select_distributor` 함수 — 브랜치 복잡도 >= 8)
-- [ ] 단위 테스트 커버리지 주요 분기 포함 (최소 시나리오 1 ~ 12 커버)
+- [ ] 단위 테스트 커버리지 주요 분기 포함 (최소 시나리오 1 ~ 16 커버)

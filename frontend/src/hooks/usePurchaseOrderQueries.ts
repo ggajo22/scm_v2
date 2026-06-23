@@ -5,6 +5,7 @@ import {
   generateOrderFile,
   uploadVendorFile,
   getComparison,
+  runComparison,
   confirmOrder,
   getVendorRules,
   createVendorRule,
@@ -64,15 +65,22 @@ export function useGenerateOrderFile() {
 }
 
 export function useUploadVendorFile() {
-  const queryClient = useQueryClient()
   return useMutation({
     mutationFn: uploadVendorFile,
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: QUERY_KEYS.comparison })
       toast.success('업체 자료가 업로드되었습니다.')
     },
     onError: () => {
       toast.error('파일 업로드에 실패했습니다.')
+    },
+  })
+}
+
+export function useRunComparison() {
+  return useMutation({
+    mutationFn: runComparison,
+    onError: () => {
+      toast.error('비교 실행에 실패했습니다.')
     },
   })
 }
