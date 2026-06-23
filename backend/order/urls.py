@@ -2,6 +2,7 @@ from django.urls import path
 
 from .purchase_order_views import (
     ConfirmOrderView,
+    DailyReviewExcelView,
     DistributorVendorRuleDeleteView,
     DistributorVendorRuleListCreateView,
     GenerateOrderFileView,
@@ -10,6 +11,7 @@ from .purchase_order_views import (
     PurchaseOrderListView,
     RunComparisonView,
     UnorderedItemsView,
+    UploadDailyReviewView,
     UploadVendorFileView,
     VendorComparisonView,
 )
@@ -30,6 +32,8 @@ urlpatterns = [
     path("orders/<int:pk>/resolve-note/", OrderNoteResolveView.as_view(), name="order-note-resolve"),
     path("orders/<int:pk>/", OrderDetailView.as_view(), name="order-detail"),
     # Purchase order endpoints (more specific paths must come before the generic list)
+    path("purchase-orders/daily-review-excel/", DailyReviewExcelView.as_view(), name="po-daily-review-excel"),
+    path("purchase-orders/upload-daily-review/", UploadDailyReviewView.as_view(), name="po-upload-daily-review"),
     path("purchase-orders/unordered/", UnorderedItemsView.as_view(), name="po-unordered"),
     path("purchase-orders/generate-order-file/", GenerateOrderFileView.as_view(), name="po-generate"),
     path("purchase-orders/upload-vendor-file/", UploadVendorFileView.as_view(), name="po-upload"),

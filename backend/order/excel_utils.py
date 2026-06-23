@@ -445,6 +445,8 @@ def auto_select_distributor(
                 return _result("agape", "아가페규칙", price_diff, False)
             if dist_code == "choeumgoyuk" and vc.kyobo_publisher == pub_name:
                 return _result("choeumgoyuk", "처음교육규칙", price_diff, False)
+            if dist_code == "sungseoyunion" and vc.kyobo_publisher == pub_name:
+                return _result("sungseoyunion", "성서유니온규칙", price_diff, False)
 
     # ------------------------------------------------------------------
     # Step 1: Warehouse stock priority
@@ -491,3 +493,144 @@ def auto_select_distributor(
             price_diff_alert = True
 
     return _result(selected, basis, price_diff, price_diff_alert)
+
+
+# Distributor display name ↔ internal code mappings
+_DISTRIBUTOR_LABEL_MAP: dict[str, str] = {
+    "북센": "bookseen",
+    "교보": "kyobo",
+    "처음교육": "choeumgoyuk",
+    "아가페": "agape",
+    "성서유니온": "sungseoyunion",
+}
+
+_DAILY_REVIEW_HEADERS = [
+    "주문번호", "ISBN", "제목", "수량", "주문위치", "메모",
+    "창고재고수량", "창고재고위치",
+    "북센 공급가", "교보 공급가",
+    "북센 재고수량", "북센 재고상태",
+    "교보 재고수량", "교보 재고상태",
+    "공급가차이",
+    "북센 입고예정", "북센 반품가능여부",
+    "교보 출고여부", "교보 반품가능여부",
+    "가격차이알림",
+    "출판사", "선택근거", "선택",
+]
+
+
+def generate_daily_review_excel(rows: list[dict]) -> bytes:
+    """
+    Generate Daily Order Review Excel with 22 columns.
+
+    Each dict in `rows` should have:
+        order_name, sku, title, quantity, location, note,
+        warehouse_qty (int|None), warehouse_locations (str),
+        bs_price (float|None), ky_price (float|None),
+        bs_status (str|None), ky_stock (int|None), ky_status (str|None),
+        price_diff (float|None), bs_arrival (str|None),
+        bs_returnable (bool|None), ky_available (bool|None), ky_returnable (bool|None),
+        price_diff_alert (bool), candidate_basis (str|None), selected (str)
+    """
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Daily Order Review"
+    ws.append(_DAILY_REVIEW_HEADERS)
+
+    for row in rows:
+        bs_returnable = "Y" if row.get("bs_returnable") is True else ("N" if row.get("bs_returnable") is False else "")
+        ky_returnable = "Y" if row.get("ky_returnable") is True else ("N" if row.get("ky_returnable") is False else "")
+        ky_available = "Y" if row.get("ky_available") is True else ("N" if row.get("ky_available") is False else "")
+        price_diff_alert = "Y" if row.get("price_diff_alert") else "N"
+        wh_qty = row.get("warehouse_qty")
+
+        ws.append([
+            row.get("order_name") or "",
+            row.get("sku") or "",
+            row.get("title") or "",
+            row.get("quantity") or 0,
+            row.get("location") or "",
+            row.get("note") or "",
+            wh_qty if wh_qty is not None else "",
+            row.get("warehouse_locations") or "",
+            row.get("bs_price") if row.get("bs_price") is not None else "",
+            row.get("ky_price") if row.get("ky_price") is not None else "",
+            "",  # 북센 재고수량 — no reliable data
+            row.get("bs_status") or "",
+            row.get("ky_stock") if row.get("ky_stock") is not None else "",
+            row.get("ky_status") or "",
+            row.get("price_diff") if row.get("price_diff") is not None else "",
+            row.get("bs_arrival") or "",
+            bs_returnable,
+            ky_available,
+            ky_returnable,
+            price_diff_alert,
+            row.get("publisher") or "",
+            row.get("candidate_basis") or "",
+            row.get("selected") or "",
+        ])
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def parse_daily_review_excel(file_bytes: bytes) -> list[dict]:
+    """
+    Parse an uploaded Daily Review Excel file.
+
+    Reads the '선택' column (Korean display name) and 'ISBN' column.
+    Skips rows where '선택' is empty or maps to an unknown distributor.
+
+    Returns:
+        List of dicts: {sku: str, distributor: str, note: str|None}
+        distributor is the internal code (bookseen, kyobo, choeumgoyuk, agape).
+
+    Raises:
+        ValueError: If file is unreadable or missing required columns.
+    """
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
+    except Exception as exc:
+        raise ValueError(f"Cannot read Excel file: {exc}") from exc
+
+    ws = wb.active
+    rows = list(ws.iter_rows(values_only=True))
+    if len(rows) < 2:
+        raise ValueError("파일이 비어 있습니다.")
+
+    header = [str(h).strip() if h is not None else "" for h in rows[0]]
+    if "ISBN" not in header or "선택" not in header:
+        raise ValueError("올바른 Daily Review 형식의 파일이 아닙니다 (ISBN, 선택 컬럼 필요).")
+
+    sku_idx = header.index("ISBN")
+    selected_idx = header.index("선택")
+    note_idx = header.index("메모") if "메모" in header else None
+
+    results = []
+    for row in rows[1:]:
+        if len(row) <= max(sku_idx, selected_idx):
+            continue
+
+        raw_sku = row[sku_idx]
+        sku = str(raw_sku).strip() if raw_sku is not None else ""
+        if not sku:
+            continue
+
+        raw_selected = row[selected_idx]
+        selected_label = str(raw_selected).strip() if raw_selected is not None else ""
+        if not selected_label:
+            continue
+
+        distributor_code = _DISTRIBUTOR_LABEL_MAP.get(selected_label)
+        if not distributor_code:
+            continue  # Unknown label — skip silently
+
+        note: str | None = None
+        if note_idx is not None and len(row) > note_idx:
+            raw_note = row[note_idx]
+            if raw_note is not None:
+                note = str(raw_note).strip() or None
+
+        results.append({"sku": sku, "distributor": distributor_code, "note": note})
+
+    return results

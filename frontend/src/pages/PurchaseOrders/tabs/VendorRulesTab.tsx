@@ -3,8 +3,18 @@ import { Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useVendorRules, useCreateVendorRule, useDeleteVendorRule } from '@/hooks/usePurchaseOrderQueries'
 
-const DISTRIBUTOR_OPTIONS = ['처음교육', '아가페'] as const
-type Distributor = (typeof DISTRIBUTOR_OPTIONS)[number]
+const DISTRIBUTOR_OPTIONS = [
+  { label: '처음교육', value: 'choeumgoyuk' },
+  { label: '아가페', value: 'agape' },
+  { label: '성서유니온', value: 'sungseoyunion' },
+] as const
+type Distributor = (typeof DISTRIBUTOR_OPTIONS)[number]['value']
+
+const DISTRIBUTOR_LABEL: Record<string, string> = {
+  choeumgoyuk: '처음교육',
+  agape: '아가페',
+  sungseoyunion: '성서유니온',
+}
 
 export function VendorRulesTab() {
   const { data, isPending, isError } = useVendorRules()
@@ -12,7 +22,7 @@ export function VendorRulesTab() {
   const deleteMutation = useDeleteVendorRule()
 
   const [publisherName, setPublisherName] = useState('')
-  const [distributor, setDistributor] = useState<Distributor>('처음교육')
+  const [distributor, setDistributor] = useState<Distributor>('choeumgoyuk')
 
   const handleAdd = () => {
     if (!publisherName.trim()) return
@@ -67,8 +77,8 @@ export function VendorRulesTab() {
               aria-label="발주처 선택"
             >
               {DISTRIBUTOR_OPTIONS.map((d) => (
-                <option key={d} value={d}>
-                  {d}
+                <option key={d.value} value={d.value}>
+                  {d.label}
                 </option>
               ))}
             </select>
@@ -123,7 +133,7 @@ export function VendorRulesTab() {
                     <td className="py-2 px-3">{rule.publisher_name}</td>
                     <td className="py-2 px-3">
                       <span className="text-xs bg-green-100 text-green-700 px-1.5 py-0.5 rounded">
-                        {rule.distributor}
+                        {DISTRIBUTOR_LABEL[rule.distributor] ?? rule.distributor}
                       </span>
                     </td>
                     <td className="py-2 px-3 text-xs text-muted-foreground">

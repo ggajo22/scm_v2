@@ -717,6 +717,191 @@ class TestConfirmOrderView:
         res = auth_client.post(CONFIRM_URL, data={"items": []}, format="json")
         assert res.status_code == 400
 
+    # ---------------------------------------------------------------------------
+    # SPEC-ORDER-007: REQ-CON-012/013/022/023/032/033/034
+    # ---------------------------------------------------------------------------
+
+    def test_confirm_saves_distributor_to_line_item(self, auth_client):
+        """REQ-CON-012: After confirm, LineItem.confirmed_distributor = sent distributor."""
+        order = _make_order(shopify_order_id=94001)
+        li = _make_line_item(order, shopify_line_item_id=1, sku="ISBN-D001", quantity=2)
+        payload = {
+            "items": [
+                {
+                    "sku": "ISBN-D001",
+                    "distributor": "bookseen",
+                    "quantity": 2,
+                    "unit_price": "10000.00",
+                }
+            ]
+        }
+        res = auth_client.post(CONFIRM_URL, data=payload, format="json")
+        assert res.status_code == 201
+        li.refresh_from_db()
+        assert li.confirmed_distributor == "bookseen"
+
+    def test_confirm_rejects_empty_distributor(self, auth_client):
+        """REQ-CON-013: Empty distributor string → 400."""
+        order = _make_order(shopify_order_id=94002)
+        _make_line_item(order, shopify_line_item_id=1, sku="ISBN-D002", quantity=1)
+        payload = {
+            "items": [
+                {
+                    "sku": "ISBN-D002",
+                    "distributor": "",
+                    "quantity": 1,
+                    "unit_price": "8000.00",
+                }
+            ]
+        }
+        res = auth_client.post(CONFIRM_URL, data=payload, format="json")
+        assert res.status_code == 400
+
+    def test_confirm_saves_free_text_distributor(self, auth_client):
+        """REQ-CON-013: Any non-empty string distributor is accepted (free text)."""
+        order = _make_order(shopify_order_id=94003)
+        li = _make_line_item(order, shopify_line_item_id=1, sku="ISBN-D003", quantity=1)
+        payload = {
+            "items": [
+                {
+                    "sku": "ISBN-D003",
+                    "distributor": "hangilsa",
+                    "quantity": 1,
+                    "unit_price": "12000.00",
+                }
+            ]
+        }
+        res = auth_client.post(CONFIRM_URL, data=payload, format="json")
+        assert res.status_code == 201
+        li.refresh_from_db()
+        assert li.confirmed_distributor == "hangilsa"
+
+    def test_confirm_updates_purchase_status_when_provided(self, auth_client):
+        """REQ-CON-022: When purchase_status is provided, LineItem.purchase_status is updated."""
+        order = _make_order(shopify_order_id=94004)
+        li = _make_line_item(order, shopify_line_item_id=1, sku="ISBN-D004", quantity=1)
+        assert li.purchase_status == "unordered"
+        payload = {
+            "items": [
+                {
+                    "sku": "ISBN-D004",
+                    "distributor": "bookseen",
+                    "quantity": 1,
+                    "unit_price": "9000.00",
+                    "purchase_status": "in_stock",
+                }
+            ]
+        }
+        res = auth_client.post(CONFIRM_URL, data=payload, format="json")
+        assert res.status_code == 201
+        li.refresh_from_db()
+        assert li.purchase_status == "in_stock"
+
+    def test_confirm_rejects_invalid_purchase_status(self, auth_client):
+        """REQ-CON-022: Invalid purchase_status value → 400."""
+        order = _make_order(shopify_order_id=94005)
+        _make_line_item(order, shopify_line_item_id=1, sku="ISBN-D005", quantity=1)
+        payload = {
+            "items": [
+                {
+                    "sku": "ISBN-D005",
+                    "distributor": "bookseen",
+                    "quantity": 1,
+                    "unit_price": "9000.00",
+                    "purchase_status": "invalid_status",
+                }
+            ]
+        }
+        res = auth_client.post(CONFIRM_URL, data=payload, format="json")
+        assert res.status_code == 400
+
+    def test_confirm_keeps_purchase_status_when_absent(self, auth_client):
+        """REQ-CON-023: purchase_status absent → LineItem.purchase_status unchanged."""
+        order = _make_order(shopify_order_id=94006)
+        li = _make_line_item(order, shopify_line_item_id=1, sku="ISBN-D006", quantity=1)
+        # Set a non-default status before confirm
+        li.purchase_status = "on_hold"
+        li.save()
+        payload = {
+            "items": [
+                {
+                    "sku": "ISBN-D006",
+                    "distributor": "bookseen",
+                    "quantity": 1,
+                    "unit_price": "9000.00",
+                    # purchase_status not included
+                }
+            ]
+        }
+        res = auth_client.post(CONFIRM_URL, data=payload, format="json")
+        assert res.status_code == 201
+        li.refresh_from_db()
+        assert li.purchase_status == "on_hold"
+
+    def test_confirm_saves_note_when_provided(self, auth_client):
+        """REQ-CON-032: Non-empty note → LineItem.note updated."""
+        order = _make_order(shopify_order_id=94007)
+        li = _make_line_item(order, shopify_line_item_id=1, sku="ISBN-D007", quantity=1)
+        payload = {
+            "items": [
+                {
+                    "sku": "ISBN-D007",
+                    "distributor": "bookseen",
+                    "quantity": 1,
+                    "unit_price": "9000.00",
+                    "note": "긴급 발주 필요",
+                }
+            ]
+        }
+        res = auth_client.post(CONFIRM_URL, data=payload, format="json")
+        assert res.status_code == 201
+        li.refresh_from_db()
+        assert li.note == "긴급 발주 필요"
+
+    def test_confirm_keeps_note_when_empty_string(self, auth_client):
+        """REQ-CON-033: note="" → LineItem.note unchanged (keeps existing value)."""
+        order = _make_order(shopify_order_id=94008)
+        li = _make_line_item(order, shopify_line_item_id=1, sku="ISBN-D008", quantity=1)
+        li.note = "기존 메모"
+        li.save()
+        payload = {
+            "items": [
+                {
+                    "sku": "ISBN-D008",
+                    "distributor": "bookseen",
+                    "quantity": 1,
+                    "unit_price": "9000.00",
+                    "note": "",
+                }
+            ]
+        }
+        res = auth_client.post(CONFIRM_URL, data=payload, format="json")
+        assert res.status_code == 201
+        li.refresh_from_db()
+        assert li.note == "기존 메모"
+
+    def test_confirm_clears_note_when_null(self, auth_client):
+        """REQ-CON-034: note=null → LineItem.note = None."""
+        order = _make_order(shopify_order_id=94009)
+        li = _make_line_item(order, shopify_line_item_id=1, sku="ISBN-D009", quantity=1)
+        li.note = "삭제할 메모"
+        li.save()
+        payload = {
+            "items": [
+                {
+                    "sku": "ISBN-D009",
+                    "distributor": "bookseen",
+                    "quantity": 1,
+                    "unit_price": "9000.00",
+                    "note": None,
+                }
+            ]
+        }
+        res = auth_client.post(CONFIRM_URL, data=payload, format="json")
+        assert res.status_code == 201
+        li.refresh_from_db()
+        assert li.note is None
+
 
 # ---------------------------------------------------------------------------
 # M6: /api/purchase-orders/vendor-rules/

@@ -2,16 +2,16 @@ import { useState } from 'react'
 import { cn } from '@/lib/utils'
 import { UnorderedItemsTab } from './tabs/UnorderedItemsTab'
 import { VendorFileUploadTab } from './tabs/VendorFileUploadTab'
-import { ConfirmOrderTab } from './tabs/ConfirmOrderTab'
 import { PurchaseOrderHistoryTab } from './tabs/PurchaseOrderHistoryTab'
 import { VendorRulesTab } from './tabs/VendorRulesTab'
+import { DailyReviewTab } from './tabs/DailyReviewTab'
 
 type TabValue =
   | 'unordered'
   | 'upload'
-  | 'confirm'
   | 'history'
   | 'rules'
+  | 'daily-review'
 
 interface TabDef {
   value: TabValue
@@ -21,7 +21,7 @@ interface TabDef {
 const TABS: TabDef[] = [
   { value: 'unordered', label: '미발주 현황' },
   { value: 'upload', label: '업체 자료 업로드' },
-  { value: 'confirm', label: '발주 확정' },
+  { value: 'daily-review', label: 'Daily Review' },
   { value: 'history', label: '발주 이력' },
   { value: 'rules', label: '발주처 규칙 설정' },
 ]
@@ -38,8 +38,8 @@ export function PurchaseOrdersPage() {
         return <UnorderedItemsTab />
       case 'upload':
         return <VendorFileUploadTab />
-      case 'confirm':
-        return <ConfirmOrderTab />
+      case 'daily-review':
+        return <DailyReviewTab />
       case 'history':
         return <PurchaseOrderHistoryTab />
       case 'rules':

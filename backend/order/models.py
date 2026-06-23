@@ -140,6 +140,7 @@ class LineItem(models.Model):
     confirmed_price = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
     confirmed_distributor = models.CharField(max_length=50, null=True, blank=True)
     confirmed_at = models.DateTimeField(null=True, blank=True)
+    note = models.TextField(null=True, blank=True)
 
     class Meta:
         db_table = "orders_line_item"
@@ -183,6 +184,7 @@ class PurchaseOrder(models.Model):
         ("kyobo", "교보"),
         ("choeumgoyuk", "처음교육"),
         ("agape", "아가페"),
+        ("sungseoyunion", "성서유니온"),
     ]
     STATUS_CHOICES = [
         ("pending", "발주 대기"),
@@ -267,6 +269,7 @@ class VendorComparison(models.Model):
         ("check_required", "확인필요"),
         ("choeumgoyuk", "처음교육"),
         ("agape", "아가페"),
+        ("sungseoyunion", "성서유니온"),
     ]
 
     sku = models.CharField(max_length=255)
@@ -313,11 +316,12 @@ class WarehouseStock(models.Model):
 
 
 class DistributorVendorRule(models.Model):
-    """Maps a publisher name to a secondary distributor (처음교육 or 아가페)."""
+    """Maps a publisher name to a secondary distributor (처음교육, 아가페, 성서유니온)."""
 
     SECONDARY_DISTRIBUTOR_CHOICES = [
         ("choeumgoyuk", "처음교육"),
         ("agape", "아가페"),
+        ("sungseoyunion", "성서유니온"),
     ]
 
     publisher_name = models.CharField(max_length=255, unique=True)

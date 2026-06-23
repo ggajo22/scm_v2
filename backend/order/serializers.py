@@ -67,7 +67,7 @@ class LineItemDetailSerializer(serializers.ModelSerializer):
         fields = [
             "id", "shopify_line_item_id", "title", "variant_title", "sku",
             "quantity", "price", "total_discount", "fulfillment_status", "vendor", "grams",
-            "location",
+            "location", "note",
         ]
 
 

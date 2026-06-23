@@ -33,14 +33,16 @@ from rest_framework_simplejwt.authentication import JWTAuthentication
 
 from .excel_utils import (
     auto_select_distributor,
+    generate_daily_review_excel,
     generate_order_excel,
+    parse_daily_review_excel,
     parse_vendor_excel,
 )
 from .models import BookseenData, DistributorVendorRule, KyoboData, LineItem, PurchaseOrder, Refund, VendorComparison, WarehouseStock
 
-VALID_DISTRIBUTORS = {"bookseen", "kyobo", "choeumgoyuk", "agape"}
+VALID_DISTRIBUTORS = {"bookseen", "kyobo", "choeumgoyuk", "agape", "sungseoyunion"}
 VENDOR_FILE_DISTRIBUTORS = {"bookseen", "kyobo"}
-VENDOR_RULE_DISTRIBUTORS = {"choeumgoyuk", "agape"}
+VENDOR_RULE_DISTRIBUTORS = {"choeumgoyuk", "agape", "sungseoyunion"}
 
 EXCEL_CONTENT_TYPE = (
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -619,14 +621,20 @@ class ConfirmOrderView(APIView):
     """
     POST /api/purchase-orders/confirm/
 
-    Body: {"items": [{"sku": str, "distributor": str, "quantity": int, "unit_price": str}]}
+    Body: {"items": [{"sku": str, "distributor": str, "quantity": int, "unit_price": str,
+                      "purchase_status": str (optional), "note": str|null (optional)}]}
 
     Creates PurchaseOrder records and links unordered LineItems via M2M.
+    Also updates LineItem fields: confirmed_distributor, purchase_status (if provided),
+    note (if key present and non-empty, or null to clear).
     Uses @transaction.atomic to prevent partial writes.
 
     # @MX:WARN: [AUTO] Atomic transaction with select_for_update — potential lock contention under high concurrency
     # @MX:REASON: select_for_update() needed to prevent double-linking of LineItems; deadlock risk if multiple confirm requests overlap
     """
+
+    # @MX:ANCHOR: [AUTO] Public confirm endpoint — fan_in >= 3 (router, tests, frontend)
+    # @MX:REASON: Central purchase order confirmation entry point; field update logic must stay consistent with REQ-CON-012/022/032
 
     authentication_classes = [JWTAuthentication]
     permission_classes = [IsAuthenticated]
@@ -648,12 +656,28 @@ class ConfirmOrderView(APIView):
                     dist = item.get("distributor")
                     qty = item.get("quantity")
                     raw_price = item.get("unit_price")
+                    # REQ-CON-022: optional purchase_status per item
+                    purchase_status = item.get("purchase_status")
+                    # REQ-CON-032/033/034: use sentinel to distinguish absent vs explicit null
+                    _MISSING = object()
+                    note_value = item.get("note", _MISSING)
+                    note_key_present = "note" in item
 
-                    if not sku or not dist or qty is None:
-                        raise ValueError("sku, distributor, and quantity are required for each item.")
+                    if not sku or qty is None:
+                        raise ValueError("sku and quantity are required for each item.")
 
-                    if dist not in VALID_DISTRIBUTORS:
-                        raise ValueError(f"Invalid distributor: {dist}")
+                    # REQ-CON-013: reject empty/whitespace-only distributor; allow any non-empty free text
+                    if not dist or not dist.strip():
+                        raise ValueError("distributor must not be empty.")
+
+                    # REQ-CON-022: validate purchase_status if provided
+                    if purchase_status is not None:
+                        valid_ps = [c[0] for c in LineItem.PURCHASE_STATUS_CHOICES]
+                        if purchase_status not in valid_ps:
+                            raise ValueError(
+                                f"Invalid purchase_status: '{purchase_status}'. "
+                                f"Valid choices: {valid_ps}"
+                            )
 
                     # Find unordered LineItems for this SKU with a lock
                     unordered_lis = list(
@@ -698,6 +722,34 @@ class ConfirmOrderView(APIView):
                     po.line_items.add(*unordered_lis)
                     created_ids.append(po.pk)
 
+                    # REQ-CON-012: update confirmed_distributor on all linked LineItems
+                    update_fields = ["confirmed_distributor"]
+                    for li in unordered_lis:
+                        li.confirmed_distributor = dist
+
+                    # REQ-CON-022/023: update purchase_status only when explicitly provided
+                    if purchase_status is not None:
+                        for li in unordered_lis:
+                            li.purchase_status = purchase_status
+                        update_fields.append("purchase_status")
+
+                    # REQ-CON-032/033/034: handle note field
+                    if note_key_present:
+                        note_raw = item["note"]
+                        if note_raw is None:
+                            # REQ-CON-034: explicit null → clear note
+                            for li in unordered_lis:
+                                li.note = None
+                            update_fields.append("note")
+                        elif note_raw != "":
+                            # REQ-CON-032: non-empty string → update note
+                            for li in unordered_lis:
+                                li.note = note_raw
+                            update_fields.append("note")
+                        # REQ-CON-033: empty string "" → skip (keep existing)
+
+                    LineItem.objects.bulk_update(unordered_lis, update_fields)
+
         except ConflictError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_409_CONFLICT)
         except ValueError as exc:
@@ -705,6 +757,245 @@ class ConfirmOrderView(APIView):
 
         return Response(
             {"created_count": len(created_ids), "purchase_order_ids": created_ids},
+            status=status.HTTP_201_CREATED,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Daily Review: Download + Upload
+# ---------------------------------------------------------------------------
+
+_DISTRIBUTOR_CODE_TO_LABEL: dict[str, str] = {
+    "bookseen": "북센",
+    "kyobo": "교보",
+    "choeumgoyuk": "처음교육",
+    "agape": "아가페",
+    "sungseoyunion": "성서유니온",
+    "warehouse": "재고",
+    "warehouse_west": "재고(서부)",
+    "check_required": "확인필요",
+}
+
+
+class DailyReviewExcelView(APIView):
+    """
+    GET /api/purchase-orders/daily-review-excel/
+
+    Generates and downloads a 22-column Daily Order Review Excel file
+    containing all unordered LineItems with joined vendor/warehouse data.
+    """
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request) -> HttpResponse:
+        line_items = (
+            LineItem.objects.filter(sku__isnull=False, purchase_status="unordered")
+            .exclude(purchase_orders__isnull=False)
+            .select_related("order")
+            .order_by("sku", "order__name")
+        )
+
+        skus = list({li.sku for li in line_items if li.sku})
+        bookseen_map = {bd.sku: bd for bd in BookseenData.objects.filter(sku__in=skus)}
+        kyobo_map = {kd.sku: kd for kd in KyoboData.objects.filter(sku__in=skus)}
+
+        # Real-time: vendor rules and warehouse stocks for auto-selection
+        vendor_rules = list(DistributorVendorRule.objects.values_list("publisher_name", "distributor"))
+        stock_map: dict[str, dict[str, int]] = {}
+        for ws_obj in WarehouseStock.objects.filter(isbn__in=skus):
+            stock_map.setdefault(ws_obj.isbn, {"korea": 0, "ca": 0, "nj": 0})
+            stock_map[ws_obj.isbn][ws_obj.location] = ws_obj.quantity
+
+        # Total qty per SKU for warehouse stock comparison
+        qty_by_sku: dict[str, int] = {}
+        for li in line_items:
+            qty_by_sku[li.sku] = qty_by_sku.get(li.sku, 0) + (li.quantity or 0)
+
+        # Warehouse entries for display (locations + total)
+        warehouse_display: dict[str, list] = {}
+        for ws_obj in WarehouseStock.objects.filter(isbn__in=skus):
+            warehouse_display.setdefault(ws_obj.isbn, []).append(ws_obj)
+
+        rows = []
+        for li in line_items:
+            sku = li.sku
+            bd = bookseen_map.get(sku)
+            kd = kyobo_map.get(sku)
+
+            ws_entries = warehouse_display.get(sku, [])
+            warehouse_qty: int | None = sum(w.quantity for w in ws_entries) if ws_entries else None
+            warehouse_locations = "/".join(
+                f"{w.location}:{w.quantity}" for w in ws_entries if w.quantity > 0
+            ) if ws_entries else ""
+
+            bs_price = float(bd.price) if bd and bd.price is not None else None
+            ky_price = float(kd.price) if kd and kd.price is not None else None
+            price_diff: float | None = None
+            price_diff_alert = False
+            if bs_price is not None and ky_price is not None:
+                price_diff = bs_price - ky_price
+                price_diff_alert = abs(price_diff) > 3000
+
+            # Real-time auto-selection using current rules and stocks
+            vc_ns = SimpleNamespace(
+                bookseen_price=bd.price if bd else None,
+                bookseen_stock=bd.stock if bd else None,
+                bookseen_returnable=bd.returnable if bd else None,
+                bookseen_status=bd.status if bd else None,
+                kyobo_price=kd.price if kd else None,
+                kyobo_stock=kd.stock if kd else None,
+                kyobo_returnable=kd.returnable if kd else None,
+                kyobo_status=kd.status if kd else None,
+                kyobo_publisher=kd.publisher if kd else None,
+            )
+            wstock = stock_map.get(sku, {"korea": 0, "ca": 0, "nj": 0})
+            sel = auto_select_distributor(
+                vc=vc_ns,
+                total_qty=qty_by_sku.get(sku, 0),
+                korea_stock=wstock["korea"],
+                ca_stock=wstock["ca"],
+                nj_stock=wstock["nj"],
+                vendor_rules=vendor_rules,
+            )
+
+            rows.append({
+                "order_name": li.order.name if li.order else "",
+                "sku": sku,
+                "title": li.title or "",
+                "quantity": li.quantity or 0,
+                "location": li.location or "",
+                "note": li.note or "",
+                "warehouse_qty": warehouse_qty,
+                "warehouse_locations": warehouse_locations,
+                "bs_price": bs_price,
+                "ky_price": ky_price,
+                "bs_status": bd.status if bd else None,
+                "ky_stock": kd.stock if kd else None,
+                "ky_status": kd.status if kd else None,
+                "price_diff": price_diff,
+                "bs_arrival": bd.arrival if bd else None,
+                "bs_returnable": bd.returnable if bd else None,
+                "ky_available": kd.available if kd else None,
+                "ky_returnable": kd.returnable if kd else None,
+                "price_diff_alert": price_diff_alert,
+                "publisher": kd.publisher if kd else None,
+                "candidate_basis": sel["candidate_basis"],
+                "selected": _DISTRIBUTOR_CODE_TO_LABEL.get(sel["selected_distributor"] or "", ""),
+            })
+
+        file_bytes = generate_daily_review_excel(rows)
+        today = date.today().strftime("%Y%m%d")
+        filename = f"Daily_Order_Review_{today}.xlsx"
+
+        response = HttpResponse(file_bytes, content_type=EXCEL_CONTENT_TYPE)
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return response
+
+
+class UploadDailyReviewView(APIView):
+    """
+    POST /api/purchase-orders/upload-daily-review/
+
+    Multipart: file (.xlsx)
+    Parses the Daily Review Excel file, reads the '선택' column (Korean display name),
+    and confirms purchase orders for rows with a valid selection.
+    Rows with empty '선택' are skipped.
+    """
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request) -> Response:
+        uploaded = request.FILES.get("file")
+        if not uploaded:
+            return Response({"detail": "file is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        filename = uploaded.name or ""
+        if not filename.endswith(".xlsx"):
+            return Response(
+                {"detail": "Invalid file format. Only .xlsx is supported."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            file_bytes = uploaded.read()
+            parsed_rows = parse_daily_review_excel(file_bytes)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+
+        # Deduplicate by SKU — last row wins if same ISBN appears multiple times
+        sku_map: dict[str, dict] = {}
+        for row in parsed_rows:
+            sku_map[row["sku"]] = row
+
+        confirmed_count = 0
+        skipped_count = 0
+        errors: list[dict] = []
+
+        try:
+            with transaction.atomic():
+                for sku, item in sku_map.items():
+                    distributor = item["distributor"]
+                    note = item.get("note")
+
+                    unordered_lis = list(
+                        LineItem.objects.filter(sku=sku, purchase_status="unordered")
+                        .exclude(purchase_orders__isnull=False)
+                        .select_for_update()
+                    )
+
+                    if not unordered_lis:
+                        skipped_count += 1
+                        continue
+
+                    title = unordered_lis[0].title or sku
+                    total_qty = sum(li.quantity or 0 for li in unordered_lis)
+
+                    # Lookup unit price from vendor data
+                    unit_price = None
+                    if distributor == "bookseen":
+                        bd = BookseenData.objects.filter(sku=sku).first()
+                        if bd:
+                            unit_price = bd.price
+                    elif distributor == "kyobo":
+                        kd = KyoboData.objects.filter(sku=sku).first()
+                        if kd:
+                            unit_price = kd.price
+
+                    po = PurchaseOrder.objects.create(
+                        sku=sku,
+                        title=title,
+                        distributor=distributor,
+                        quantity=total_qty,
+                        unit_price=unit_price,
+                        status="pending",
+                    )
+                    po.line_items.add(*unordered_lis)
+
+                    update_fields = ["confirmed_distributor"]
+                    for li in unordered_lis:
+                        li.confirmed_distributor = distributor
+                    if note is not None:
+                        for li in unordered_lis:
+                            li.note = note
+                        update_fields.append("note")
+
+                    LineItem.objects.bulk_update(unordered_lis, update_fields)
+                    confirmed_count += 1
+
+        except Exception as exc:
+            return Response(
+                {"detail": f"처리 중 오류가 발생했습니다: {exc}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        return Response(
+            {
+                "confirmed_count": confirmed_count,
+                "skipped_count": skipped_count,
+                "errors": errors,
+            },
             status=status.HTTP_201_CREATED,
         )
 

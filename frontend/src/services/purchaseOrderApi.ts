@@ -24,57 +24,6 @@ export const PURCHASE_STATUS_OPTIONS = [
 
 export type PurchaseStatusValue = (typeof PURCHASE_STATUS_OPTIONS)[number]['value']
 
-export interface ComparisonItem {
-  sku: string
-  bookseen_available: boolean | null
-  bookseen_price: string | null
-  bookseen_stock: number | null
-  bookseen_returnable: boolean | null
-  bookseen_status: string | null
-  bookseen_arrival: string | null
-  kyobo_available: boolean | null
-  kyobo_price: string | null
-  kyobo_stock: number | null
-  kyobo_returnable: boolean | null
-  kyobo_status: string | null
-  kyobo_publisher: string | null
-  kyobo_ordered_qty: number | null
-  kyobo_total_price: string | null
-  selected_distributor: string | null
-}
-
-export interface ComparisonLineItem {
-  id: number
-  order_name: string | null
-  quantity: number
-}
-
-export interface ComparisonResult {
-  sku: string
-  title: string
-  total_qty: number
-  line_items: ComparisonLineItem[]
-  bookseen_available: boolean | null
-  bookseen_price: string | null
-  bookseen_stock: number | null
-  kyobo_available: boolean | null
-  kyobo_price: string | null
-  kyobo_stock: number | null
-  selected_distributor: string | null
-  candidate_basis: string | null
-  price_diff: string | null
-  price_diff_alert: boolean | null
-  confirmed_price: string | null
-  confirmed_distributor: string | null
-}
-
-export interface ConfirmItem {
-  sku: string
-  distributor: string
-  quantity: number
-  unit_price?: string | null
-}
-
 export interface VendorRule {
   id: number
   publisher_name: string
@@ -154,23 +103,6 @@ export async function uploadVendorFile(formData: FormData): Promise<UploadVendor
   return res.data
 }
 
-export async function getComparison(): Promise<{ count: number; results: ComparisonItem[] }> {
-  const res = await api.get('/api/purchase-orders/comparison/')
-  return res.data
-}
-
-export async function runComparison(): Promise<{ count: number; results: ComparisonResult[] }> {
-  const res = await api.post('/api/purchase-orders/run-comparison/')
-  return res.data
-}
-
-export async function confirmOrder(data: {
-  items: ConfirmItem[]
-}): Promise<{ created_count: number; purchase_order_ids: number[] }> {
-  const res = await api.post('/api/purchase-orders/confirm/', data)
-  return res.data
-}
-
 export async function getVendorRules(): Promise<{ count: number; results: VendorRule[] }> {
   const res = await api.get('/api/purchase-orders/vendor-rules/')
   return res.data
@@ -219,5 +151,23 @@ export async function getPurchaseOrders(
   if (params?.page && params.page > 1) searchParams.page = String(params.page)
 
   const res = await api.get('/api/purchase-orders/', { params: searchParams })
+  return res.data
+}
+
+export async function downloadDailyReview(): Promise<Blob> {
+  const res = await api.get('/api/purchase-orders/daily-review-excel/', {
+    responseType: 'blob',
+  })
+  return res.data as Blob
+}
+
+export async function uploadDailyReview(formData: FormData): Promise<{
+  confirmed_count: number
+  skipped_count: number
+  errors: Array<{ sku: string; error: string }>
+}> {
+  const res = await api.post('/api/purchase-orders/upload-daily-review/', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  })
   return res.data
 }

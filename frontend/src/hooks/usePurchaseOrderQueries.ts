@@ -4,15 +4,14 @@ import {
   getUnorderedItems,
   generateOrderFile,
   uploadVendorFile,
-  getComparison,
-  runComparison,
-  confirmOrder,
   getVendorRules,
   createVendorRule,
   deleteVendorRule,
   getPurchaseOrders,
   updateLineItemStatus,
   bulkUpdateLineItemStatus,
+  downloadDailyReview,
+  uploadDailyReview,
 } from '@/services/purchaseOrderApi'
 import type { PurchaseOrderParams } from '@/services/purchaseOrderApi'
 
@@ -21,7 +20,6 @@ import type { PurchaseOrderParams } from '@/services/purchaseOrderApi'
 
 export const QUERY_KEYS = {
   unordered: ['purchase-orders', 'unordered'] as const,
-  comparison: ['purchase-orders', 'comparison'] as const,
   purchaseOrders: (params?: PurchaseOrderParams) =>
     ['purchase-orders', 'list', params ?? {}] as const,
   vendorRules: ['purchase-orders', 'vendor-rules'] as const,
@@ -31,13 +29,6 @@ export function useUnorderedItems() {
   return useQuery({
     queryKey: QUERY_KEYS.unordered,
     queryFn: getUnorderedItems,
-  })
-}
-
-export function useComparison() {
-  return useQuery({
-    queryKey: QUERY_KEYS.comparison,
-    queryFn: getComparison,
   })
 }
 
@@ -72,33 +63,6 @@ export function useUploadVendorFile() {
     },
     onError: () => {
       toast.error('파일 업로드에 실패했습니다.')
-    },
-  })
-}
-
-export function useRunComparison() {
-  return useMutation({
-    mutationFn: runComparison,
-    onError: () => {
-      toast.error('비교 실행에 실패했습니다.')
-    },
-  })
-}
-
-// @MX:WARN: [AUTO] confirmOrder mutates multiple query caches on success
-// @MX:REASON: Invalidates both unordered and purchase-orders queries — ordering matters for UX consistency
-
-export function useConfirmOrder() {
-  const queryClient = useQueryClient()
-  return useMutation({
-    mutationFn: confirmOrder,
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: QUERY_KEYS.unordered })
-      void queryClient.invalidateQueries({ queryKey: ['purchase-orders', 'list'] })
-      toast.success('발주가 확정되었습니다.')
-    },
-    onError: () => {
-      toast.error('발주 확정에 실패했습니다.')
     },
   })
 }
@@ -162,6 +126,40 @@ export function useBulkUpdateLineItemStatus() {
     },
     onError: () => {
       toast.error('일괄 상태 변경에 실패했습니다.')
+    },
+  })
+}
+
+export function useDownloadDailyReview() {
+  return useMutation({
+    mutationFn: downloadDailyReview,
+    onSuccess: (blob) => {
+      const today = new Date().toISOString().slice(0, 10).replace(/-/g, '')
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `Daily_Order_Review_${today}.xlsx`
+      a.click()
+      URL.revokeObjectURL(url)
+      toast.success('Daily Review 파일이 다운로드되었습니다.')
+    },
+    onError: () => {
+      toast.error('다운로드에 실패했습니다.')
+    },
+  })
+}
+
+export function useUploadDailyReview() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: uploadDailyReview,
+    onSuccess: (result) => {
+      void queryClient.invalidateQueries({ queryKey: QUERY_KEYS.unordered })
+      void queryClient.invalidateQueries({ queryKey: ['purchase-orders', 'list'] })
+      toast.success(`발주 확정 완료: ${result.confirmed_count}건 처리, ${result.skipped_count}건 건너뜀`)
+    },
+    onError: () => {
+      toast.error('파일 업로드에 실패했습니다.')
     },
   })
 }
