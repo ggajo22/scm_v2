@@ -5,6 +5,8 @@ from .purchase_order_views import (
     DistributorVendorRuleDeleteView,
     DistributorVendorRuleListCreateView,
     GenerateOrderFileView,
+    LineItemBulkStatusUpdateView,
+    LineItemStatusUpdateView,
     PurchaseOrderListView,
     UnorderedItemsView,
     UploadVendorFileView,
@@ -32,6 +34,9 @@ urlpatterns = [
     path("purchase-orders/upload-vendor-file/", UploadVendorFileView.as_view(), name="po-upload"),
     path("purchase-orders/comparison/", VendorComparisonView.as_view(), name="po-comparison"),
     path("purchase-orders/confirm/", ConfirmOrderView.as_view(), name="po-confirm"),
+    # SPEC-PURCHASE-ORDER-004: bulk-status must precede <int:pk>/status/ to avoid URL conflict
+    path("purchase-orders/line-items/bulk-status/", LineItemBulkStatusUpdateView.as_view(), name="po-line-item-bulk-status"),
+    path("purchase-orders/line-items/<int:pk>/status/", LineItemStatusUpdateView.as_view(), name="po-line-item-status"),
     path("purchase-orders/vendor-rules/", DistributorVendorRuleListCreateView.as_view(), name="po-rules"),
     path("purchase-orders/vendor-rules/<int:pk>/", DistributorVendorRuleDeleteView.as_view(), name="po-rule-delete"),
     path("purchase-orders/", PurchaseOrderListView.as_view(), name="po-list"),

@@ -2,8 +2,14 @@ import { useState } from 'react'
 import { toast } from 'sonner'
 import { Download } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { useUnorderedItems, useGenerateOrderFile } from '@/hooks/usePurchaseOrderQueries'
+import {
+  useUnorderedItems,
+  useGenerateOrderFile,
+  useUpdateLineItemStatus,
+  useBulkUpdateLineItemStatus,
+} from '@/hooks/usePurchaseOrderQueries'
 import { usePurchaseOrderStore } from '@/stores/usePurchaseOrderStore'
+import { PURCHASE_STATUS_OPTIONS } from '@/services/purchaseOrderApi'
 import type { WarningResponse } from '@/services/purchaseOrderApi'
 
 // Helper: format Date as YYYYMMDD string
@@ -34,8 +40,11 @@ function isWarningResponse(value: Blob | WarningResponse): value is WarningRespo
 export function UnorderedItemsTab() {
   const { data, isPending, isError } = useUnorderedItems()
   const generateMutation = useGenerateOrderFile()
+  const statusMutation = useUpdateLineItemStatus()
+  const bulkStatusMutation = useBulkUpdateLineItemStatus()
   const { selectedSkus, toggleSku, selectAllSkus, clearSelections } = usePurchaseOrderStore()
   const [loadingDistributor, setLoadingDistributor] = useState<string | null>(null)
+  const [bulkStatus, setBulkStatus] = useState('on_hold')
 
   const allSkus = [...new Set(data?.results.map((item) => item.sku) ?? [])]
   const allSelected = allSkus.length > 0 && allSkus.every((s) => selectedSkus.includes(s))
@@ -50,6 +59,26 @@ export function UnorderedItemsTab() {
     } else {
       selectAllSkus(allSkus)
     }
+  }
+
+  const handleStatusChange = (itemId: number, newStatus: string) => {
+    statusMutation.mutate({ id: itemId, purchaseStatus: newStatus })
+  }
+
+  const handleBulkStatusChange = () => {
+    const selectedIds =
+      data?.results
+        .filter((item) => selectedSkus.includes(item.sku))
+        .map((item) => item.id) ?? []
+    if (selectedIds.length === 0) return
+    bulkStatusMutation.mutate(
+      { ids: selectedIds, purchaseStatus: bulkStatus },
+      {
+        onSuccess: () => {
+          clearSelections()
+        },
+      }
+    )
   }
 
   const distributorLabel: Record<string, string> = { bookseen: '북센', kyobo: '교보' }
@@ -80,11 +109,37 @@ export function UnorderedItemsTab() {
     <div className="space-y-4">
       {/* Action buttons */}
       <div className="flex items-center justify-between">
-        <p className="text-sm text-muted-foreground">
-          {checkedRowCount > 0
-            ? `${checkedRowCount}건 / 수량 ${selectedQuantityTotal}개`
-            : '항목을 선택하세요'}
-        </p>
+        <div className="flex items-center gap-3">
+          <p className="text-sm text-muted-foreground">
+            {checkedRowCount > 0
+              ? `${checkedRowCount}건 / 수량 ${selectedQuantityTotal}개`
+              : '항목을 선택하세요'}
+          </p>
+          {selectedSkus.length > 0 && (
+            <div className="flex items-center gap-2">
+              <select
+                value={bulkStatus}
+                onChange={(e) => setBulkStatus(e.target.value)}
+                className="text-sm border rounded px-2 py-1"
+                aria-label="일괄 변경할 발주 상태 선택"
+              >
+                {PURCHASE_STATUS_OPTIONS.filter((o) => o.value !== 'unordered').map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+              <Button
+                size="sm"
+                onClick={handleBulkStatusChange}
+                disabled={bulkStatusMutation.isPending}
+                className="bg-orange-500 text-white hover:bg-orange-600"
+              >
+                {bulkStatusMutation.isPending ? '변경 중...' : '일괄 상태 변경'}
+              </Button>
+            </div>
+          )}
+        </div>
         <div className="flex gap-2">
           <Button
             size="sm"
@@ -141,12 +196,13 @@ export function UnorderedItemsTab() {
                   <th className="py-2 px-3 text-left font-medium">출판사</th>
                   <th className="py-2 px-3 text-right font-medium">필요 수량</th>
                   <th className="py-2 px-3 text-left font-medium">자동 추천 발주처</th>
+                  <th className="py-2 px-3 text-left font-medium">발주 상태</th>
                 </tr>
               </thead>
               <tbody>
                 {data.results.length === 0 && (
                   <tr>
-                    <td colSpan={7} className="py-8 text-center text-muted-foreground">
+                    <td colSpan={8} className="py-8 text-center text-muted-foreground">
                       미발주 항목이 없습니다.
                     </td>
                   </tr>
@@ -184,6 +240,21 @@ export function UnorderedItemsTab() {
                       ) : (
                         <span className="text-muted-foreground text-xs">-</span>
                       )}
+                    </td>
+                    <td className="py-2 px-3" onClick={(e) => e.stopPropagation()}>
+                      <select
+                        value={item.purchase_status}
+                        onChange={(e) => handleStatusChange(item.id, e.target.value)}
+                        disabled={statusMutation.isPending}
+                        className="text-sm border rounded px-2 py-1"
+                        aria-label={`${item.title} 발주 상태 변경`}
+                      >
+                        {PURCHASE_STATUS_OPTIONS.map((opt) => (
+                          <option key={opt.value} value={opt.value}>
+                            {opt.label}
+                          </option>
+                        ))}
+                      </select>
                     </td>
                   </tr>
                 ))}

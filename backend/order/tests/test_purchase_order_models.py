@@ -261,3 +261,54 @@ class TestDistributorVendorRule:
             distributor="agape",
         )
         assert rule.created_at is not None
+
+
+# ---------------------------------------------------------------------------
+# LineItem.purchase_status tests (SPEC-PURCHASE-ORDER-004)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestLineItemPurchaseStatus:
+    def test_default_purchase_status_is_unordered(self):
+        """REQ-PO4-001: LineItem.purchase_status defaults to 'unordered' when not specified."""
+        order = _make_order(shopify_order_id=30001)
+        li = _make_line_item(order, shopify_line_item_id=1)
+        assert li.purchase_status == "unordered"
+
+    def test_all_valid_choices_accepted(self):
+        """REQ-PO4-002: All 6 purchase_status choices can be saved without error."""
+        valid_choices = [
+            "unordered",
+            "on_hold",
+            "order_cancelled",
+            "other_publisher",
+            "cs_required",
+            "in_stock",
+        ]
+        order = _make_order(shopify_order_id=30002)
+        for i, choice in enumerate(valid_choices):
+            li = LineItem.objects.create(
+                order=order,
+                shopify_line_item_id=100 + i,
+                sku=f"SKU-STATUS-{i}",
+                quantity=1,
+                purchase_status=choice,
+            )
+            li.refresh_from_db()
+            assert li.purchase_status == choice
+
+    def test_invalid_choice_rejected(self):
+        """REQ-PO4-002: An invalid purchase_status value raises ValidationError on full_clean()."""
+        from django.core.exceptions import ValidationError
+
+        order = _make_order(shopify_order_id=30003)
+        li = LineItem(
+            order=order,
+            shopify_line_item_id=200,
+            sku="SKU-INVALID",
+            quantity=1,
+            purchase_status="invalid_status",
+        )
+        with pytest.raises(ValidationError):
+            li.full_clean()

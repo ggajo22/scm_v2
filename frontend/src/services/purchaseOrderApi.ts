@@ -10,7 +10,19 @@ export interface UnorderedItem {
   vendor: string
   quantity: number
   auto_distributor: string | null
+  purchase_status: string
 }
+
+export const PURCHASE_STATUS_OPTIONS = [
+  { value: 'unordered', label: '미발주' },
+  { value: 'on_hold', label: '주문보류' },
+  { value: 'order_cancelled', label: '주문취소' },
+  { value: 'other_publisher', label: '타출판사' },
+  { value: 'cs_required', label: 'CS필요' },
+  { value: 'in_stock', label: '재고' },
+] as const
+
+export type PurchaseStatusValue = (typeof PURCHASE_STATUS_OPTIONS)[number]['value']
 
 export interface ComparisonItem {
   sku: string
@@ -144,6 +156,26 @@ export async function createVendorRule(data: {
 
 export async function deleteVendorRule(id: number): Promise<void> {
   await api.delete(`/api/purchase-orders/vendor-rules/${id}/`)
+}
+
+export async function updateLineItemStatus(
+  id: number,
+  purchaseStatus: string
+): Promise<void> {
+  await api.patch(`/api/purchase-orders/line-items/${id}/status/`, {
+    purchase_status: purchaseStatus,
+  })
+}
+
+export async function bulkUpdateLineItemStatus(
+  ids: number[],
+  purchaseStatus: string
+): Promise<{ updated_count: number; missing_ids: number[] }> {
+  const res = await api.patch('/api/purchase-orders/line-items/bulk-status/', {
+    ids,
+    purchase_status: purchaseStatus,
+  })
+  return res.data
 }
 
 export async function getPurchaseOrders(

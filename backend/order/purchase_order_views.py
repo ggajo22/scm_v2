@@ -74,7 +74,7 @@ class UnorderedItemsView(APIView):
         )
 
         line_items = (
-            LineItem.objects.filter(sku__isnull=False)
+            LineItem.objects.filter(sku__isnull=False, purchase_status="unordered")
             .exclude(purchase_orders__isnull=False)
             .annotate(
                 refunded_qty=Coalesce(
@@ -105,6 +105,7 @@ class UnorderedItemsView(APIView):
                     "title": li.title or "",
                     "vendor": li.vendor or "",
                     "quantity": net_qty,
+                    "purchase_status": li.purchase_status,
                     "auto_distributor": rule_map.get(li.vendor or ""),
                 }
             )
@@ -547,6 +548,95 @@ class ConfirmOrderView(APIView):
 
 class ConflictError(Exception):
     """Raised when a 409 Conflict response should be returned."""
+
+
+# ---------------------------------------------------------------------------
+# SPEC-PURCHASE-ORDER-004: Single line item status update
+# ---------------------------------------------------------------------------
+
+
+class LineItemStatusUpdateView(APIView):
+    """
+    PATCH /api/purchase-orders/line-items/<pk>/status/
+
+    Updates the purchase_status of a single LineItem.
+    """
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, pk: int) -> Response:
+        try:
+            li = LineItem.objects.get(pk=pk)
+        except LineItem.DoesNotExist:
+            return Response({"error": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        purchase_status_value = request.data.get("purchase_status")
+        valid_choices = [c[0] for c in LineItem.PURCHASE_STATUS_CHOICES]
+        if purchase_status_value not in valid_choices:
+            return Response(
+                {"error": f"Invalid purchase_status. Valid choices: {valid_choices}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        li.purchase_status = purchase_status_value
+        li.save(update_fields=["purchase_status"])
+        return Response(
+            {
+                "id": li.id,
+                "purchase_status": li.purchase_status,
+                "sku": li.sku,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+# ---------------------------------------------------------------------------
+# SPEC-PURCHASE-ORDER-004: Bulk line item status update
+# ---------------------------------------------------------------------------
+
+
+class LineItemBulkStatusUpdateView(APIView):
+    """
+    PATCH /api/purchase-orders/line-items/bulk-status/
+
+    Updates purchase_status for multiple LineItems at once.
+    Body: {"ids": [int, ...], "purchase_status": str}
+    """
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request) -> Response:
+        ids = request.data.get("ids", [])
+        purchase_status_value = request.data.get("purchase_status")
+
+        valid_choices = [c[0] for c in LineItem.PURCHASE_STATUS_CHOICES]
+
+        if not ids:
+            return Response(
+                {"error": "ids must not be empty"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if purchase_status_value not in valid_choices:
+            return Response(
+                {"error": f"Invalid purchase_status. Valid choices: {valid_choices}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        existing = LineItem.objects.filter(pk__in=ids)
+        existing_ids = set(existing.values_list("id", flat=True))
+        missing_ids = [i for i in ids if i not in existing_ids]
+
+        updated_count = existing.update(purchase_status=purchase_status_value)
+
+        return Response(
+            {
+                "updated_count": updated_count,
+                "missing_ids": missing_ids,
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 # ---------------------------------------------------------------------------

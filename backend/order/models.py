@@ -106,6 +106,18 @@ class BillingAddress(models.Model):
 
 
 class LineItem(models.Model):
+    # @MX:ANCHOR: [AUTO] Core sales line item model — linked to PurchaseOrder via M2M
+    # @MX:REASON: Fan-in >= 3: UnorderedItemsView, ConfirmOrderView, PurchaseOrderListView all query LineItem
+
+    PURCHASE_STATUS_CHOICES = [
+        ("unordered", "미발주"),
+        ("on_hold", "주문보류"),
+        ("order_cancelled", "주문취소"),
+        ("other_publisher", "타출판사"),
+        ("cs_required", "CS필요"),
+        ("in_stock", "재고"),
+    ]
+
     order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name="line_items")
     shopify_line_item_id = models.BigIntegerField()
     product_id = models.BigIntegerField(null=True, blank=True)
@@ -120,6 +132,11 @@ class LineItem(models.Model):
     vendor = models.CharField(max_length=255, null=True, blank=True)
     grams = models.IntegerField(null=True, blank=True)
     location = models.CharField(max_length=10, blank=True, default="")
+    purchase_status = models.CharField(
+        max_length=20,
+        choices=PURCHASE_STATUS_CHOICES,
+        default="unordered",
+    )
 
     class Meta:
         db_table = "orders_line_item"

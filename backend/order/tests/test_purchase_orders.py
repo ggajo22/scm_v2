@@ -49,6 +49,8 @@ COMPARISON_URL = "/api/purchase-orders/comparison/"
 CONFIRM_URL = "/api/purchase-orders/confirm/"
 RULES_URL = "/api/purchase-orders/vendor-rules/"
 PO_LIST_URL = "/api/purchase-orders/"
+LINE_ITEM_STATUS_URL = "/api/purchase-orders/line-items/{pk}/status/"
+BULK_STATUS_URL = "/api/purchase-orders/line-items/bulk-status/"
 
 EXCEL_CONTENT_TYPE = (
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -1086,3 +1088,236 @@ class TestPurchaseOrderListRefundExclusion:
         assert res.data["count"] >= 1
         po_data = next(item for item in res.data["results"] if item["id"] == po.id)
         assert "net_quantity" in po_data
+
+
+# ---------------------------------------------------------------------------
+# SPEC-PURCHASE-ORDER-004: UnorderedItemsView purchase_status filter
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestUnorderedItemsViewPurchaseStatusFilter:
+    """REQ-PO4-003, REQ-PO4-004: Filter by purchase_status and expose field in response."""
+
+    def test_on_hold_item_excluded_from_unordered(self, auth_client):
+        """REQ-PO4-003: LineItem with purchase_status='on_hold' is excluded from unordered list."""
+        order = _make_order(shopify_order_id=94001)
+        LineItem.objects.create(
+            order=order,
+            shopify_line_item_id=1,
+            sku="SKU-HOLD",
+            title="On Hold Book",
+            quantity=2,
+            purchase_status="on_hold",
+        )
+        res = auth_client.get(UNORDERED_URL)
+        assert res.status_code == 200
+        skus = [r["sku"] for r in res.data["results"]]
+        assert "SKU-HOLD" not in skus
+
+    def test_unordered_item_included(self, auth_client):
+        """REQ-PO4-003: LineItem with purchase_status='unordered' appears in unordered list."""
+        order = _make_order(shopify_order_id=94002)
+        LineItem.objects.create(
+            order=order,
+            shopify_line_item_id=1,
+            sku="SKU-UNORDERED",
+            title="Unordered Book",
+            quantity=2,
+            purchase_status="unordered",
+        )
+        res = auth_client.get(UNORDERED_URL)
+        assert res.status_code == 200
+        skus = [r["sku"] for r in res.data["results"]]
+        assert "SKU-UNORDERED" in skus
+
+    def test_response_includes_purchase_status_field(self, auth_client):
+        """REQ-PO4-004: Response item includes 'purchase_status' key."""
+        order = _make_order(shopify_order_id=94003)
+        _make_line_item(order, shopify_line_item_id=1, sku="SKU-FIELD")
+        res = auth_client.get(UNORDERED_URL)
+        assert res.status_code == 200
+        assert res.data["count"] >= 1
+        result = next(r for r in res.data["results"] if r["sku"] == "SKU-FIELD")
+        assert "purchase_status" in result
+
+    def test_po_linked_unordered_item_excluded(self, auth_client):
+        """M2M link takes priority: purchase_status='unordered' but linked to PO → excluded."""
+        order = _make_order(shopify_order_id=94004)
+        li = LineItem.objects.create(
+            order=order,
+            shopify_line_item_id=1,
+            sku="SKU-PO-LINKED",
+            title="PO Linked Book",
+            quantity=2,
+            purchase_status="unordered",
+        )
+        po = PurchaseOrder.objects.create(
+            sku="SKU-PO-LINKED", title="Linked Book PO", distributor="bookseen", quantity=2
+        )
+        po.line_items.add(li)
+        res = auth_client.get(UNORDERED_URL)
+        assert res.status_code == 200
+        skus = [r["sku"] for r in res.data["results"]]
+        assert "SKU-PO-LINKED" not in skus
+
+    def test_all_non_unordered_statuses_excluded(self, auth_client):
+        """All non-unordered statuses are excluded from the unordered list."""
+        non_unordered = ["on_hold", "order_cancelled", "other_publisher", "cs_required", "in_stock"]
+        order = _make_order(shopify_order_id=94005)
+        for i, status in enumerate(non_unordered):
+            LineItem.objects.create(
+                order=order,
+                shopify_line_item_id=10 + i,
+                sku=f"SKU-NOLIST-{i}",
+                title=f"Book {status}",
+                quantity=1,
+                purchase_status=status,
+            )
+        res = auth_client.get(UNORDERED_URL)
+        assert res.status_code == 200
+        result_skus = [r["sku"] for r in res.data["results"]]
+        for i in range(len(non_unordered)):
+            assert f"SKU-NOLIST-{i}" not in result_skus
+
+
+# ---------------------------------------------------------------------------
+# SPEC-PURCHASE-ORDER-004: LineItemStatusUpdateView (single PATCH)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestLineItemStatusUpdateView:
+    """REQ-PO4-005, REQ-PO4-007: Single line item status update."""
+
+    def _make_li(self, shopify_order_id: int = 95001, shopify_line_item_id: int = 1) -> LineItem:
+        order = _make_order(shopify_order_id=shopify_order_id)
+        return _make_line_item(order, shopify_line_item_id=shopify_line_item_id)
+
+    def test_patch_valid_status_returns_200(self, auth_client):
+        """REQ-PO4-005: PATCH with valid status updates the LineItem and returns 200."""
+        li = self._make_li()
+        url = LINE_ITEM_STATUS_URL.format(pk=li.pk)
+        res = auth_client.patch(url, data={"purchase_status": "on_hold"}, format="json")
+        assert res.status_code == 200
+        li.refresh_from_db()
+        assert li.purchase_status == "on_hold"
+
+    def test_patch_response_contains_updated_status(self, auth_client):
+        """Response body includes the updated purchase_status."""
+        li = self._make_li(shopify_order_id=95002, shopify_line_item_id=2)
+        url = LINE_ITEM_STATUS_URL.format(pk=li.pk)
+        res = auth_client.patch(url, data={"purchase_status": "in_stock"}, format="json")
+        assert res.status_code == 200
+        assert res.data["purchase_status"] == "in_stock"
+        assert res.data["id"] == li.pk
+
+    def test_patch_invalid_status_returns_400(self, auth_client):
+        """REQ-PO4-007: PATCH with invalid status value returns 400."""
+        li = self._make_li(shopify_order_id=95003, shopify_line_item_id=3)
+        url = LINE_ITEM_STATUS_URL.format(pk=li.pk)
+        res = auth_client.patch(url, data={"purchase_status": "invalid_value"}, format="json")
+        assert res.status_code == 400
+
+    def test_patch_nonexistent_id_returns_404(self, auth_client):
+        """REQ-PO4-007: PATCH on non-existent LineItem pk returns 404."""
+        url = LINE_ITEM_STATUS_URL.format(pk=99999)
+        res = auth_client.patch(url, data={"purchase_status": "on_hold"}, format="json")
+        assert res.status_code == 404
+
+    def test_patch_unauthenticated_returns_401(self, anon_client):
+        """REQ-PO4-007: PATCH without auth returns 401."""
+        url = LINE_ITEM_STATUS_URL.format(pk=1)
+        res = anon_client.patch(url, data={"purchase_status": "on_hold"}, format="json")
+        assert res.status_code == 401
+
+    def test_patch_all_six_choices(self, auth_client):
+        """All 6 valid purchase_status choices can be set via PATCH."""
+        valid_choices = [
+            "unordered", "on_hold", "order_cancelled",
+            "other_publisher", "cs_required", "in_stock",
+        ]
+        order = _make_order(shopify_order_id=95010)
+        for i, choice in enumerate(valid_choices):
+            li = _make_line_item(order, shopify_line_item_id=100 + i, sku=f"SKU-ALL-{i}")
+            url = LINE_ITEM_STATUS_URL.format(pk=li.pk)
+            res = auth_client.patch(url, data={"purchase_status": choice}, format="json")
+            assert res.status_code == 200, f"Failed for choice: {choice}"
+            li.refresh_from_db()
+            assert li.purchase_status == choice
+
+
+# ---------------------------------------------------------------------------
+# SPEC-PURCHASE-ORDER-004: LineItemBulkStatusUpdateView (bulk PATCH)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestLineItemBulkStatusUpdateView:
+    """REQ-PO4-006, REQ-PO4-007: Bulk line item status update."""
+
+    def _make_lis(self, count: int, shopify_order_id: int = 96001) -> list:
+        order = _make_order(shopify_order_id=shopify_order_id)
+        items = []
+        for i in range(count):
+            li = _make_line_item(order, shopify_line_item_id=i + 1, sku=f"SKU-BULK-{shopify_order_id}-{i}")
+            items.append(li)
+        return items
+
+    def test_bulk_update_success(self, auth_client):
+        """REQ-PO4-006: Bulk PATCH updates all given IDs and returns updated_count."""
+        lis = self._make_lis(3)
+        ids = [li.pk for li in lis]
+        res = auth_client.patch(
+            BULK_STATUS_URL,
+            data={"ids": ids, "purchase_status": "on_hold"},
+            format="json",
+        )
+        assert res.status_code == 200
+        assert res.data["updated_count"] == 3
+        assert res.data["missing_ids"] == []
+        for li in lis:
+            li.refresh_from_db()
+            assert li.purchase_status == "on_hold"
+
+    def test_bulk_partial_success_with_missing_ids(self, auth_client):
+        """REQ-PO4-006: Missing IDs are reported in missing_ids; existing ones are updated."""
+        lis = self._make_lis(2, shopify_order_id=96002)
+        ids = [li.pk for li in lis] + [99998, 99999]
+        res = auth_client.patch(
+            BULK_STATUS_URL,
+            data={"ids": ids, "purchase_status": "cs_required"},
+            format="json",
+        )
+        assert res.status_code == 200
+        assert res.data["updated_count"] == 2
+        assert 99998 in res.data["missing_ids"]
+        assert 99999 in res.data["missing_ids"]
+
+    def test_bulk_empty_ids_returns_400(self, auth_client):
+        """REQ-PO4-007: Empty ids list returns 400."""
+        res = auth_client.patch(
+            BULK_STATUS_URL,
+            data={"ids": [], "purchase_status": "on_hold"},
+            format="json",
+        )
+        assert res.status_code == 400
+
+    def test_bulk_invalid_status_returns_400(self, auth_client):
+        """REQ-PO4-007: Invalid purchase_status returns 400."""
+        lis = self._make_lis(1, shopify_order_id=96003)
+        res = auth_client.patch(
+            BULK_STATUS_URL,
+            data={"ids": [lis[0].pk], "purchase_status": "invalid_choice"},
+            format="json",
+        )
+        assert res.status_code == 400
+
+    def test_bulk_unauthenticated_returns_401(self, anon_client):
+        """REQ-PO4-007: PATCH without auth returns 401."""
+        res = anon_client.patch(
+            BULK_STATUS_URL,
+            data={"ids": [1], "purchase_status": "on_hold"},
+            format="json",
+        )
+        assert res.status_code == 401
