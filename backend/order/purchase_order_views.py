@@ -15,7 +15,7 @@ Endpoints:
 # @MX:REASON: Central fan-in point for purchase order lifecycle (unordered → generate → upload → confirm)
 """
 
-from datetime import date
+from datetime import date, timezone
 from decimal import Decimal, InvalidOperation
 
 from django.db import IntegrityError, transaction
@@ -387,6 +387,7 @@ class RunComparisonView(APIView):
             total_qty = data["total_qty"]
             stocks = wstock_map.get(sku, {})
 
+            now = timezone.now()
             if vc:
                 sel = auto_select_distributor(
                     vc=vc,
@@ -406,6 +407,25 @@ class RunComparisonView(APIView):
                 update_fields += ["candidate_basis", "price_diff", "price_diff_alert", "updated_at"]
                 vc.save(update_fields=update_fields)
 
+                # Determine price to record on each LineItem based on selected distributor
+                selected = sel["selected_distributor"]
+                if selected in ("BOOXEN",):
+                    confirmed_price = vc.bookseen_price
+                    confirmed_dist = "bookseen"
+                elif selected == "교보":
+                    confirmed_price = vc.kyobo_price
+                    confirmed_dist = "kyobo"
+                else:
+                    confirmed_price = None
+                    confirmed_dist = selected
+
+                li_ids = [li["id"] for li in data["line_items"]]
+                LineItem.objects.filter(pk__in=li_ids).update(
+                    confirmed_price=confirmed_price,
+                    confirmed_distributor=confirmed_dist,
+                    confirmed_at=now,
+                )
+
                 results.append({
                     "sku": sku,
                     "title": data["title"],
@@ -421,6 +441,8 @@ class RunComparisonView(APIView):
                     "candidate_basis": vc.candidate_basis,
                     "price_diff": str(vc.price_diff) if vc.price_diff is not None else None,
                     "price_diff_alert": vc.price_diff_alert,
+                    "confirmed_price": str(confirmed_price) if confirmed_price is not None else None,
+                    "confirmed_distributor": confirmed_dist,
                 })
             else:
                 results.append({
@@ -438,6 +460,8 @@ class RunComparisonView(APIView):
                     "candidate_basis": None,
                     "price_diff": None,
                     "price_diff_alert": None,
+                    "confirmed_price": None,
+                    "confirmed_distributor": None,
                 })
 
         return Response({"count": len(results), "results": results})

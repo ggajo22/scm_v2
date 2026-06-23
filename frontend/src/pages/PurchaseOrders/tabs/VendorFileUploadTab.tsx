@@ -178,6 +178,7 @@ export function VendorFileUploadTab() {
                     <th className="py-2 px-3 text-center font-medium">교보 재고</th>
                     <th className="py-2 px-3 text-right font-medium">교보 단가</th>
                     <th className="py-2 px-3 text-left font-medium">선택</th>
+                    <th className="py-2 px-3 text-right font-medium">확정 단가</th>
                     <th className="py-2 px-3 text-left font-medium">근거</th>
                   </tr>
                 </thead>
@@ -234,6 +235,11 @@ export function VendorFileUploadTab() {
                         ) : (
                           <span className="text-muted-foreground text-xs">미정</span>
                         )}
+                      </td>
+                      <td className="py-2 px-3 text-right font-medium">
+                        {item.confirmed_price
+                          ? Number(item.confirmed_price).toLocaleString()
+                          : '-'}
                       </td>
                       <td className="py-2 px-3 text-xs text-muted-foreground">
                         {item.candidate_basis ?? '-'}

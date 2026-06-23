@@ -137,6 +137,9 @@ class LineItem(models.Model):
         choices=PURCHASE_STATUS_CHOICES,
         default="unordered",
     )
+    confirmed_price = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    confirmed_distributor = models.CharField(max_length=50, null=True, blank=True)
+    confirmed_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         db_table = "orders_line_item"

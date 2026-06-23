@@ -104,6 +104,50 @@ file=<유효한 xlsx 파일>
 
 ---
 
+### SC-PO-004b: run-comparison — LineItem에 확정 가격 기록
+
+**Given**:
+- 미발주 LineItem: SKU `"9788901234567"`, id=101(수량 3), id=102(수량 2)
+- `VendorComparison`: bookseen_price=12000, kyobo_price=11500, kyobo_stock 충분
+
+**When** 관리자가 `POST /api/purchase-orders/run-comparison/`을 호출한다
+
+**Then**:
+- `LineItem(id=101).confirmed_price = 11500.00`, `confirmed_distributor = "kyobo"`, `confirmed_at` 이 설정된다
+- `LineItem(id=102).confirmed_price = 11500.00`, `confirmed_distributor = "kyobo"`, `confirmed_at` 이 설정된다
+- 응답의 해당 SKU 항목에 `confirmed_price: "11500.00"`, `confirmed_distributor: "kyobo"`가 포함된다
+
+---
+
+### SC-PO-004c: run-comparison — 재업로드 후 기존 LineItem 확정 가격 유지
+
+**Given**:
+- LineItem(id=101)은 이전 비교 실행에서 `confirmed_price=5000`, `confirmed_distributor="bookseen"`으로 기록됨
+- 이후 북센 파일을 재업로드하여 `VendorComparison.bookseen_price = 10000`으로 갱신됨
+- LineItem(id=101)은 여전히 `purchase_status="unordered"`
+
+**When** 관리자가 `GET /api/purchase-orders/unordered/` 또는 기존 발주 이력을 조회한다
+
+**Then**:
+- `LineItem(id=101).confirmed_price`는 여전히 `5000`이다 (재업로드로 변경되지 않음)
+- `VendorComparison.bookseen_price`는 `10000`이다 (최신 업로드 반영)
+- 두 값이 독립적으로 유지된다
+
+---
+
+### SC-PO-004d: 비교 결과 테이블 — 확정 단가 컬럼 표시
+
+**Given** 비교 실행이 완료된 상태이다
+
+**When** 관리자가 비교 결과 테이블을 확인한다
+
+**Then**:
+- 테이블에 "확정 단가" 컬럼이 표시된다
+- 해당 컬럼에는 `confirmed_price` 값이 한국 숫자 형식(예: 11,500)으로 표시된다
+- `VendorComparison`이 없는 SKU의 "확정 단가"는 `-`로 표시된다
+
+---
+
 ### SC-PO-005: 자동 발주처 선택 로직 — 재고 기준
 
 **Given** `VendorComparison` 테이블에 다음 데이터가 존재한다:

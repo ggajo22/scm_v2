@@ -1,9 +1,9 @@
 ---
 id: SPEC-PURCHASE-ORDER-001
-version: 1.0.0
+version: 1.2.0
 status: draft
 created: 2026-06-21
-updated: 2026-06-21
+updated: 2026-06-23
 author: ggajo
 priority: High
 issue_number: ~
@@ -17,6 +17,7 @@ issue_number: ~
 |------|------|--------|-----------|
 | 1.0.0 | 2026-06-21 | ggajo | 최초 작성 — 발주 관리 시스템 SPEC 초안 |
 | 1.1.0 | 2026-06-23 | ggajo | 업체 자료 업로드/비교 흐름 분리 — 업로드는 데이터 저장만, 비교는 별도 run-comparison 엔드포인트로 분리; 프론트엔드 distributor 값 매핑(북센↔bookseen, 교보↔kyobo) 명세 추가 |
+| 1.2.0 | 2026-06-23 | ggajo | 확정 가격 이력 보존 — 비교 실행 시 LineItem에 confirmed_price/confirmed_distributor/confirmed_at 기록; 가격 재업로드 후에도 기존 LineItem 확정 가격 유지 |
 
 ---
 
@@ -124,7 +125,13 @@ The `POST /api/purchase-orders/upload-vendor-file/` 응답 **shall** `parsed_cou
 **When** 관리자가 `POST /api/purchase-orders/run-comparison/`을 호출하면, the 시스템 **shall** 현재 미발주 상태(`purchase_status="unordered"`)인 `LineItem`을 SKU별로 집계하고, 각 SKU의 `VendorComparison` 데이터와 매칭하여 `auto_select_distributor()`를 실행한 후 결과를 `VendorComparison`에 저장하고 반환한다.
 
 **REQ-PO-034a** (Ubiquitous)
-The `run-comparison` 응답 **shall** SKU별로 `sku`, `title`, `total_qty`(미발주 수량 합계), `line_items`(매칭된 주문 목록 — id, order_name, quantity), 북센/교보 재고·단가, `selected_distributor`, `candidate_basis`, `price_diff`, `price_diff_alert` 필드를 포함한다.
+The `run-comparison` 응답 **shall** SKU별로 `sku`, `title`, `total_qty`(미발주 수량 합계), `line_items`(매칭된 주문 목록 — id, order_name, quantity), 북센/교보 재고·단가, `selected_distributor`, `candidate_basis`, `price_diff`, `price_diff_alert`, `confirmed_price`, `confirmed_distributor` 필드를 포함한다.
+
+**REQ-PO-034c** (Event-Driven)
+**When** `POST /api/purchase-orders/run-comparison/`이 실행되면, the 시스템 **shall** 해당 SKU의 미발주 `LineItem` 전체에 `confirmed_price`(선택된 배급사의 단가), `confirmed_distributor`(선택된 배급사 키), `confirmed_at`(실행 시각)을 저장한다. 이 값은 이후 업체 자료가 재업로드되더라도 변경되지 않으며, 비교를 다시 실행할 때만 갱신된다.
+
+**REQ-PO-034d** (Ubiquitous)
+The `업체 자료 업로드` 탭의 비교 결과 테이블 **shall** "확정 단가" 컬럼을 포함하여, 비교 실행 시점에 기록된 `confirmed_price`를 표시한다.
 
 **REQ-PO-034b** (Ubiquitous)
 The `GET /api/purchase-orders/comparison/` 엔드포인트 **shall** 현재 저장된 `VendorComparison` 레코드를 SKU별로 반환하며, 북센 재고/단가, 교보 재고/단가, 자동 선택된 발주처를 포함한다.
@@ -449,7 +456,9 @@ Authorization: Bearer <access_token>
       "selected_distributor": "kyobo",
       "candidate_basis": "양사재고/교보저가",
       "price_diff": "500.00",
-      "price_diff_alert": false
+      "price_diff_alert": false,
+      "confirmed_price": "11500.00",
+      "confirmed_distributor": "kyobo"
     }
   ]
 }

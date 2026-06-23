@@ -64,6 +64,8 @@ export interface ComparisonResult {
   candidate_basis: string | null
   price_diff: string | null
   price_diff_alert: boolean | null
+  confirmed_price: string | null
+  confirmed_distributor: string | null
 }
 
 export interface ConfirmItem {
