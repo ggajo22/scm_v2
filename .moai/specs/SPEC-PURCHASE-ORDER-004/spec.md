@@ -1,7 +1,7 @@
 ---
 id: SPEC-PURCHASE-ORDER-004
 version: 1.0.0
-status: draft
+status: completed
 created: 2026-06-23
 updated: 2026-06-23
 author: ggajo
@@ -214,3 +214,32 @@ LineItem.objects.filter(sku__isnull=False, purchase_status="unordered").exclude(
 - 기존 M2M(`line_items`) 관계는 변경 없음
 - PO에 연결된 `LineItem`의 `purchase_status`는 별도로 변경되지 않음 (PO 연결이 "발주 완료"의 주요 기준)
 - Shopify 동기화 로직(`sync_orders`)은 `purchase_status` 필드를 덮어쓰지 않음 (기본값 `unordered`는 신규 LineItem에만 적용)
+
+---
+
+## 구현 완료 노트
+
+- **구현 일자**: 2026-06-23
+- **커밋**: `1f65fe8`
+
+### 백엔드 변경 사항
+
+- `backend/order/models.py`: `PURCHASE_STATUS_CHOICES` 및 `purchase_status` CharField를 `LineItem` 모델에 추가 (6개 선택지, 기본값 `unordered`)
+- `backend/order/migrations/0011_lineitem_add_purchase_status.py`: MySQL 호환 마이그레이션 생성 (`VARCHAR(20) NOT NULL DEFAULT 'unordered'`)
+- `backend/order/purchase_order_views.py`:
+  - `UnorderedItemsView.get()`: `purchase_status="unordered"` 필터 조건 추가 및 응답에 `purchase_status` 포함
+  - `LineItemStatusUpdateView` 신규 추가: `PATCH /api/purchase-orders/line-items/{id}/status/`
+  - `LineItemBulkStatusUpdateView` 신규 추가: `PATCH /api/purchase-orders/line-items/bulk-status/`
+- `backend/order/urls.py`: 신규 엔드포인트 2개 URL 패턴 등록
+- `backend/order/tests/test_purchase_order_models.py`: `TestLineItemPurchaseStatus` 클래스 (3개 테스트)
+- `backend/order/tests/test_purchase_orders.py`: 신규 테스트 클래스 3개 (약 16개 테스트)
+
+### 프론트엔드 변경 사항
+
+- `frontend/src/services/purchaseOrderApi.ts`: `UnorderedItem`에 `purchase_status` 추가, `PURCHASE_STATUS_OPTIONS`, `updateLineItemStatus()`, `bulkUpdateLineItemStatus()` 추가
+- `frontend/src/hooks/usePurchaseOrderQueries.ts`: `useUpdateLineItemStatus`, `useBulkUpdateLineItemStatus` mutation 훅 추가
+- `frontend/src/pages/PurchaseOrders/tabs/UnorderedItemsTab.tsx`: 행별 상태 드롭다운 및 일괄 상태 변경 UI 추가
+
+### 테스트 결과
+
+- **23 / 23 테스트 통과**
