@@ -15,7 +15,8 @@ Endpoints:
 # @MX:REASON: Central fan-in point for purchase order lifecycle (unordered → generate → upload → confirm)
 """
 
-from datetime import date, timezone
+from datetime import date
+from django.utils import timezone
 from decimal import Decimal, InvalidOperation
 from types import SimpleNamespace
 

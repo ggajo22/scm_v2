@@ -227,7 +227,7 @@ class BookseenData(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        db_table = "orders_bookseendata"
+        db_table = "orders_booksendata"
         indexes = [models.Index(fields=["sku"])]
 
     def __str__(self) -> str:
