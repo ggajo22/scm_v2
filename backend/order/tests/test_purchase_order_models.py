@@ -211,7 +211,7 @@ class TestBookseenData:
 
     def test_db_table_name(self):
         """Table name must match declared db_table."""
-        assert BookseenData._meta.db_table == "orders_bookseendata"
+        assert BookseenData._meta.db_table == "orders_booksendata"
 
 
 @pytest.mark.django_db
