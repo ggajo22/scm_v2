@@ -161,11 +161,20 @@ export async function downloadDailyReview(): Promise<Blob> {
   return res.data as Blob
 }
 
-export async function uploadDailyReview(formData: FormData): Promise<{
-  confirmed_count: number
-  skipped_count: number
-  errors: Array<{ sku: string; error: string }>
-}> {
+export interface SkuQuantity {
+  sku: string
+  title: string
+  quantity: number
+}
+
+export interface UploadDailyReviewResponse {
+  message?: string
+  confirmed_count?: number
+  skipped_count?: number
+  confirmed_by_distributor: Record<string, SkuQuantity[]>
+}
+
+export async function uploadDailyReview(formData: FormData): Promise<UploadDailyReviewResponse> {
   const res = await api.post('/api/purchase-orders/upload-daily-review/', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
   })

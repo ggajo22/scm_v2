@@ -156,7 +156,7 @@ export function useUploadDailyReview() {
     onSuccess: (result) => {
       void queryClient.invalidateQueries({ queryKey: QUERY_KEYS.unordered })
       void queryClient.invalidateQueries({ queryKey: ['purchase-orders', 'list'] })
-      toast.success(`발주 확정 완료: ${result.confirmed_count}건 처리, ${result.skipped_count}건 건너뜀`)
+      toast.success(`발주 확정 완료: ${result.confirmed_count ?? 0}건 처리, ${result.skipped_count ?? 0}건 건너뜀`)
     },
     onError: () => {
       toast.error('파일 업로드에 실패했습니다.')

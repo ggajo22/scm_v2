@@ -21,7 +21,7 @@ from decimal import Decimal, InvalidOperation
 from types import SimpleNamespace
 
 from django.db import IntegrityError, transaction
-from django.db.models import Count, Exists, F, IntegerField, OuterRef, Subquery, Sum
+from django.db.models import Case, Count, Exists, F, IntegerField, OuterRef, Subquery, Sum, Value, When
 from django.db.models.functions import Coalesce
 from django.http import HttpResponse
 from rest_framework import serializers, status
@@ -40,7 +40,8 @@ from .excel_utils import (
 )
 from .models import BookseenData, DistributorVendorRule, KyoboData, LineItem, PurchaseOrder, Refund, VendorComparison, WarehouseStock
 
-VALID_DISTRIBUTORS = {"bookseen", "kyobo", "choeumgoyuk", "agape", "sungseoyunion"}
+VALID_DISTRIBUTORS = {"bookseen", "kyobo", "choeumgoyuk", "agape", "sungseoyunion",
+                      "warehouse_korea", "warehouse_ca", "warehouse_nj"}
 VENDOR_FILE_DISTRIBUTORS = {"bookseen", "kyobo"}
 VENDOR_RULE_DISTRIBUTORS = {"choeumgoyuk", "agape", "sungseoyunion"}
 
@@ -812,22 +813,13 @@ class DailyReviewExcelView(APIView):
         for li in line_items:
             qty_by_sku[li.sku] = qty_by_sku.get(li.sku, 0) + (li.quantity or 0)
 
-        # Warehouse entries for display (locations + total)
-        warehouse_display: dict[str, list] = {}
-        for ws_obj in WarehouseStock.objects.filter(isbn__in=skus):
-            warehouse_display.setdefault(ws_obj.isbn, []).append(ws_obj)
-
         rows = []
         for li in line_items:
             sku = li.sku
             bd = bookseen_map.get(sku)
             kd = kyobo_map.get(sku)
 
-            ws_entries = warehouse_display.get(sku, [])
-            warehouse_qty: int | None = sum(w.quantity for w in ws_entries) if ws_entries else None
-            warehouse_locations = "/".join(
-                f"{w.location}:{w.quantity}" for w in ws_entries if w.quantity > 0
-            ) if ws_entries else ""
+            wstock = stock_map.get(sku, {"korea": 0, "ca": 0, "nj": 0})
 
             bs_price = float(bd.price) if bd and bd.price is not None else None
             ky_price = float(kd.price) if kd and kd.price is not None else None
@@ -849,7 +841,6 @@ class DailyReviewExcelView(APIView):
                 kyobo_status=kd.status if kd else None,
                 kyobo_publisher=kd.publisher if kd else None,
             )
-            wstock = stock_map.get(sku, {"korea": 0, "ca": 0, "nj": 0})
             sel = auto_select_distributor(
                 vc=vc_ns,
                 total_qty=qty_by_sku.get(sku, 0),
@@ -866,8 +857,9 @@ class DailyReviewExcelView(APIView):
                 "quantity": li.quantity or 0,
                 "location": li.location or "",
                 "note": li.note or "",
-                "warehouse_qty": warehouse_qty,
-                "warehouse_locations": warehouse_locations,
+                "korea_stock": stock_map.get(sku, {}).get("korea", 0),
+                "ca_stock": stock_map.get(sku, {}).get("ca", 0),
+                "nj_stock": stock_map.get(sku, {}).get("nj", 0),
                 "bs_price": bs_price,
                 "ky_price": ky_price,
                 "bs_status": bd.status if bd else None,
@@ -932,11 +924,19 @@ class UploadDailyReviewView(APIView):
         confirmed_count = 0
         skipped_count = 0
         errors: list[dict] = []
+        confirmed_by_distributor: dict[str, list] = {}
+
+        # Warehouse distributor code → location mapping
+        _WAREHOUSE_LOCATION_MAP: dict[str, str] = {
+            "warehouse_korea": "korea",
+            "warehouse_ca": "ca",
+            "warehouse_nj": "nj",
+        }
 
         try:
             with transaction.atomic():
                 for sku, item in sku_map.items():
-                    distributor = item["distributor"]
+                    distributor_code = item["distributor"]
                     note = item.get("note")
 
                     unordered_lis = list(
@@ -951,37 +951,69 @@ class UploadDailyReviewView(APIView):
 
                     title = unordered_lis[0].title or sku
                     total_qty = sum(li.quantity or 0 for li in unordered_lis)
+                    li_ids = [li.pk for li in unordered_lis]
 
-                    # Lookup unit price from vendor data
-                    unit_price = None
-                    if distributor == "bookseen":
-                        bd = BookseenData.objects.filter(sku=sku).first()
-                        if bd:
-                            unit_price = bd.price
-                    elif distributor == "kyobo":
-                        kd = KyoboData.objects.filter(sku=sku).first()
-                        if kd:
-                            unit_price = kd.price
+                    if distributor_code in _WAREHOUSE_LOCATION_MAP:
+                        # REQ-PO5-004: Warehouse branch — deduct stock, set in_stock, no PO
+                        loc = _WAREHOUSE_LOCATION_MAP[distributor_code]
 
-                    po = PurchaseOrder.objects.create(
-                        sku=sku,
-                        title=title,
-                        distributor=distributor,
-                        quantity=total_qty,
-                        unit_price=unit_price,
-                        status="pending",
-                    )
-                    po.line_items.add(*unordered_lis)
+                        # Atomic stock deduction: floor at 0
+                        WarehouseStock.objects.filter(isbn=sku, location=loc).update(
+                            quantity=Case(
+                                When(quantity__gte=total_qty, then=F("quantity") - total_qty),
+                                default=Value(0),
+                                output_field=IntegerField(),
+                            )
+                        )
 
-                    update_fields = ["confirmed_distributor"]
-                    for li in unordered_lis:
-                        li.confirmed_distributor = distributor
-                    if note is not None:
+                        # REQ-PO5-005: Set purchase_status = "in_stock"
+                        update_fields = ["purchase_status", "confirmed_distributor"]
                         for li in unordered_lis:
-                            li.note = note
-                        update_fields.append("note")
+                            li.purchase_status = "in_stock"
+                            li.confirmed_distributor = distributor_code
+                        if note is not None:
+                            for li in unordered_lis:
+                                li.note = note
+                            update_fields.append("note")
 
-                    LineItem.objects.bulk_update(unordered_lis, update_fields)
+                        LineItem.objects.bulk_update(unordered_lis, update_fields)
+
+                    else:
+                        # Non-warehouse: existing flow — create PurchaseOrder
+                        unit_price = None
+                        if distributor_code == "bookseen":
+                            bd = BookseenData.objects.filter(sku=sku).first()
+                            if bd:
+                                unit_price = bd.price
+                        elif distributor_code == "kyobo":
+                            kd = KyoboData.objects.filter(sku=sku).first()
+                            if kd:
+                                unit_price = kd.price
+
+                        po = PurchaseOrder.objects.create(
+                            sku=sku,
+                            title=title,
+                            distributor=distributor_code,
+                            quantity=total_qty,
+                            unit_price=unit_price,
+                            status="pending",
+                        )
+                        po.line_items.add(*unordered_lis)
+
+                        update_fields = ["confirmed_distributor"]
+                        for li in unordered_lis:
+                            li.confirmed_distributor = distributor_code
+                        if note is not None:
+                            for li in unordered_lis:
+                                li.note = note
+                            update_fields.append("note")
+
+                        LineItem.objects.bulk_update(unordered_lis, update_fields)
+
+                    # REQ-PO5-007: Track confirmed by distributor
+                    confirmed_by_distributor.setdefault(distributor_code, []).append(
+                        {"sku": sku, "title": title, "quantity": total_qty}
+                    )
                     confirmed_count += 1
 
         except Exception as exc:
@@ -995,6 +1027,7 @@ class UploadDailyReviewView(APIView):
                 "confirmed_count": confirmed_count,
                 "skipped_count": skipped_count,
                 "errors": errors,
+                "confirmed_by_distributor": confirmed_by_distributor,
             },
             status=status.HTTP_201_CREATED,
         )

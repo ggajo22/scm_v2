@@ -502,11 +502,14 @@ _DISTRIBUTOR_LABEL_MAP: dict[str, str] = {
     "처음교육": "choeumgoyuk",
     "아가페": "agape",
     "성서유니온": "sungseoyunion",
+    "재고(한국)": "warehouse_korea",
+    "재고(CA)": "warehouse_ca",
+    "재고(NJ)": "warehouse_nj",
 }
 
 _DAILY_REVIEW_HEADERS = [
     "주문번호", "ISBN", "제목", "수량", "주문위치", "메모",
-    "창고재고수량", "창고재고위치",
+    "재고(한국)", "재고(CA)", "재고(NJ)",
     "북센 공급가", "교보 공급가",
     "북센 재고수량", "북센 재고상태",
     "교보 재고수량", "교보 재고상태",
@@ -520,11 +523,11 @@ _DAILY_REVIEW_HEADERS = [
 
 def generate_daily_review_excel(rows: list[dict]) -> bytes:
     """
-    Generate Daily Order Review Excel with 22 columns.
+    Generate Daily Order Review Excel with 24 columns.
 
     Each dict in `rows` should have:
         order_name, sku, title, quantity, location, note,
-        warehouse_qty (int|None), warehouse_locations (str),
+        korea_stock (int), ca_stock (int), nj_stock (int),
         bs_price (float|None), ky_price (float|None),
         bs_status (str|None), ky_stock (int|None), ky_status (str|None),
         price_diff (float|None), bs_arrival (str|None),
@@ -541,7 +544,6 @@ def generate_daily_review_excel(rows: list[dict]) -> bytes:
         ky_returnable = "Y" if row.get("ky_returnable") is True else ("N" if row.get("ky_returnable") is False else "")
         ky_available = "Y" if row.get("ky_available") is True else ("N" if row.get("ky_available") is False else "")
         price_diff_alert = "Y" if row.get("price_diff_alert") else "N"
-        wh_qty = row.get("warehouse_qty")
 
         ws.append([
             row.get("order_name") or "",
@@ -550,8 +552,9 @@ def generate_daily_review_excel(rows: list[dict]) -> bytes:
             row.get("quantity") or 0,
             row.get("location") or "",
             row.get("note") or "",
-            wh_qty if wh_qty is not None else "",
-            row.get("warehouse_locations") or "",
+            row.get("korea_stock") or 0,
+            row.get("ca_stock") or 0,
+            row.get("nj_stock") or 0,
             row.get("bs_price") if row.get("bs_price") is not None else "",
             row.get("ky_price") if row.get("ky_price") is not None else "",
             "",  # 북센 재고수량 — no reliable data

@@ -1,11 +1,29 @@
-import { useRef } from 'react'
+import { useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
-import { useDownloadDailyReview, useUploadDailyReview } from '@/hooks/usePurchaseOrderQueries'
+import {
+  useDownloadDailyReview,
+  useUploadDailyReview,
+  useGenerateOrderFile,
+} from '@/hooks/usePurchaseOrderQueries'
+import type { UploadDailyReviewResponse } from '@/services/purchaseOrderApi'
+
+const DISTRIBUTOR_DISPLAY_NAMES: Record<string, string> = {
+  bookseen: '북센',
+  kyobo: '교보',
+  choeumgoyuk: '처음교육',
+  agape: '아가페',
+  sungseoyunion: '성서유니온',
+  warehouse_korea: '창고(한국)',
+  warehouse_ca: '창고(CA)',
+  warehouse_nj: '창고(NJ)',
+}
 
 export function DailyReviewTab() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const downloadMutation = useDownloadDailyReview()
   const uploadMutation = useUploadDailyReview()
+  const generateMutation = useGenerateOrderFile()
+  const [uploadResult, setUploadResult] = useState<UploadDailyReviewResponse | null>(null)
 
   const handleDownload = () => {
     downloadMutation.mutate()
@@ -16,7 +34,11 @@ export function DailyReviewTab() {
     if (!file) return
     const formData = new FormData()
     formData.append('file', file)
+    setUploadResult(null)
     uploadMutation.mutate(formData, {
+      onSuccess: (data) => {
+        setUploadResult(data)
+      },
       onSettled: () => {
         if (fileInputRef.current) fileInputRef.current.value = ''
       },
@@ -79,13 +101,33 @@ export function DailyReviewTab() {
               onChange={handleFileChange}
             />
           </div>
-          {uploadMutation.isSuccess && (
+          {uploadMutation.isSuccess && uploadResult && (
             <div className="text-xs text-muted-foreground">
-              확정: {uploadMutation.data.confirmed_count}건 / 건너뜀: {uploadMutation.data.skipped_count}건
+              확정: {uploadResult.confirmed_count ?? 0}건 / 건너뜀: {uploadResult.skipped_count ?? 0}건
             </div>
           )}
         </div>
       </div>
+
+      {/* Per-distributor download buttons after successful upload */}
+      {uploadResult && Object.keys(uploadResult.confirmed_by_distributor).length > 0 && (
+        <div className="rounded-lg border p-4 space-y-3">
+          <p className="text-sm font-medium">발주 완료 — 공급사별 주문파일 다운로드</p>
+          <div className="flex flex-wrap gap-2">
+            {Object.entries(uploadResult.confirmed_by_distributor).map(([dist, items]) => (
+              <Button
+                key={dist}
+                size="sm"
+                variant="outline"
+                onClick={() => generateMutation.mutate({ distributor: dist, skus: items.map((i) => i.sku) })}
+                disabled={generateMutation.isPending}
+              >
+                {DISTRIBUTOR_DISPLAY_NAMES[dist] ?? dist} 주문파일 다운로드
+              </Button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Selection guide */}
       <div className="rounded-lg bg-muted/40 p-4 space-y-2">
