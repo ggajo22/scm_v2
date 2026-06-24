@@ -138,7 +138,7 @@ export interface PaginatedResponse<T> {
   results: T[]
 }
 
-// SPEC-SHOPIFY-INFO-001: real-time Shopify product info types
+// SPEC-SHOPIFY-INFO-001, SPEC-SHOPIFY-INFO-002: real-time Shopify product info types
 export interface ShopifyStoreInfo {
   registered: boolean
   product_id: string | null
@@ -146,6 +146,8 @@ export interface ShopifyStoreInfo {
   status: 'active' | 'draft' | 'archived' | null
   weight: number | null
   weight_unit: 'g' | 'kg' | 'lb' | 'oz' | null
+  price: string | null
+  image_count: number | null
   error: string | null
 }
 

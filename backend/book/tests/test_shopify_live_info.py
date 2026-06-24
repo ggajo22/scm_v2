@@ -88,16 +88,21 @@ def _make_urlopen_mock(
     product_status: str = "active",
     weight: float = 500.0,
     weight_unit: str = "g",
+    price: str = "25000.00",
+    image_count: int = 2,
 ):
     """Return a side_effect for urllib.request.urlopen that returns product data with variants.
-    The products endpoint response includes variants so both status and weight come from one call.
+    The products endpoint response includes variants so status, weight, and price from one call.
     """
 
     def fake_urlopen(req, timeout=5):
         body = json.dumps({
             "product": {
                 "status": product_status,
-                "variants": [{"id": 1, "weight": weight, "weight_unit": weight_unit}],
+                "images": [{"id": i + 1} for i in range(image_count)],
+                "variants": [
+                    {"id": 1, "weight": weight, "weight_unit": weight_unit, "price": price},
+                ],
             }
         }).encode()
 
@@ -297,7 +302,8 @@ def test_booksen_api_error(auth_client, db):
         body = json.dumps({
             "product": {
                 "status": "active",
-                "variants": [{"id": 1, "weight": 400.0, "weight_unit": "g"}],
+                "images": [{"id": 1}],
+                "variants": [{"id": 1, "weight": 400.0, "weight_unit": "g", "price": "30000.00"}],
             }
         }).encode()
         mock_resp = MagicMock()
@@ -499,3 +505,71 @@ def test_api_error_returns_200_not_500(auth_client, db):
     # errors captured in error field, not HTTP 500
     assert "booksen" in data
     assert "etoile" in data
+
+
+# ---------------------------------------------------------------------------
+# SPEC-SHOPIFY-INFO-002: price and image_count fields
+# ---------------------------------------------------------------------------
+
+@patch("book.shopify_client.urllib.request.urlopen")
+def test_price_and_image_count_returned(mock_urlopen, auth_client, db):
+    """REQ-SHPINFO2-001, REQ-SHPINFO2-002: price and image_count extracted from API response."""
+    inven, _, _, _ = make_full_book("ISBN-PRICE-001")
+    mock_urlopen.side_effect = _make_urlopen_mock("active", 500.0, "g", "25000.00", 3)
+
+    url = URL_TEMPLATE.format(pk=inven.pk)
+    with patch("django.conf.settings.SHOPIFY_BOOKSEN_DOMAIN", "booksen.myshopify.com"), \
+         patch("django.conf.settings.SHOPIFY_BOOKSEN_TOKEN", "tok1"), \
+         patch("django.conf.settings.SHOPIFY_ETOILE_DOMAIN", "etoile.myshopify.com"), \
+         patch("django.conf.settings.SHOPIFY_ETOILE_TOKEN", "tok2"):
+        response = auth_client.get(url)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["booksen"]["price"] == "25000.00"
+    assert data["booksen"]["image_count"] == 3
+    assert data["etoile"]["price"] == "25000.00"
+    assert data["etoile"]["image_count"] == 3
+
+
+@patch("book.shopify_client.urllib.request.urlopen")
+def test_empty_images_returns_zero_image_count(mock_urlopen, auth_client, db):
+    """REQ-SHPINFO2-002: product.images empty array → image_count == 0."""
+    inven, _, _, _ = make_full_book("ISBN-IMGZ-001")
+    mock_urlopen.side_effect = _make_urlopen_mock("active", 500.0, "g", "10000.00", 0)
+
+    url = URL_TEMPLATE.format(pk=inven.pk)
+    with patch("django.conf.settings.SHOPIFY_BOOKSEN_DOMAIN", "booksen.myshopify.com"), \
+         patch("django.conf.settings.SHOPIFY_BOOKSEN_TOKEN", "tok1"), \
+         patch("django.conf.settings.SHOPIFY_ETOILE_DOMAIN", "etoile.myshopify.com"), \
+         patch("django.conf.settings.SHOPIFY_ETOILE_TOKEN", "tok2"):
+        response = auth_client.get(url)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["booksen"]["image_count"] == 0
+    assert data["etoile"]["image_count"] == 0
+
+
+def test_api_error_returns_null_price_and_image_count(auth_client, db):
+    """REQ-SHPINFO2-003: API error → price and image_count are null."""
+    import urllib.error
+
+    inven, _, _, _ = make_full_book("ISBN-ERRP-001")
+    url = URL_TEMPLATE.format(pk=inven.pk)
+    url_error = urllib.error.URLError("timeout")
+    with (
+        patch("book.shopify_client.urllib.request.urlopen", side_effect=url_error),
+        patch("django.conf.settings.SHOPIFY_BOOKSEN_DOMAIN", "booksen.myshopify.com"),
+        patch("django.conf.settings.SHOPIFY_BOOKSEN_TOKEN", "tok"),
+        patch("django.conf.settings.SHOPIFY_ETOILE_DOMAIN", "etoile.myshopify.com"),
+        patch("django.conf.settings.SHOPIFY_ETOILE_TOKEN", "tok2"),
+    ):
+        response = auth_client.get(url)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["booksen"]["price"] is None
+    assert data["booksen"]["image_count"] is None
+    assert data["etoile"]["price"] is None
+    assert data["etoile"]["image_count"] is None
