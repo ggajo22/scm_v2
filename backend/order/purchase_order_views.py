@@ -794,7 +794,7 @@ class DailyReviewExcelView(APIView):
             LineItem.objects.filter(sku__isnull=False, purchase_status="unordered")
             .exclude(purchase_orders__isnull=False)
             .select_related("order")
-            .order_by("order__order_number", "sku")
+            .order_by("order__order_number")
         )
 
         skus = list({li.sku for li in line_items if li.sku})
