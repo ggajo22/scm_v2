@@ -85,7 +85,7 @@ export type LineItemNoteAssignee = 'CS' | '발주' | '한국창고' | '미국창
 
 export const ASSIGNEE_NOTE_TYPES: Record<LineItemNoteAssignee, string[]> = {
   CS: ['주문취소', '주문보류', 'CS필요', '타출판사', 'CS요청'],
-  발주: ['주문요청', '발주제외'],
+  발주: ['발주요청', '발주제외'],
   한국창고: [],
   미국창고: [],
 }
