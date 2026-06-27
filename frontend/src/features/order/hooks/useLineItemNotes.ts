@@ -19,7 +19,7 @@ export function useLineItemNotes(lineItemId: number) {
 export function useCreateLineItemNote(lineItemId: number, orderId: number) {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: async (payload: { content: string; assignee: string }) => {
+    mutationFn: async (payload: { content: string; assignee: string; note_type?: string }) => {
       const res = await api.post(`/api/orders/line-items/${lineItemId}/notes/`, payload)
       return res.data
     },

@@ -72,7 +72,7 @@ class LineItemNoteSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = LineItemNote
-        fields = ["id", "content", "author_username", "assignee", "created_at", "is_resolved"]
+        fields = ["id", "content", "author_username", "assignee", "note_type", "created_at", "is_resolved"]
         read_only_fields = ["id", "author_username", "created_at", "is_resolved"]
 
 
@@ -90,7 +90,7 @@ class LineItemNoteUnresolvedSerializer(serializers.ModelSerializer):
     class Meta:
         model = LineItemNote
         fields = [
-            "id", "content", "author_username", "assignee", "created_at", "is_resolved",
+            "id", "content", "author_username", "assignee", "note_type", "created_at", "is_resolved",
             "line_item_sku", "line_item_title", "order_name", "order_id",
         ]
 

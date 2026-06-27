@@ -5,6 +5,7 @@ import { useOrderDetail, ORDER_DETAIL_QUERY_KEY } from '@/features/order/hooks/u
 import { useCreateLineItemNote, useResolveLineItemNote } from '@/features/order/hooks/useLineItemNotes'
 import type { AxiosError } from 'axios'
 import type { LineItemNote, LineItemNoteAssignee } from '@/types/order'
+import { ASSIGNEE_NOTE_TYPES } from '@/types/order'
 import { api } from '@/lib/axios'
 
 const ASSIGNEE_CHOICES: LineItemNoteAssignee[] = ['CS', '발주', '한국창고', '미국창고']
@@ -63,6 +64,7 @@ export function OrderDetailPage() {
   const [expandedNotes, setExpandedNotes] = useState<Set<number>>(new Set())
   const [noteContents, setNoteContents] = useState<Record<number, string>>({})
   const [noteAssignees, setNoteAssignees] = useState<Record<number, LineItemNoteAssignee>>({})
+  const [noteTypes, setNoteTypes] = useState<Record<number, string>>({})
 
   const { mutate: resolveLineItemNote } = useResolveLineItemNote()
 
@@ -322,11 +324,16 @@ export function OrderDetailPage() {
                             notes={notes}
                             noteContent={noteContents[item.id] ?? ''}
                             noteAssignee={noteAssignees[item.id] ?? 'CS'}
+                            noteType={noteTypes[item.id] ?? ''}
                             onContentChange={(v) =>
                               setNoteContents((prev) => ({ ...prev, [item.id]: v }))
                             }
-                            onAssigneeChange={(v) =>
+                            onAssigneeChange={(v) => {
                               setNoteAssignees((prev) => ({ ...prev, [item.id]: v }))
+                              setNoteTypes((prev) => ({ ...prev, [item.id]: '' }))
+                            }}
+                            onNoteTypeChange={(v) =>
+                              setNoteTypes((prev) => ({ ...prev, [item.id]: v }))
                             }
                             onResolve={(noteId) => resolveLineItemNote(noteId)}
                           />
@@ -488,8 +495,10 @@ interface LineItemNotePanelProps {
   notes: LineItemNote[]
   noteContent: string
   noteAssignee: LineItemNoteAssignee
+  noteType: string
   onContentChange: (v: string) => void
   onAssigneeChange: (v: LineItemNoteAssignee) => void
+  onNoteTypeChange: (v: string) => void
   onResolve: (noteId: number) => void
 }
 
@@ -499,16 +508,19 @@ function LineItemNotePanel({
   notes,
   noteContent,
   noteAssignee,
+  noteType,
   onContentChange,
   onAssigneeChange,
+  onNoteTypeChange,
   onResolve,
 }: LineItemNotePanelProps) {
   const { mutate: createNote, isPending } = useCreateLineItemNote(lineItemId, orderId)
+  const availableTypes = ASSIGNEE_NOTE_TYPES[noteAssignee] ?? []
 
   const handleSubmit = () => {
     if (!noteContent.trim()) return
     createNote(
-      { content: noteContent.trim(), assignee: noteAssignee },
+      { content: noteContent.trim(), assignee: noteAssignee, note_type: noteType || undefined },
       { onSuccess: () => onContentChange('') },
     )
   }
@@ -529,6 +541,11 @@ function LineItemNotePanel({
                   }`}
                 >
                   {note.assignee}
+                </span>
+              )}
+              {note.note_type && (
+                <span className="text-xs px-1.5 py-0.5 rounded border font-medium bg-gray-100 text-gray-700 border-gray-200">
+                  {note.note_type}
                 </span>
               )}
               {note.author_username && (
@@ -562,6 +579,18 @@ function LineItemNotePanel({
             <option key={a} value={a}>{a}</option>
           ))}
         </select>
+        {availableTypes.length > 0 && (
+          <select
+            value={noteType}
+            onChange={(e) => onNoteTypeChange(e.target.value)}
+            className="text-xs border rounded px-2 py-1.5 bg-background"
+          >
+            <option value="">유형 선택</option>
+            {availableTypes.map((t) => (
+              <option key={t} value={t}>{t}</option>
+            ))}
+          </select>
+        )}
         <textarea
           value={noteContent}
           onChange={(e) => onContentChange(e.target.value)}

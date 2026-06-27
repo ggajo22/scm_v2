@@ -84,6 +84,11 @@ export function LineItemNotesPage() {
                       {note.assignee}
                     </span>
                   )}
+                  {note.note_type && (
+                    <span className="text-xs px-1.5 py-0.5 rounded border font-medium bg-gray-100 text-gray-700 border-gray-200">
+                      {note.note_type}
+                    </span>
+                  )}
                   <span className="text-xs text-muted-foreground">
                     {formatDate(note.created_at)}
                   </span>

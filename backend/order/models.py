@@ -158,6 +158,16 @@ class LineItemNote(models.Model):
         ("미국창고", "미국창고"),
     ]
 
+    NOTE_TYPE_CHOICES = [
+        ("주문취소", "주문취소"),
+        ("주문보류", "주문보류"),
+        ("CS필요", "CS필요"),
+        ("타출판사", "타출판사"),
+        ("CS요청", "CS요청"),
+        ("주문요청", "주문요청"),
+        ("발주제외", "발주제외"),
+    ]
+
     line_item = models.ForeignKey(
         LineItem, on_delete=models.CASCADE, related_name="notes"
     )
@@ -176,6 +186,12 @@ class LineItemNote(models.Model):
         choices=ASSIGNEE_CHOICES,
         default="CS",
         blank=True,
+    )
+    note_type = models.CharField(
+        max_length=20,
+        choices=NOTE_TYPE_CHOICES,
+        blank=True,
+        default="",
     )
 
     class Meta:
