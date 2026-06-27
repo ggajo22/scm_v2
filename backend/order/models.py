@@ -315,6 +315,26 @@ class WarehouseStock(models.Model):
         return f"WarehouseStock({self.isbn} @ {self.location}: {self.quantity})"
 
 
+class ExchangeRate(models.Model):
+    """
+    Daily USD/KRW exchange rate for margin calculation.
+    One record per day; effective_date is unique.
+    """
+
+    effective_date = models.DateField(unique=True)
+    rate = models.DecimalField(max_digits=10, decimal_places=2)
+    source = models.CharField(max_length=50, default="manual")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "orders_exchangerate"
+        indexes = [models.Index(fields=["effective_date"])]
+
+    def __str__(self) -> str:
+        return f"{self.effective_date}: {self.rate} KRW/USD"
+
+
 class DistributorVendorRule(models.Model):
     """Maps a publisher name to a secondary distributor (처음교육, 아가페, 성서유니온)."""
 

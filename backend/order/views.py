@@ -4,6 +4,7 @@ from django.db import transaction
 from django.db.models import Q
 from rest_framework import status
 from rest_framework.exceptions import ValidationError
+from rest_framework import generics
 from rest_framework.generics import ListAPIView, RetrieveAPIView
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import IsAuthenticated
@@ -11,8 +12,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.authentication import JWTAuthentication
 
-from .models import Order
-from .serializers import OrderDetailSerializer, OrderListSerializer, OrderNoteSerializer
+from .models import ExchangeRate, Order
+from .serializers import ExchangeRateSerializer, OrderDetailSerializer, OrderListSerializer, OrderNoteSerializer
 from .shopify_orders import sync_single_order_from_shopify, sync_store
 
 
@@ -202,3 +203,21 @@ class OrderResyncView(APIView):
         order = qs.get(pk=pk)
         serializer = OrderDetailSerializer(order)
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class ExchangeRateListCreateView(generics.ListCreateAPIView):
+    """REQ-004, REQ-005: GET/POST /api/exchange-rates/ — 환율 목록 조회 및 생성."""
+
+    queryset = ExchangeRate.objects.all().order_by("-effective_date")
+    serializer_class = ExchangeRateSerializer
+    permission_classes = [IsAuthenticated]
+
+
+class ExchangeRateDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """REQ-006, REQ-007, REQ-008: GET/PUT/DELETE /api/exchange-rates/{date}/."""
+
+    queryset = ExchangeRate.objects.all()
+    serializer_class = ExchangeRateSerializer
+    permission_classes = [IsAuthenticated]
+    lookup_field = "effective_date"
+    lookup_url_kwarg = "date"

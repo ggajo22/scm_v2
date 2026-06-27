@@ -1,4 +1,5 @@
 """SPEC-ORDER-008: confirmed_price / confirmed_distributor / confirmed_at + margin fields (TDD RED phase)."""
+import datetime as dt_module
 import pytest
 from datetime import datetime, timezone as dt_timezone
 from decimal import Decimal
@@ -7,7 +8,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from order.models import Customer, LineItem, Order
+from order.models import Customer, ExchangeRate, LineItem, Order
 
 User = get_user_model()
 DETAIL_URL = "/api/orders/{pk}/"
@@ -96,6 +97,16 @@ def order_all_confirmed(db) -> Order:
         confirmed_at=timezone.now(),
     )
     return order
+
+
+@pytest.fixture
+def exchange_rate_today(db):
+    """ExchangeRate for today: 1 USD = 1300.00 KRW. Required for margin calculations."""
+    return ExchangeRate.objects.create(
+        effective_date=dt_module.date.today(),
+        rate=Decimal("1300.00"),
+        source="manual",
+    )
 
 
 @pytest.fixture
@@ -198,19 +209,22 @@ def test_line_item_confirmed_fields_null_when_unset(
 def test_margin_amount_calculation_with_partial_confirmed(
     auth_client: APIClient,
     order_with_confirmed_items: Order,
+    exchange_rate_today,
 ) -> None:
-    """REQ-008-003: partial confirmed → margin = total_price - confirmed_cost of confirmed items.
+    """REQ-008-003: partial confirmed → margin uses USD→KRW conversion (SPEC-ORDER-009 fix).
 
-    Item A: confirmed_price=12000, quantity=2 → cost=24000
+    total_price = 50000.00 USD, rate = 1300.00 KRW/USD
+    total_price_krw = 50000.00 * 1300.00 = 65,000,000
+    Item A: confirmed_price=12000 KRW, quantity=2 → cost=24000 KRW
     Item B: confirmed_price=None → excluded
-    margin_amount = 50000 - 24000 = 26000
+    margin_amount = 65,000,000 - 24,000 = 64,976,000
     """
     url = DETAIL_URL.format(pk=order_with_confirmed_items.pk)
     res = auth_client.get(url)
     assert res.status_code == 200
     margin = res.data.get("margin_amount")
     assert margin is not None
-    assert Decimal(str(margin)) == Decimal("26000.00")
+    assert Decimal(str(margin)) == Decimal("64976000.00")
 
 
 # ---------------------------------------------------------------------------
@@ -240,23 +254,25 @@ def test_margin_amount_is_null_when_all_confirmed_price_null(
 def test_margin_rate_calculation_rounds_to_2_decimal_places(
     auth_client: APIClient,
     order_all_confirmed: Order,
+    exchange_rate_today,
 ) -> None:
-    """REQ-008-005: margin_rate = (margin_amount / total_price) * 100 rounded 2dp.
+    """REQ-008-005: margin_rate uses total_price_krw as denominator (SPEC-ORDER-009 fix).
 
-    Item C: confirmed_price=15000, quantity=2 → cost=30000
-    Item D: confirmed_price=18000, quantity=1 → cost=18000
-    total confirmed_cost = 48000
-    total_price = 60000
-    margin_amount = 60000 - 48000 = 12000
-    margin_rate = (12000 / 60000) * 100 = 20.00
+    total_price = 60000.00 USD, rate = 1300.00 KRW/USD
+    total_price_krw = 60000.00 * 1300.00 = 78,000,000
+    Item C: confirmed_price=15000 KRW, quantity=2 → cost=30000
+    Item D: confirmed_price=18000 KRW, quantity=1 → cost=18000
+    confirmed_cost_krw = 48,000
+    margin_amount = 78,000,000 - 48,000 = 77,952,000
+    margin_rate = (77,952,000 / 78,000,000) * 100 = 99.94 (ROUND_HALF_UP)
     """
     url = DETAIL_URL.format(pk=order_all_confirmed.pk)
     res = auth_client.get(url)
     assert res.status_code == 200
     assert res.data.get("margin_amount") is not None
-    assert Decimal(str(res.data["margin_amount"])) == Decimal("12000.00")
+    assert Decimal(str(res.data["margin_amount"])) == Decimal("77952000.00")
     assert res.data.get("margin_rate") is not None
-    assert Decimal(str(res.data["margin_rate"])) == Decimal("20.00")
+    assert Decimal(str(res.data["margin_rate"])) == Decimal("99.94")
 
 
 # ---------------------------------------------------------------------------
@@ -268,13 +284,15 @@ def test_margin_rate_calculation_rounds_to_2_decimal_places(
 def test_confirmed_price_zero_is_valid_not_null(
     auth_client: APIClient,
     order_confirmed_price_zero: Order,
+    exchange_rate_today,
 ) -> None:
-    """REQ-008-006: confirmed_price=0.00 must be included in margin calculation.
+    """REQ-008-006: confirmed_price=0.00 is valid (SPEC-ORDER-009 fix applied).
 
-    Item F: confirmed_price=0.00, quantity=2 → cost=0
-    total_price = 20000
-    margin_amount = 20000 - 0 = 20000
-    margin_rate = (20000 / 20000) * 100 = 100.00
+    total_price = 20000.00 USD, rate = 1300.00 KRW/USD
+    total_price_krw = 20000.00 * 1300.00 = 26,000,000
+    Item F: confirmed_price=0.00 KRW, quantity=2 → cost=0
+    margin_amount = 26,000,000 - 0 = 26,000,000
+    margin_rate = (26,000,000 / 26,000,000) * 100 = 100.00
     """
     url = DETAIL_URL.format(pk=order_confirmed_price_zero.pk)
     res = auth_client.get(url)
@@ -285,6 +303,6 @@ def test_confirmed_price_zero_is_valid_not_null(
     assert items[0]["confirmed_price"] == "0.00"
     # margin must be calculated (not None)
     assert res.data.get("margin_amount") is not None
-    assert Decimal(str(res.data["margin_amount"])) == Decimal("20000.00")
+    assert Decimal(str(res.data["margin_amount"])) == Decimal("26000000.00")
     assert res.data.get("margin_rate") is not None
     assert Decimal(str(res.data["margin_rate"])) == Decimal("100.00")

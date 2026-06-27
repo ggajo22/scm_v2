@@ -2,7 +2,7 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from rest_framework import serializers
 
-from .models import Customer, LineItem, Order, Refund, ShippingAddress, ShippingLine
+from .models import Customer, ExchangeRate, LineItem, Order, Refund, ShippingAddress, ShippingLine
 
 
 class CustomerSummarySerializer(serializers.ModelSerializer):
@@ -124,34 +124,66 @@ class OrderDetailSerializer(serializers.ModelSerializer):
     def get_has_refund(self, obj: Order) -> bool:
         return obj.refunds.exists()
 
+    def _get_exchange_rate(self, obj: Order):
+        """
+        Look up exchange rate for order date with fallback to prior date.
+        Returns ExchangeRate instance or None.
+        REQ-003, REQ-013
+        """
+        if not obj.shopify_created_at:
+            return None
+        order_date = obj.shopify_created_at.date()
+        return ExchangeRate.objects.filter(
+            effective_date__lte=order_date
+        ).order_by("-effective_date").first()
+
     def get_margin_amount(self, obj: Order):
-        # Returns Decimal margin or None if ALL line_items have null confirmed_price.
-        # Uses prefetch_related line_items (already prefetched by OrderDetailView).
-        # IMPORTANT: uses Decimal arithmetic only — never float().
-        line_items = obj.line_items.all()
+        """
+        REQ-010, REQ-011:
+        - USD total_price를 환율로 KRW 환산 후 confirmed_cost_krw 차감
+        - 환율 없으면 None 반환
+        - confirmed_price=null 항목은 부분 합산에서 제외
+        """
+        er = self._get_exchange_rate(obj)
+        if er is None:
+            return None
+        confirmed_cost_krw = Decimal("0")
         has_any_confirmed = False
-        confirmed_cost = Decimal("0")
-        for item in line_items:
+        for item in obj.line_items.all():
             if item.confirmed_price is not None:
                 has_any_confirmed = True
-                confirmed_cost += Decimal(str(item.confirmed_price)) * (item.quantity or 0)
+                confirmed_cost_krw += item.confirmed_price * (item.quantity or 0)
         if not has_any_confirmed:
             return None
-        total = Decimal(str(obj.total_price or "0"))
-        return str(total - confirmed_cost)
+        total_price_krw = Decimal(str(obj.total_price or "0")) * er.rate
+        return str(total_price_krw - confirmed_cost_krw)
 
     def get_margin_rate(self, obj: Order):
-        # Returns margin_rate = (margin_amount / total_price) * 100, 2dp ROUND_HALF_UP.
-        # Returns None if margin_amount is None or total_price is 0.
-        margin_amount_str = self.get_margin_amount(obj)
-        if margin_amount_str is None:
+        """
+        REQ-012, REQ-013:
+        - 분모는 total_price_krw (KRW 환산값)
+        - 환율 재조회 (API 호출당 최대 2 쿼리 — 허용 범위)
+        """
+        margin_str = self.get_margin_amount(obj)
+        if margin_str is None:
             return None
-        total = Decimal(str(obj.total_price or "0"))
-        if total == Decimal("0"):
+        er = self._get_exchange_rate(obj)
+        if er is None:
             return None
-        margin = Decimal(margin_amount_str)
-        rate = (margin / total * Decimal("100")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        total_price_krw = Decimal(str(obj.total_price or "0")) * er.rate
+        if total_price_krw == Decimal("0"):
+            return None
+        rate = (Decimal(margin_str) / total_price_krw * Decimal("100")).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
         return str(rate)
+
+
+class ExchangeRateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ExchangeRate
+        fields = ["effective_date", "rate", "source", "created_at", "updated_at"]
+        read_only_fields = ["created_at", "updated_at"]
 
 
 class OrderNoteSerializer(serializers.ModelSerializer):

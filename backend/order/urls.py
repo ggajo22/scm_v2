@@ -15,7 +15,16 @@ from .purchase_order_views import (
     UploadVendorFileView,
     VendorComparisonView,
 )
-from .views import OrderDetailView, OrderListView, OrderNoteListView, OrderNoteResolveView, OrderResyncView, OrderSyncView
+from .views import (
+    ExchangeRateDetailView,
+    ExchangeRateListCreateView,
+    OrderDetailView,
+    OrderListView,
+    OrderNoteListView,
+    OrderNoteResolveView,
+    OrderResyncView,
+    OrderSyncView,
+)
 from .warehouse_views import (
     WarehouseStockBulkView,
     WarehouseStockDeleteView,
@@ -46,6 +55,9 @@ urlpatterns = [
     path("purchase-orders/vendor-rules/", DistributorVendorRuleListCreateView.as_view(), name="po-rules"),
     path("purchase-orders/vendor-rules/<int:pk>/", DistributorVendorRuleDeleteView.as_view(), name="po-rule-delete"),
     path("purchase-orders/", PurchaseOrderListView.as_view(), name="po-list"),
+    # ExchangeRate endpoints (SPEC-ORDER-009)
+    path("exchange-rates/", ExchangeRateListCreateView.as_view(), name="exchange-rate-list"),
+    path("exchange-rates/<str:date>/", ExchangeRateDetailView.as_view(), name="exchange-rate-detail"),
     # Warehouse stock endpoints
     path("warehouse/stock/bulk/", WarehouseStockBulkView.as_view(), name="warehouse-stock-bulk"),
     path("warehouse/stock/<int:pk>/", WarehouseStockDeleteView.as_view(), name="warehouse-stock-delete"),
