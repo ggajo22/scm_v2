@@ -105,7 +105,7 @@ def exchange_rate_today(db):
     return ExchangeRate.objects.create(
         effective_date=dt_module.date.today(),
         rate=Decimal("1300.00"),
-        source="manual",
+
     )
 
 

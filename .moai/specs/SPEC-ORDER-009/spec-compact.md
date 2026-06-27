@@ -6,7 +6,7 @@
 
 | ID | 요약 |
 |----|------|
-| REQ-001 | `ExchangeRate` 모델 생성: `effective_date(unique)`, `rate(Decimal 10,2)`, `source`, `created_at`, `updated_at`. `db_table="orders_exchangerate"` [CREATE] |
+| REQ-001 | `ExchangeRate` 모델 생성: `effective_date(unique)`, `rate(Decimal 10,2)`, `created_at`, `updated_at`. `db_table="orders_exchangerate"` [CREATE] |
 | REQ-002 | `effective_date` DB 레벨 `unique=True` 강제 (날짜별 1건) |
 | REQ-003 | 환율 폴백 조회: `filter(effective_date__lte=order_date).order_by('-effective_date').first()` |
 

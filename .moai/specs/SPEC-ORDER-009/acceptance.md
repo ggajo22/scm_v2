@@ -60,7 +60,7 @@ line_item: `confirmed_price = 50000.00 KRW, quantity = 2` 가 존재할 때
 
 **POST — 생성**
 
-**When** `POST /api/exchange-rates/` body: `{"effective_date": "2026-06-27", "rate": "1350.50", "source": "manual"}` 를 전송하면
+**When** `POST /api/exchange-rates/` body: `{"effective_date": "2026-06-27", "rate": "1350.50"}` 를 전송하면
 
 **Then**
 - HTTP 201 이 반환되어야 한다
@@ -84,7 +84,7 @@ line_item: `confirmed_price = 50000.00 KRW, quantity = 2` 가 존재할 때
 
 **PUT — 수정**
 
-**When** `PUT /api/exchange-rates/2026-06-27/` body: `{"effective_date": "2026-06-27", "rate": "1360.00", "source": "manual"}` 를 전송하면
+**When** `PUT /api/exchange-rates/2026-06-27/` body: `{"effective_date": "2026-06-27", "rate": "1360.00"}` 를 전송하면
 
 **Then**
 - HTTP 200 이 반환되어야 한다

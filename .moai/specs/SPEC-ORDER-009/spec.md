@@ -1,7 +1,7 @@
 ---
 id: SPEC-ORDER-009
 version: "1.0.0"
-status: draft
+status: completed
 created: 2026-06-27
 updated: 2026-06-27
 author: ggajo
@@ -14,6 +14,7 @@ related_spec: SPEC-ORDER-008
 | 버전  | 날짜       | 작성자 | 변경 내용                                                          |
 |-------|------------|--------|--------------------------------------------------------------------|
 | 1.0.0 | 2026-06-27 | ggajo  | 최초 작성 — 환율 테이블 및 주문일 기준 USD→KRW 환율 적용 마진 계산 |
+| 1.0.1 | 2026-06-27 | ggajo  | source 필드 제거 (불필요 컬럼) — migration 0018, 117건 환율 데이터 임포트 |
 
 ---
 
@@ -47,7 +48,6 @@ related_spec: SPEC-ORDER-008
 **REQ-001 [CREATE]** The system **shall** provide an `ExchangeRate` model with the following fields:
 - `effective_date`: `DateField(unique=True)` — 환율 적용 날짜 (하루 1건)
 - `rate`: `DecimalField(max_digits=10, decimal_places=2)` — 1 USD 기준 KRW 금액 (예: `1300.50`)
-- `source`: `CharField(max_length=50, default="manual")` — 환율 출처
 - `created_at`: `DateTimeField(auto_now_add=True)`
 - `updated_at`: `DateTimeField(auto_now=True)`
 
@@ -131,7 +131,6 @@ margin_rate = (margin_amount / total_price_krw) * 100  [소수점 2자리 반올
 class ExchangeRate(models.Model):
     effective_date = models.DateField(unique=True)
     rate = models.DecimalField(max_digits=10, decimal_places=2)
-    source = models.CharField(max_length=50, default="manual")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -209,7 +208,7 @@ def get_margin_rate(self, obj):
 ## 제약사항
 
 - `admin.py`가 order 앱에 존재하지 않으므로 `ExchangeRate` admin 등록은 본 SPEC 범위에 포함하지 않는다.
-- 환율 데이터는 수동 입력(`source="manual"`) 방식만 지원한다. 외부 API 자동 수집은 본 SPEC 범위 외다.
+- 환율 데이터는 REST API를 통한 수동 입력 방식만 지원한다. 외부 API 자동 수집은 본 SPEC 범위 외다.
 - 마진 계산 결과는 DB 저장 없이 런타임 계산(`SerializerMethodField`)으로 반환한다.
 - `confirmed_price = null`인 line item은 매입 원가 합산에서 제외한다 (부분 합산 허용, SPEC-ORDER-008 REQ-006 패턴 유지).
 - 기존 `SPEC-ORDER-008`에서 구현된 프론트엔드(TypeScript 타입, UI 표시)는 변경하지 않는다. 백엔드 직렬화 수정만으로 프론트엔드가 자동으로 올바른 KRW 마진 값을 수신한다.
@@ -225,3 +224,31 @@ def get_margin_rate(self, obj):
 - **다중 통화 지원**: USD→KRW 단방향 변환만 지원한다. EUR, JPY 등 추가 통화는 포함하지 않는다.
 - **마진 기반 필터/정렬**: 주문 목록 페이지의 마진 기준 필터·정렬 기능은 포함하지 않는다.
 - **`margin_amount` / `margin_rate` DB 저장**: 런타임 계산으로 유지하며 DB 컬럼화하지 않는다.
+
+---
+
+## 구현 노트 (Implementation Notes)
+
+**구현 완료일**: 2026-06-27  
+**구현 커밋**: `4337741`, `1e172f0`  
+**테스트**: 25/25 통과 (`test_spec_009.py` 11건 + `test_spec_008.py` 6건 + `test_order_detail.py` 8건)
+
+### 계획 대비 변경사항
+
+| 항목 | 계획 | 실제 구현 |
+|------|------|-----------|
+| `source` 필드 | REQ-001에 포함 (`CharField`) | 구현 후 불필요하다고 판단 → migration 0018로 제거 |
+| 환율 데이터 | REST API 수동 입력 | Excel 파일(`usd_krw_exchange_rates_2026.xlsx`)에서 117건 일괄 임포트 (2026-01-02~2026-06-18) |
+
+### 파일 변경 내역
+
+```
+backend/order/models.py                                  [MODIFY] ExchangeRate 추가, source 제거
+backend/order/migrations/0017_create_exchange_rate.py    [CREATE]
+backend/order/migrations/0018_remove_exchangerate_source.py [CREATE]
+backend/order/serializers.py                             [MODIFY] 마진 계산 수정, ExchangeRateSerializer
+backend/order/views.py                                   [MODIFY] ExchangeRate CRUD views
+backend/order/urls.py                                    [MODIFY] /api/exchange-rates/ 등록
+backend/order/tests/test_spec_009.py                     [CREATE] 11 tests
+backend/order/tests/test_spec_008.py                     [MODIFY] exchange_rate_today fixture 추가
+```
