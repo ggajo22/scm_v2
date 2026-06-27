@@ -354,7 +354,7 @@ export function OrderDetailPage() {
             <span>마진</span>
             <span>
               {data.margin_amount !== null
-                ? `$${Number(data.margin_amount).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                ? `${Number(data.margin_amount).toLocaleString()} USD`
                 : '—'}
             </span>
           </div>
