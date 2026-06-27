@@ -93,6 +93,9 @@ export interface LineItemDetail {
   vendor: string | null
   grams: number | null
   location: string
+  confirmed_price: string | null
+  confirmed_distributor: string | null
+  confirmed_at: string | null
 }
 
 export interface ShippingLine {
@@ -152,6 +155,8 @@ export interface OrderDetail {
   processed_at: string | null
   note_resolved?: boolean
   has_refund: boolean
+  margin_amount: string | null
+  margin_rate: string | null
   customer: OrderCustomerDetail | null
   shipping_address: ShippingAddress | null
   line_items: LineItemDetail[]

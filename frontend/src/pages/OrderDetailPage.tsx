@@ -143,7 +143,7 @@ export function OrderDetailPage() {
   )
 
   return (
-    <div className="p-6 max-w-4xl mx-auto space-y-6">
+    <div className="p-6 max-w-7xl mx-auto space-y-6">
       {/* Header */}
       <div className="flex items-start justify-between">
         <div className="space-y-1">
@@ -223,12 +223,14 @@ export function OrderDetailPage() {
                 <th className="py-2 px-3 text-right font-medium">단가</th>
                 <th className="py-2 px-3 text-right font-medium">할인</th>
                 <th className="py-2 px-3 text-right font-medium">소계</th>
+                <th className="py-2 px-3 text-right font-medium">확정 단가</th>
+                <th className="py-2 px-3 text-left font-medium">확정 발주처</th>
               </tr>
             </thead>
             <tbody>
               {normalItems.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="py-4 text-center text-muted-foreground text-xs">
+                  <td colSpan={9} className="py-4 text-center text-muted-foreground text-xs">
                     상품 없음
                   </td>
                 </tr>
@@ -262,6 +264,14 @@ export function OrderDetailPage() {
                     </td>
                     <td className="py-2 px-3 text-right font-medium">
                       {subtotal.toLocaleString()}
+                    </td>
+                    <td className="py-2 px-3 text-right">
+                      {item.confirmed_price !== null
+                        ? `${Number(item.confirmed_price).toLocaleString()}원`
+                        : '—'}
+                    </td>
+                    <td className="py-2 px-3">
+                      {item.confirmed_distributor !== null ? item.confirmed_distributor : '—'}
                     </td>
                   </tr>
                 )
@@ -339,6 +349,20 @@ export function OrderDetailPage() {
           <div className="flex justify-between font-semibold">
             <span>최종 결제 금액</span>
             <span>{netPaidAmount.toLocaleString()}{data.currency ? ` ${data.currency}` : ''}</span>
+          </div>
+          <div className="flex justify-between text-muted-foreground">
+            <span>마진</span>
+            <span>
+              {data.margin_amount !== null
+                ? `${Number(data.margin_amount).toLocaleString()}원`
+                : '—'}
+            </span>
+          </div>
+          <div className="flex justify-between text-muted-foreground">
+            <span>마진율</span>
+            <span>
+              {data.margin_rate !== null ? `${data.margin_rate}%` : '—'}
+            </span>
           </div>
         </div>
       </section>
