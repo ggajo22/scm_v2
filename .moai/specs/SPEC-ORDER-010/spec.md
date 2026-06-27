@@ -1,7 +1,7 @@
 ---
 id: SPEC-ORDER-010
 version: "1.0.0"
-status: draft
+status: completed
 created: 2026-06-27
 updated: 2026-06-27
 author: ggajo
@@ -98,6 +98,15 @@ WHEN 사용자가 LineItemNotesPage에 접근할 때,
 THE SYSTEM SHALL 전체 미해결 line_item 노트를 카드 형식으로 표시하고  
 각 카드에 "해결" 버튼을 제공한다. (OrderNotesPage 패턴 재사용)
 
+### REQ-LIN-010: 노트 유형(note_type) 필드
+
+WHEN assignee가 `CS` 또는 `발주`인 노트를 생성할 때,  
+THE SYSTEM SHALL `note_type` CharField를 통해 assignee별 사전 정의된 유형 목록을 선택할 수 있도록 한다.
+
+- CS assignee: `주문취소`, `주문보류`, `CS필요`, `타출판사`, `CS요청`
+- 발주 assignee: `발주요청`, `발주제외`
+- 한국창고 / 미국창고 assignee: note_type 미사용 (빈 값 허용)
+
 ---
 
 ## 제외 범위 (What NOT to Build)
@@ -119,11 +128,13 @@ THE SYSTEM SHALL 전체 미해결 line_item 노트를 카드 형식으로 표시
 - `backend/order/migrations/NNNN_remove_line_item_note_column.py` — 컬럼 제거 마이그레이션
 - `backend/order/serializers.py` — LineItemNoteSerializer, LineItemDetailSerializer 업데이트
 - `backend/order/views.py` — LineItemNoteListCreateView, LineItemNoteUnresolvedListView, LineItemNoteResolveView
+- `backend/order/constants.py` (또는 models.py 내부) — NOTE_TYPE_CHOICES (CS/발주별 note_type 열거값)
 - `backend/order/urls.py` — 3개 신규 라우트 추가
 
 ### [NEW] Frontend
 - `frontend/src/types/order.ts` — LineItemNote 인터페이스 추가, LineItemDetail 업데이트
 - `frontend/src/features/order/hooks/useLineItemNotes.ts` — React Query 훅 (목록, 생성, 해결)
+- `frontend/src/features/order/constants/noteTypes.ts` — assignee별 note_type 선택지 상수
 - `frontend/src/pages/LineItemNotesPage.tsx` — 전용 노트 페이지 (OrderNotesPage 패턴)
 - `frontend/src/router/index.tsx` — 신규 라우트 추가
 
@@ -161,3 +172,35 @@ THE SYSTEM SHALL 전체 미해결 line_item 노트를 카드 형식으로 표시
 
 ### MX:NOTE 후보
 - `ASSIGNEE_CHOICES` 상수 — 비즈니스 도메인 열거값 (CS, 발주, 한국창고, 미국창고)
+- `NOTE_TYPE_CHOICES` 상수 — assignee별 분기 열거값 (REQ-LIN-010 추가분)
+
+---
+
+## 구현 노트 (Implementation Notes)
+
+### 원래 SPEC 범위
+
+SPEC 작성 시점(2026-06-27)에 정의된 핵심 필드는 다음과 같다:
+
+| 필드 | 타입 | 비고 |
+|------|------|------|
+| line_item | FK | LineItem 참조 |
+| content | TextField | 노트 본문 |
+| author | FK → AdminUser | nullable, request.user 자동 설정 |
+| created_at | DateTimeField | auto_now_add |
+| is_resolved | BooleanField | default=False |
+| assignee | CharField | CS / 발주 / 한국창고 / 미국창고 |
+
+### SPEC 이후 추가 사항 (Post-Run Addition)
+
+구현 완료 후 `note_type` CharField가 추가되었다 (REQ-LIN-010으로 사후 문서화).
+
+- **목적**: assignee별로 노트의 성격을 세분화하여 업무 흐름 구분
+- **CS 유형**: 주문취소, 주문보류, CS필요, 타출판사, CS요청
+- **발주 유형**: 발주요청, 발주제외
+- **한국창고 / 미국창고**: note_type 미사용 (빈 문자열 허용, UI에서 선택 UI 미표시)
+- **프론트엔드**: assignee 선택 시 해당 유형 드롭다운이 동적으로 표시/숨김 처리
+
+### 데이터 마이그레이션 결과
+
+`orders_line_item.note` 컬럼의 기존 데이터는 3단계 마이그레이션(생성 → 데이터 이전 → 컬럼 제거)을 거쳐 `LineItemNote` 테이블로 이전 완료되었다.

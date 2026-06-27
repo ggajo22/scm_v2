@@ -78,9 +78,32 @@
 
 ---
 
+---
+
+## 시나리오 9: note_type 동적 선택 UI (REQ-LIN-010)
+
+**Given** 사용자가 OrderDetailPage 또는 LineItemNotesPage에서 새 노트 입력 폼을 열었다
+
+**When** assignee를 `CS`로 선택한다  
+**Then** note_type 드롭다운이 표시되고, 선택 가능한 항목은 `주문취소`, `주문보류`, `CS필요`, `타출판사`, `CS요청`이다
+
+**When** assignee를 `발주`로 선택한다  
+**Then** note_type 드롭다운이 표시되고, 선택 가능한 항목은 `발주요청`, `발주제외`이다
+
+**When** assignee를 `한국창고` 또는 `미국창고`로 선택한다  
+**Then** note_type 드롭다운이 숨겨지고, note_type 값은 빈 문자열로 전송된다
+
+**Given** POST 요청 시 note_type이 해당 assignee의 허용 목록 외 값인 경우  
+**When** `POST /api/orders/line-items/<pk>/notes/` 요청을 보낸다  
+**Then** HTTP 400이 반환된다
+
+---
+
 ## 품질 게이트
 
 - [ ] `backend/order/tests/test_line_item_notes.py` 전체 통과
 - [ ] `GET /api/orders/<pk>/` 쿼리 수 기존 대비 증가 없음 (prefetch 확인)
 - [ ] TypeScript `tsc --noEmit` 오류 없음
 - [ ] assignee 필드에 허용되지 않은 값 입력 시 HTTP 400 반환
+- [ ] note_type 필드에 해당 assignee 외 허용되지 않은 값 입력 시 HTTP 400 반환
+- [ ] CS/발주 선택 시 note_type 드롭다운 표시, 한국창고/미국창고 선택 시 미표시
