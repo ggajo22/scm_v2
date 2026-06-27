@@ -236,7 +236,7 @@ def sync_single_order_from_shopify(shopify_order_id: int, store_type: str) -> di
 
 
 def sync_store(store_type):
-    from .models import Order
+    from .models import LineItem, Order
 
     if store_type == "gimssine":
         domain = settings.SHOPIFY_GIMSSINE_DOMAIN
@@ -254,10 +254,41 @@ def sync_store(store_type):
     updated_at_min = last_updated.strftime("%Y-%m-%dT%H:%M:%SZ") if last_updated else None
 
     orders = fetch_all_open_orders(domain, token, updated_at_min=updated_at_min)
+    if not orders:
+        return {"synced_count": 0, "updated_count": 0, "error": None, "updated_at_min": updated_at_min}
+
+    shopify_ids = [o["id"] for o in orders]
+
+    # One DB query: existing order-level locations
+    existing_order_locations = {
+        row["shopify_order_id"]: row["location"]
+        for row in Order.objects.filter(
+            shopify_order_id__in=shopify_ids, store_type=store_type
+        ).values("shopify_order_id", "location")
+    }
+
+    # One DB query: existing line-item-level locations
+    existing_line_item_locs: dict = {}
+    for li in LineItem.objects.filter(
+        order__shopify_order_id__in=shopify_ids,
+        order__store_type=store_type,
+    ).values("order__shopify_order_id", "shopify_line_item_id", "location"):
+        existing_line_item_locs.setdefault(li["order__shopify_order_id"], {})[
+            li["shopify_line_item_id"]
+        ] = li["location"]
+
     synced_count = 0
     updated_count = 0
     for order_data in orders:
-        order_location, line_item_map = _build_fulfillment_location_data(domain, token, order_data["id"])
+        shopify_id = order_data["id"]
+        if shopify_id in existing_order_locations:
+            # Existing order: reuse stored locations, skip Shopify fulfillment API call
+            order_location = existing_order_locations[shopify_id] or ""
+            line_item_map = existing_line_item_locs.get(shopify_id) or {}
+        else:
+            # New order: fetch fulfillment location from Shopify
+            order_location, line_item_map = _build_fulfillment_location_data(domain, token, shopify_id)
+
         result = _sync_single_order(order_data, store_type, location_code=order_location, line_item_location_map=line_item_map)
         if result == "created":
             synced_count += 1

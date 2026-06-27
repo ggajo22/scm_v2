@@ -1,4 +1,5 @@
 import urllib.error
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from django.db import transaction
 from django.db.models import Q
@@ -38,19 +39,22 @@ class OrderSyncView(APIView):
     authentication_classes = [JWTAuthentication]
     permission_classes = [IsAuthenticated]
 
+    def _sync_store_safe(self, store_type):
+        try:
+            with transaction.atomic():
+                return sync_store(store_type)
+        except Exception as e:
+            return {"synced_count": 0, "updated_count": 0, "error": str(e)}
+
     def post(self, request):
         store_results = {}
-        for store_type in ["gimssine", "etoile"]:
-            try:
-                with transaction.atomic():
-                    result = sync_store(store_type)
-                    store_results[store_type] = result
-            except Exception as e:
-                store_results[store_type] = {
-                    "synced_count": 0,
-                    "updated_count": 0,
-                    "error": str(e),
-                }
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = {
+                executor.submit(self._sync_store_safe, store_type): store_type
+                for store_type in ["gimssine", "etoile"]
+            }
+            for future in as_completed(futures):
+                store_results[futures[future]] = future.result()
 
         status_val = (
             "completed"
