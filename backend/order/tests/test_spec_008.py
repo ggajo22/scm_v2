@@ -211,20 +211,20 @@ def test_margin_amount_calculation_with_partial_confirmed(
     order_with_confirmed_items: Order,
     exchange_rate_today,
 ) -> None:
-    """REQ-008-003: partial confirmed → margin uses USD→KRW conversion (SPEC-ORDER-009 fix).
+    """REQ-008-003: partial confirmed → margin in USD (confirmed_cost_krw / rate).
 
     total_price = 50000.00 USD, rate = 1300.00 KRW/USD
-    total_price_krw = 50000.00 * 1300.00 = 65,000,000
     Item A: confirmed_price=12000 KRW, quantity=2 → cost=24000 KRW
     Item B: confirmed_price=None → excluded
-    margin_amount = 65,000,000 - 24,000 = 64,976,000
+    confirmed_cost_usd = 24000 / 1300 = 18.461538...
+    margin_amount = 50000.00 - 18.461538... = 49981.538... → 49981.54 USD
     """
     url = DETAIL_URL.format(pk=order_with_confirmed_items.pk)
     res = auth_client.get(url)
     assert res.status_code == 200
     margin = res.data.get("margin_amount")
     assert margin is not None
-    assert Decimal(str(margin)) == Decimal("64976000.00")
+    assert Decimal(str(margin)) == Decimal("49981.54")
 
 
 # ---------------------------------------------------------------------------
@@ -256,21 +256,21 @@ def test_margin_rate_calculation_rounds_to_2_decimal_places(
     order_all_confirmed: Order,
     exchange_rate_today,
 ) -> None:
-    """REQ-008-005: margin_rate uses total_price_krw as denominator (SPEC-ORDER-009 fix).
+    """REQ-008-005: margin in USD, rate uses total_price_usd as denominator.
 
     total_price = 60000.00 USD, rate = 1300.00 KRW/USD
-    total_price_krw = 60000.00 * 1300.00 = 78,000,000
     Item C: confirmed_price=15000 KRW, quantity=2 → cost=30000
     Item D: confirmed_price=18000 KRW, quantity=1 → cost=18000
     confirmed_cost_krw = 48,000
-    margin_amount = 78,000,000 - 48,000 = 77,952,000
-    margin_rate = (77,952,000 / 78,000,000) * 100 = 99.94 (ROUND_HALF_UP)
+    confirmed_cost_usd = 48000 / 1300 = 36.923076...
+    margin_amount = 60000.00 - 36.923076... = 59963.076... → 59963.08 USD
+    margin_rate = (59963.076... / 60000) * 100 = 99.938... → 99.94%
     """
     url = DETAIL_URL.format(pk=order_all_confirmed.pk)
     res = auth_client.get(url)
     assert res.status_code == 200
     assert res.data.get("margin_amount") is not None
-    assert Decimal(str(res.data["margin_amount"])) == Decimal("77952000.00")
+    assert Decimal(str(res.data["margin_amount"])) == Decimal("59963.08")
     assert res.data.get("margin_rate") is not None
     assert Decimal(str(res.data["margin_rate"])) == Decimal("99.94")
 
@@ -286,13 +286,13 @@ def test_confirmed_price_zero_is_valid_not_null(
     order_confirmed_price_zero: Order,
     exchange_rate_today,
 ) -> None:
-    """REQ-008-006: confirmed_price=0.00 is valid (SPEC-ORDER-009 fix applied).
+    """REQ-008-006: confirmed_price=0.00 is valid (not treated as null).
 
     total_price = 20000.00 USD, rate = 1300.00 KRW/USD
-    total_price_krw = 20000.00 * 1300.00 = 26,000,000
     Item F: confirmed_price=0.00 KRW, quantity=2 → cost=0
-    margin_amount = 26,000,000 - 0 = 26,000,000
-    margin_rate = (26,000,000 / 26,000,000) * 100 = 100.00
+    confirmed_cost_usd = 0 / 1300 = 0
+    margin_amount = 20000.00 - 0 = 20000.00 USD
+    margin_rate = (20000 / 20000) * 100 = 100.00%
     """
     url = DETAIL_URL.format(pk=order_confirmed_price_zero.pk)
     res = auth_client.get(url)
@@ -303,6 +303,6 @@ def test_confirmed_price_zero_is_valid_not_null(
     assert items[0]["confirmed_price"] == "0.00"
     # margin must be calculated (not None)
     assert res.data.get("margin_amount") is not None
-    assert Decimal(str(res.data["margin_amount"])) == Decimal("26000000.00")
+    assert Decimal(str(res.data["margin_amount"])) == Decimal("20000.00")
     assert res.data.get("margin_rate") is not None
     assert Decimal(str(res.data["margin_rate"])) == Decimal("100.00")

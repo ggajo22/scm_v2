@@ -158,25 +158,25 @@ def order_no_exchange_rate(db):
 
 
 @pytest.mark.django_db
-def test_margin_uses_exchange_rate_for_krw_conversion(
+def test_margin_uses_exchange_rate_for_usd_conversion(
     auth_client: APIClient,
     order_with_confirmed_items_usd: Order,
     exchange_rate_2026_01_15,
 ) -> None:
-    """REQ-010, REQ-012: USD→KRW 환산 후 마진 계산.
+    """REQ-010, REQ-012: confirmed_cost_krw를 USD로 환산 후 마진 계산.
 
     total_price = 100.00 USD, rate = 1300.00 KRW/USD
-    total_price_krw = 100.00 * 1300.00 = 130000.00
     confirmed_cost_krw = 50000.00 * 2 = 100000.00 (item B는 null 제외)
-    margin_amount = 130000.00 - 100000.00 = 30000.00
-    margin_rate = (30000 / 130000) * 100 = 23.08 (ROUND_HALF_UP)
+    confirmed_cost_usd = 100000.00 / 1300.00 = 76.923076...
+    margin_amount = 100.00 - 76.923076... = 23.076923... → 23.08 USD (ROUND_HALF_UP)
+    margin_rate = (23.076923... / 100.00) * 100 = 23.076... → 23.08%
     """
     url = ORDER_DETAIL_URL.format(pk=order_with_confirmed_items_usd.pk)
     res = auth_client.get(url)
     assert res.status_code == 200
     margin = res.data.get("margin_amount")
     assert margin is not None
-    assert Decimal(str(margin)) == Decimal("30000.00")
+    assert Decimal(str(margin)) == Decimal("23.08")
     rate = res.data.get("margin_rate")
     assert rate is not None
     assert Decimal(str(rate)) == Decimal("23.08")
@@ -195,17 +195,18 @@ def test_margin_fallback_to_prior_date_rate(
     available rates: 2026-01-10 (1280.00), 2026-01-15 (1300.00)
     fallback → 2026-01-10 (1280.00) 적용
 
-    total_price = 50.00 USD * 1280.00 = 64000.00 KRW
-    confirmed_cost = 30000.00 * 1 = 30000.00 KRW
-    margin_amount = 64000.00 - 30000.00 = 34000.00
-    margin_rate = (34000 / 64000) * 100 = 53.13
+    total_price = 50.00 USD
+    confirmed_cost_krw = 30000.00 KRW
+    confirmed_cost_usd = 30000.00 / 1280.00 = 23.4375
+    margin_amount = 50.00 - 23.4375 = 26.5625 → 26.56 USD (ROUND_HALF_UP)
+    margin_rate = (26.5625 / 50.00) * 100 = 53.125 → 53.13%
     """
     url = ORDER_DETAIL_URL.format(pk=order_dated_2026_01_12.pk)
     res = auth_client.get(url)
     assert res.status_code == 200
     margin = res.data.get("margin_amount")
     assert margin is not None
-    assert Decimal(str(margin)) == Decimal("34000.00")
+    assert Decimal(str(margin)) == Decimal("26.56")
     rate = res.data.get("margin_rate")
     assert rate is not None
     assert Decimal(str(rate)) == Decimal("53.13")

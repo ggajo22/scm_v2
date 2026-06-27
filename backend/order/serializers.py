@@ -137,13 +137,8 @@ class OrderDetailSerializer(serializers.ModelSerializer):
             effective_date__lte=order_date
         ).order_by("-effective_date").first()
 
-    def get_margin_amount(self, obj: Order):
-        """
-        REQ-010, REQ-011:
-        - USD total_price를 환율로 KRW 환산 후 confirmed_cost_krw 차감
-        - 환율 없으면 None 반환
-        - confirmed_price=null 항목은 부분 합산에서 제외
-        """
+    def _compute_margin_usd(self, obj: Order):
+        """Returns (margin_usd, total_price_usd) as exact Decimals, or None when unavailable."""
         er = self._get_exchange_rate(obj)
         if er is None:
             return None
@@ -155,25 +150,27 @@ class OrderDetailSerializer(serializers.ModelSerializer):
                 confirmed_cost_krw += item.confirmed_price * (item.quantity or 0)
         if not has_any_confirmed:
             return None
-        total_price_krw = Decimal(str(obj.total_price or "0")) * er.rate
-        return str(total_price_krw - confirmed_cost_krw)
+        total_price_usd = Decimal(str(obj.total_price or "0"))
+        confirmed_cost_usd = confirmed_cost_krw / er.rate
+        return total_price_usd - confirmed_cost_usd, total_price_usd
+
+    def get_margin_amount(self, obj: Order):
+        """USD 단위 마진: total_price_usd - (confirmed_cost_krw / rate). 환율 없으면 None."""
+        result = self._compute_margin_usd(obj)
+        if result is None:
+            return None
+        margin_usd, _ = result
+        return str(margin_usd.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
     def get_margin_rate(self, obj: Order):
-        """
-        REQ-012, REQ-013:
-        - 분모는 total_price_krw (KRW 환산값)
-        - 환율 재조회 (API 호출당 최대 2 쿼리 — 허용 범위)
-        """
-        margin_str = self.get_margin_amount(obj)
-        if margin_str is None:
+        """마진율: (margin_usd / total_price_usd) × 100, 소수점 2자리 ROUND_HALF_UP."""
+        result = self._compute_margin_usd(obj)
+        if result is None:
             return None
-        er = self._get_exchange_rate(obj)
-        if er is None:
+        margin_usd, total_price_usd = result
+        if total_price_usd == Decimal("0"):
             return None
-        total_price_krw = Decimal(str(obj.total_price or "0")) * er.rate
-        if total_price_krw == Decimal("0"):
-            return None
-        rate = (Decimal(margin_str) / total_price_krw * Decimal("100")).quantize(
+        rate = (margin_usd / total_price_usd * Decimal("100")).quantize(
             Decimal("0.01"), rounding=ROUND_HALF_UP
         )
         return str(rate)
