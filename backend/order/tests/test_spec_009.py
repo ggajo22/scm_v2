@@ -46,7 +46,6 @@ def exchange_rate_2026_01_15(db):
     return ExchangeRate.objects.create(
         effective_date="2026-01-15",
         rate=Decimal("1300.00"),
-        source="manual",
     )
 
 
@@ -56,7 +55,6 @@ def exchange_rate_2026_01_10(db):
     return ExchangeRate.objects.create(
         effective_date="2026-01-10",
         rate=Decimal("1280.00"),
-        source="manual",
     )
 
 

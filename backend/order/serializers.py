@@ -182,7 +182,7 @@ class OrderDetailSerializer(serializers.ModelSerializer):
 class ExchangeRateSerializer(serializers.ModelSerializer):
     class Meta:
         model = ExchangeRate
-        fields = ["effective_date", "rate", "source", "created_at", "updated_at"]
+        fields = ["effective_date", "rate", "created_at", "updated_at"]
         read_only_fields = ["created_at", "updated_at"]
 
 
