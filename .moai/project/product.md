@@ -71,6 +71,20 @@ Shopify 연동 도서 재고 및 주문 관리 관리자 애플리케이션
 - **다시 등록하기** — 결과 확인 후 폼 초기화 버튼으로 연속 작업 지원
 - 초기 등록 필드: `vendor="북센"`, `store="책방"`, `status_of_shopify=0`, `is_use=1`
 
+### 0-7. Shopify 주문 동기화 및 목록 조회 (SPEC-ORDER-001 — 완료)
+- **주문 동기화 API** — Booksen·Etoile 두 스토어에서 `status=open` 주문 수동 동기화 (`POST /api/orders/sync/`)
+  - Shopify Admin REST API v2024-10, cursor pagination (250건/페이지)
+  - per-store `transaction.atomic()` 격리 — 한 스토어 실패가 타 스토어 롤백 없음
+  - `update_or_create` upsert — 중복 동기화 안전, 신규/업데이트 건수 분리 응답
+- **주문 목록 조회** — 50건/페이지, `shopify_created_at` 최신순 (`GET /api/orders/`)
+  - 필터: `store_type`, `financial_status`, `fulfillment_status`, `date_from`/`date_to`
+  - `has_refund` 실시간 계산 — `prefetch_related("refunds")` N+1 없이 환불 여부 판별
+- **환불 "취소" 표기** — `has_refund=true` OR `financial_status="refunded"` → 빨간색 "취소" 표시
+- **7개 신규 DB 모델** — Order, Customer, LineItem, ShippingLine, Refund, ShippingAddress, BillingAddress
+- **React 주문관리 페이지** (`/orders`) — 필터 UI + 테이블 + 페이지네이션 + 동기화 버튼
+- **사이드바** — "주문관리" 내비게이션 항목 추가 (ShoppingCart 아이콘)
+- 29개 pytest 테스트 (모델 4 + Shopify 클라이언트 10 + 동기화 뷰 4 + 목록 뷰 11)
+
 ---
 
 ## 핵심 기능 (3가지 — 예정)

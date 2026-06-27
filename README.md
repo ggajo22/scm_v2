@@ -17,6 +17,12 @@ Shopify 연동 도서 재고 및 주문 관리 관리자 애플리케이션. 관
 | ISBN 일괄 추가 | ✅ 구현 완료 (SPEC-INVEN-ADD-001) |
 | 빠른 리스팅 추가 | ✅ 구현 완료 (SPEC-FAST-LISTING-ADD-001) |
 | Etoile 재고 현황 대시보드 | ✅ 구현 완료 (SPEC-ETOILE-DASHBOARD-001) |
+| Shopify 주문 동기화 | ✅ 구현 완료 (SPEC-ORDER-001) |
+| 주문 목록 조회 | ✅ 구현 완료 (SPEC-ORDER-001) |
+| 주문 상세 페이지 | ✅ 구현 완료 (SPEC-ORDER-003) |
+| 주문 메모 해결 기능 | ✅ 구현 완료 |
+| 발주 관리 시스템 | ✅ 구현 완료 (SPEC-PURCHASE-ORDER-001) |
+| 창고 재고 관리 | ✅ 구현 완료 (SPEC-WAREHOUSE-001) |
 
 ---
 
@@ -142,6 +148,37 @@ npx vitest run
 | POST | `/api/book/inven-skus/` | ISBN 일괄 추가 | ✅ |
 | POST | `/api/book/fast-listing-skus/` | 빠른 리스팅 추가 | ✅ |
 | GET | `/api/book/etoile/dashboard/` | Etoile 재고 현황 조회 | ✅ |
+
+### 주문 관리 (Order Management)
+
+| 메서드 | 경로 | 설명 | 인증 필요 |
+|--------|------|------|-----------|
+| POST | `/api/orders/sync/` | Shopify 주문 동기화 (Booksen·Etoile) | ✅ |
+| GET | `/api/orders/` | 주문 목록 조회 (필터·페이지네이션) | ✅ |
+
+**동기화 응답:**
+```json
+{
+  "status": "completed",
+  "stores": {
+    "booksen": { "synced_count": 5, "updated_count": 2, "error": null },
+    "etoile":  { "synced_count": 3, "updated_count": 1, "error": null }
+  },
+  "total_synced": 8,
+  "total_updated": 3
+}
+```
+
+**목록 쿼리 파라미터:**
+
+| 파라미터 | 설명 | 예시 |
+|----------|------|------|
+| `store_type` | 스토어 필터 | `booksen` \| `etoile` |
+| `financial_status` | 결제 상태 필터 | `paid`, `pending`, `refunded` |
+| `fulfillment_status` | 출고 상태 필터 | `unfulfilled`, `fulfilled` |
+| `date_from` | 시작일 (YYYY-MM-DD) | `2025-01-01` |
+| `date_to` | 종료일 (YYYY-MM-DD) | `2025-12-31` |
+| `page` | 페이지 번호 (50건/페이지) | `2` |
 
 **로그인 요청:**
 ```json
@@ -276,6 +313,14 @@ scm_v2/
 │   │   ├── urls.py             # 도서 API 라우팅
 │   │   ├── migrations/         # DB 마이그레이션
 │   │   └── tests/              # 테스트 파일
+│   ├── order/                  # 주문 관리 앱 (SPEC-ORDER-001)
+│   │   ├── models.py           # Order, Customer, LineItem, Refund 등 7개 모델
+│   │   ├── views.py            # 주문 동기화·목록 뷰
+│   │   ├── serializers.py      # 주문 시리얼라이저 (has_refund 계산 필드)
+│   │   ├── shopify_orders.py   # Shopify API 클라이언트 (cursor pagination)
+│   │   ├── urls.py             # 주문 API 라우팅
+│   │   ├── migrations/         # DB 마이그레이션
+│   │   └── tests/              # 29개 pytest 테스트
 │   ├── config/
 │   │   ├── settings/
 │   │   │   ├── base.py         # 공통 설정 (JWT, DRF, CORS)
@@ -288,8 +333,10 @@ scm_v2/
 │   │   ├── components/         # React 컴포넌트
 │   │   │   └── ui/             # UI 컴포넌트 (Button, Select, etc.)
 │   │   ├── features/           # 기능별 컴포넌트
-│   │   │   └── book/           # 도서 관리 기능
+│   │   │   ├── book/           # 도서 관리 기능
+│   │   │   └── order/          # 주문 관리 기능 (useOrders, useOrderSync)
 │   │   ├── pages/              # 페이지 컴포넌트
+│   │   │   ├── OrdersPage.tsx  # 주문관리 페이지
 │   │   │   └── BookDetailPage.tsx
 │   │   ├── hooks/              # 커스텀 훅 (TanStack Query)
 │   │   ├── services/           # API 호출 서비스

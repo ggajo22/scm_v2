@@ -33,6 +33,7 @@ INSTALLED_APPS = [
     # Local
     "accounts",
     "book",
+    "order",
 ]
 
 MIDDLEWARE = [
@@ -130,8 +131,8 @@ SIMPLE_JWT = {
 
 # Shopify store credentials (SPEC-SHOPIFY-INFO-001)
 # REQ-SHPINFO-013: tokens must never appear in API responses
-SHOPIFY_BOOKSEN_TOKEN = config("SHOPIFY_BOOKSEN_TOKEN", default="")
-SHOPIFY_BOOKSEN_DOMAIN = config("SHOPIFY_BOOKSEN_DOMAIN", default="")
+SHOPIFY_GIMSSINE_TOKEN = config("SHOPIFY_GIMSSINE_TOKEN", default="")
+SHOPIFY_GIMSSINE_DOMAIN = config("SHOPIFY_GIMSSINE_DOMAIN", default="")
 SHOPIFY_ETOILE_TOKEN = config("SHOPIFY_ETOILE_TOKEN", default="")
 SHOPIFY_ETOILE_DOMAIN = config("SHOPIFY_ETOILE_DOMAIN", default="")
 

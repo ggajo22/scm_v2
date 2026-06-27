@@ -71,6 +71,41 @@ export const router = createBrowserRouter([
             ],
           },
           {
+            path: '/orders',
+            lazy: async () => {
+              const { OrdersPage } = await import('@/pages/OrdersPage')
+              return { Component: OrdersPage }
+            },
+          },
+          {
+            path: '/orders/notes',
+            lazy: async () => {
+              const { OrderNotesPage } = await import('@/pages/OrderNotesPage')
+              return { Component: OrderNotesPage }
+            },
+          },
+          {
+            path: '/orders/:id',
+            lazy: async () => {
+              const { OrderDetailPage } = await import('@/pages/OrderDetailPage')
+              return { Component: OrderDetailPage }
+            },
+          },
+          {
+            path: '/purchase-orders',
+            lazy: async () => {
+              const { PurchaseOrdersPage } = await import('@/pages/PurchaseOrders')
+              return { Component: PurchaseOrdersPage }
+            },
+          },
+          {
+            path: '/warehouse',
+            lazy: async () => {
+              const { WarehouseStockPage } = await import('@/pages/WarehouseStockPage')
+              return { Component: WarehouseStockPage }
+            },
+          },
+          {
             element: <SuperAdminRoute />,
             children: [
               {
