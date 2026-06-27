@@ -156,28 +156,32 @@ def _sync_single_order(order_data, store_type, location_code="", line_item_locat
             ]},
         )
 
-    order_obj.line_items.all().delete()
-    line_items = [
-        LineItem(
+    incoming_shopify_ids = set()
+    for li in order_data.get("line_items", []):
+        incoming_shopify_ids.add(li["id"])
+        # purchase_status intentionally excluded from defaults to preserve manual processing state
+        LineItem.objects.update_or_create(
             order=order_obj,
             shopify_line_item_id=li["id"],
-            product_id=li.get("product_id"),
-            variant_id=li.get("variant_id"),
-            title=li.get("title"),
-            variant_title=li.get("variant_title"),
-            sku=li.get("sku"),
-            quantity=li.get("quantity"),
-            price=_decimal_or_none(li.get("price")),
-            total_discount=_decimal_or_none(li.get("total_discount")),
-            fulfillment_status=li.get("fulfillment_status"),
-            vendor=li.get("vendor"),
-            grams=li.get("grams"),
-            location=line_item_location_map.get(li["id"], "") if line_item_location_map else "",
+            defaults={
+                "product_id": li.get("product_id"),
+                "variant_id": li.get("variant_id"),
+                "title": li.get("title"),
+                "variant_title": li.get("variant_title"),
+                "sku": li.get("sku"),
+                "quantity": li.get("quantity"),
+                "price": _decimal_or_none(li.get("price")),
+                "total_discount": _decimal_or_none(li.get("total_discount")),
+                "fulfillment_status": li.get("fulfillment_status"),
+                "vendor": li.get("vendor"),
+                "grams": li.get("grams"),
+                "location": line_item_location_map.get(li["id"], "") if line_item_location_map else "",
+            },
         )
-        for li in order_data.get("line_items", [])
-    ]
-    if line_items:
-        LineItem.objects.bulk_create(line_items)
+    # Remove line items that Shopify no longer reports, but only if not purchase-ordered
+    order_obj.line_items.filter(purchase_orders__isnull=True).exclude(
+        shopify_line_item_id__in=incoming_shopify_ids
+    ).delete()
 
     order_obj.shipping_lines.all().delete()
     shipping_lines = [
