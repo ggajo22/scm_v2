@@ -32,6 +32,7 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.authentication import JWTAuthentication
 
 from .excel_utils import (
+    _NOTE_TYPE_STATUS_MAP,
     auto_select_distributor,
     generate_daily_review_excel,
     generate_order_excel,
@@ -939,6 +940,7 @@ class UploadDailyReviewView(APIView):
                 for sku, item in sku_map.items():
                     distributor_code = item["distributor"]
                     note = item.get("note")
+                    note_type = item.get("note_type")
 
                     unordered_lis = list(
                         LineItem.objects.filter(sku=sku, purchase_status="unordered")
@@ -953,6 +955,24 @@ class UploadDailyReviewView(APIView):
                     title = unordered_lis[0].title or sku
                     total_qty = sum(li.quantity or 0 for li in unordered_lis)
                     li_ids = [li.pk for li in unordered_lis]
+
+                    if note_type and not distributor_code:
+                        # CS case: update purchase_status and create note
+                        new_status = _NOTE_TYPE_STATUS_MAP[note_type]
+                        for li in unordered_lis:
+                            li.purchase_status = new_status
+                        LineItem.objects.bulk_update(unordered_lis, ["purchase_status"])
+                        if note is not None:
+                            for li in unordered_lis:
+                                LineItemNote.objects.create(
+                                    line_item=li,
+                                    content=note,
+                                    author=None,
+                                    note_type=note_type,
+                                    assignee="CS",
+                                )
+                        confirmed_count += 1
+                        continue
 
                     if distributor_code in _WAREHOUSE_LOCATION_MAP:
                         # REQ-PO5-004: Warehouse branch — deduct stock, set in_stock, no PO

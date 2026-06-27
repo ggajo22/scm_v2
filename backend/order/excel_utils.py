@@ -507,6 +507,14 @@ _DISTRIBUTOR_LABEL_MAP: dict[str, str] = {
     "재고(NJ)": "warehouse_nj",
 }
 
+# Maps '선택' column CS-type values to purchase_status codes
+_NOTE_TYPE_STATUS_MAP: dict[str, str] = {
+    "주문취소": "order_cancelled",
+    "주문보류": "on_hold",
+    "CS필요": "cs_required",
+    "타출판사": "other_publisher",
+}
+
 _DAILY_REVIEW_HEADERS = [
     "주문번호", "ISBN", "제목", "수량", "주문위치", "메모",
     "재고(한국)", "재고(CA)", "재고(NJ)",
@@ -625,8 +633,11 @@ def parse_daily_review_excel(file_bytes: bytes) -> list[dict]:
             continue
 
         distributor_code = _DISTRIBUTOR_LABEL_MAP.get(selected_label)
+        note_type: str | None = None
         if not distributor_code:
-            continue  # Unknown label — skip silently
+            note_type = _NOTE_TYPE_STATUS_MAP.get(selected_label) and selected_label
+            if not note_type:
+                continue  # Unknown label — skip silently
 
         note: str | None = None
         if note_idx is not None and len(row) > note_idx:
@@ -634,6 +645,6 @@ def parse_daily_review_excel(file_bytes: bytes) -> list[dict]:
             if raw_note is not None:
                 note = str(raw_note).strip() or None
 
-        results.append({"sku": sku, "distributor": distributor_code, "note": note})
+        results.append({"sku": sku, "distributor": distributor_code, "note_type": note_type, "note": note})
 
     return results
