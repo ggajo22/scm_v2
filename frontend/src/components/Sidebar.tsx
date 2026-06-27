@@ -46,6 +46,11 @@ const flatNavItems: FlatNavItem[] = [
     icon: StickyNote,
   },
   {
+    label: '품목 노트',
+    href: '/line-item-notes',
+    icon: StickyNote,
+  },
+  {
     label: '발주 관리',
     href: '/purchase-orders',
     icon: Package,

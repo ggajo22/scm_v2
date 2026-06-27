@@ -460,7 +460,8 @@ class TestUploadWarehouseSetsInStockStatus:
         assert li.purchase_status == "in_stock"
 
     def test_sets_in_stock_with_note(self, auth_client):
-        """When note is provided, LineItem.note is also updated."""
+        """When note is provided, LineItemNote is created (SPEC-ORDER-010 migration)."""
+        from order.models import LineItemNote
         sku = "9788901299004"
         order = _make_order(shopify_order_id=85002)
         li = _make_line_item(order, sku=sku, quantity=1, shopify_line_item_id=2)
@@ -475,7 +476,7 @@ class TestUploadWarehouseSetsInStockStatus:
 
         li.refresh_from_db()
         assert li.purchase_status == "in_stock"
-        assert li.note == "한국 창고에서 발송"
+        assert LineItemNote.objects.filter(line_item=li, content="한국 창고에서 발송").exists()
 
 
 # ---------------------------------------------------------------------------

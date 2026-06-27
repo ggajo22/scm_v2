@@ -2,7 +2,7 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from rest_framework import serializers
 
-from .models import Customer, ExchangeRate, LineItem, Order, Refund, ShippingAddress, ShippingLine
+from .models import Customer, ExchangeRate, LineItem, LineItemNote, Order, Refund, ShippingAddress, ShippingLine
 
 
 class CustomerSummarySerializer(serializers.ModelSerializer):
@@ -63,19 +63,52 @@ class ShippingAddressSerializer(serializers.ModelSerializer):
         ]
 
 
+class LineItemNoteSerializer(serializers.ModelSerializer):
+    # @MX:NOTE: [AUTO] Serializer for LineItemNote — used in list/create and order detail
+    author_username = serializers.SerializerMethodField()
+
+    def get_author_username(self, obj):
+        return obj.author.username if obj.author else None
+
+    class Meta:
+        model = LineItemNote
+        fields = ["id", "content", "author_username", "assignee", "created_at", "is_resolved"]
+        read_only_fields = ["id", "author_username", "created_at", "is_resolved"]
+
+
+class LineItemNoteUnresolvedSerializer(serializers.ModelSerializer):
+    # @MX:NOTE: [AUTO] Serializer for unresolved notes page — includes order and line_item context
+    author_username = serializers.SerializerMethodField()
+    line_item_sku = serializers.CharField(source="line_item.sku", default=None)
+    line_item_title = serializers.CharField(source="line_item.title", default=None)
+    order_name = serializers.CharField(source="line_item.order.name", default=None)
+    order_id = serializers.IntegerField(source="line_item.order.id")
+
+    def get_author_username(self, obj):
+        return obj.author.username if obj.author else None
+
+    class Meta:
+        model = LineItemNote
+        fields = [
+            "id", "content", "author_username", "assignee", "created_at", "is_resolved",
+            "line_item_sku", "line_item_title", "order_name", "order_id",
+        ]
+
+
 class LineItemDetailSerializer(serializers.ModelSerializer):
     # @MX:ANCHOR: [AUTO] LineItemDetailSerializer — serializes confirmed purchase fields
-    # @MX:REASON: Extended by SPEC-ORDER-008; confirmed_price/distributor/at added for margin calc
+    # @MX:REASON: Extended by SPEC-ORDER-008 and SPEC-ORDER-010; notes replaces note field
     confirmed_price = serializers.DecimalField(max_digits=12, decimal_places=2, allow_null=True, read_only=True)
     confirmed_distributor = serializers.CharField(allow_null=True, read_only=True)
     confirmed_at = serializers.DateTimeField(allow_null=True, read_only=True)
+    notes = LineItemNoteSerializer(many=True, read_only=True)
 
     class Meta:
         model = LineItem
         fields = [
             "id", "shopify_line_item_id", "title", "variant_title", "sku",
             "quantity", "price", "total_discount", "fulfillment_status", "vendor", "grams",
-            "location", "note",
+            "location", "notes",
             "confirmed_price", "confirmed_distributor", "confirmed_at",
         ]
 

@@ -3,6 +3,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from django.db import transaction
 from django.db.models import Q
+from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.exceptions import ValidationError
 from rest_framework import generics
@@ -13,8 +14,15 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.authentication import JWTAuthentication
 
-from .models import ExchangeRate, Order
-from .serializers import ExchangeRateSerializer, OrderDetailSerializer, OrderListSerializer, OrderNoteSerializer
+from .models import ExchangeRate, LineItem, LineItemNote, Order
+from .serializers import (
+    ExchangeRateSerializer,
+    LineItemNoteSerializer,
+    LineItemNoteUnresolvedSerializer,
+    OrderDetailSerializer,
+    OrderListSerializer,
+    OrderNoteSerializer,
+)
 from .shopify_orders import sync_single_order_from_shopify, sync_store
 
 
@@ -31,7 +39,7 @@ class OrderDetailView(RetrieveAPIView):
         return Order.objects.select_related(
             "customer", "shipping_address"
         ).prefetch_related(
-            "line_items", "shipping_lines", "refunds"
+            "line_items__notes__author", "shipping_lines", "refunds"
         )
 
 
@@ -202,7 +210,7 @@ class OrderResyncView(APIView):
         qs = Order.objects.select_related(
             "customer", "shipping_address"
         ).prefetch_related(
-            "line_items", "shipping_lines", "refunds"
+            "line_items__notes__author", "shipping_lines", "refunds"
         )
         order = qs.get(pk=pk)
         serializer = OrderDetailSerializer(order)
@@ -225,3 +233,50 @@ class ExchangeRateDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAuthenticated]
     lookup_field = "effective_date"
     lookup_url_kwarg = "date"
+
+
+class LineItemNoteListCreateView(generics.ListCreateAPIView):
+    """SPEC-ORDER-010: GET/POST /api/orders/line-items/{pk}/notes/ — 품목 노트 목록 및 생성."""
+
+    serializer_class = LineItemNoteSerializer
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+    pagination_class = None
+
+    def get_queryset(self):
+        line_item_pk = self.kwargs["pk"]
+        return LineItemNote.objects.filter(line_item_id=line_item_pk).select_related("author")
+
+    def perform_create(self, serializer):
+        line_item_pk = self.kwargs["pk"]
+        line_item = get_object_or_404(LineItem, pk=line_item_pk)
+        serializer.save(author=self.request.user, line_item=line_item)
+
+
+class LineItemNoteUnresolvedListView(generics.ListAPIView):
+    """SPEC-ORDER-010: GET /api/orders/line-item-notes/ — 미해결 품목 노트 목록."""
+
+    serializer_class = LineItemNoteUnresolvedSerializer
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+    pagination_class = None
+
+    def get_queryset(self):
+        return (
+            LineItemNote.objects.filter(is_resolved=False)
+            .select_related("line_item__order", "author")
+            .order_by("-created_at")
+        )
+
+
+class LineItemNoteResolveView(APIView):
+    """SPEC-ORDER-010: PATCH /api/orders/line-item-notes/{pk}/resolve/ — 품목 노트 해결."""
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, pk):
+        note = get_object_or_404(LineItemNote, pk=pk)
+        note.is_resolved = True
+        note.save(update_fields=["is_resolved"])
+        return Response({"is_resolved": True})

@@ -85,6 +85,13 @@ export const router = createBrowserRouter([
             },
           },
           {
+            path: '/line-item-notes',
+            lazy: async () => {
+              const { LineItemNotesPage } = await import('@/pages/LineItemNotesPage')
+              return { Component: LineItemNotesPage }
+            },
+          },
+          {
             path: '/orders/:id',
             lazy: async () => {
               const { OrderDetailPage } = await import('@/pages/OrderDetailPage')

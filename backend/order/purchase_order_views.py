@@ -38,7 +38,7 @@ from .excel_utils import (
     parse_daily_review_excel,
     parse_vendor_excel,
 )
-from .models import BookseenData, DistributorVendorRule, KyoboData, LineItem, PurchaseOrder, Refund, VendorComparison, WarehouseStock
+from .models import BookseenData, DistributorVendorRule, KyoboData, LineItem, LineItemNote, PurchaseOrder, Refund, VendorComparison, WarehouseStock
 
 VALID_DISTRIBUTORS = {"bookseen", "kyobo", "choeumgoyuk", "agape", "sungseoyunion",
                       "warehouse_korea", "warehouse_ca", "warehouse_nj"}
@@ -734,20 +734,20 @@ class ConfirmOrderView(APIView):
                             li.purchase_status = purchase_status
                         update_fields.append("purchase_status")
 
-                    # REQ-CON-032/033/034: handle note field
+                    # REQ-CON-032/033/034: handle note field — migrated to LineItemNote (SPEC-ORDER-010)
                     if note_key_present:
                         note_raw = item["note"]
-                        if note_raw is None:
-                            # REQ-CON-034: explicit null → clear note
+                        if note_raw is not None and note_raw != "":
+                            # REQ-CON-032: non-empty string → create LineItemNote
                             for li in unordered_lis:
-                                li.note = None
-                            update_fields.append("note")
-                        elif note_raw != "":
-                            # REQ-CON-032: non-empty string → update note
-                            for li in unordered_lis:
-                                li.note = note_raw
-                            update_fields.append("note")
-                        # REQ-CON-033: empty string "" → skip (keep existing)
+                                LineItemNote.objects.create(
+                                    line_item=li,
+                                    content=note_raw,
+                                    author=None,
+                                    assignee="발주",
+                                )
+                        # REQ-CON-033: empty string "" → skip
+                        # REQ-CON-034: null → no longer clears (field removed from LineItem)
 
                     LineItem.objects.bulk_update(unordered_lis, update_fields)
 
@@ -794,6 +794,7 @@ class DailyReviewExcelView(APIView):
             LineItem.objects.filter(sku__isnull=False, purchase_status="unordered")
             .exclude(purchase_orders__isnull=False)
             .select_related("order")
+            .prefetch_related("notes")
             .order_by("order__order_number")
         )
 
@@ -856,7 +857,7 @@ class DailyReviewExcelView(APIView):
                 "title": li.title or "",
                 "quantity": li.quantity or 0,
                 "location": li.location or "",
-                "note": li.note or "",
+                "note": (li.notes.first().content if li.notes.exists() else ""),
                 "korea_stock": stock_map.get(sku, {}).get("korea", 0),
                 "ca_stock": stock_map.get(sku, {}).get("ca", 0),
                 "nj_stock": stock_map.get(sku, {}).get("nj", 0),
@@ -972,9 +973,14 @@ class UploadDailyReviewView(APIView):
                             li.purchase_status = "in_stock"
                             li.confirmed_distributor = distributor_code
                         if note is not None:
+                            # Migrated to LineItemNote (SPEC-ORDER-010)
                             for li in unordered_lis:
-                                li.note = note
-                            update_fields.append("note")
+                                LineItemNote.objects.create(
+                                    line_item=li,
+                                    content=note,
+                                    author=None,
+                                    assignee="한국창고",
+                                )
 
                         LineItem.objects.bulk_update(unordered_lis, update_fields)
 
@@ -1004,9 +1010,14 @@ class UploadDailyReviewView(APIView):
                         for li in unordered_lis:
                             li.confirmed_distributor = distributor_code
                         if note is not None:
+                            # Migrated to LineItemNote (SPEC-ORDER-010)
                             for li in unordered_lis:
-                                li.note = note
-                            update_fields.append("note")
+                                LineItemNote.objects.create(
+                                    line_item=li,
+                                    content=note,
+                                    author=None,
+                                    assignee="발주",
+                                )
 
                         LineItem.objects.bulk_update(unordered_lis, update_fields)
 

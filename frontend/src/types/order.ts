@@ -80,6 +80,25 @@ export interface ShippingAddress {
   phone: string | null
 }
 
+// SPEC-ORDER-010: LineItemNote types
+export type LineItemNoteAssignee = 'CS' | '발주' | '한국창고' | '미국창고'
+
+export interface LineItemNote {
+  id: number
+  content: string
+  author_username: string | null
+  assignee: LineItemNoteAssignee | ''
+  created_at: string
+  is_resolved: boolean
+}
+
+export interface LineItemNoteUnresolved extends LineItemNote {
+  line_item_sku: string | null
+  line_item_title: string | null
+  order_name: string | null
+  order_id: number
+}
+
 export interface LineItemDetail {
   id: number
   shopify_line_item_id: number
@@ -96,6 +115,7 @@ export interface LineItemDetail {
   confirmed_price: string | null
   confirmed_distributor: string | null
   confirmed_at: string | null
+  notes: LineItemNote[]
 }
 
 export interface ShippingLine {

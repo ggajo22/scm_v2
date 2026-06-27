@@ -2,8 +2,19 @@ import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useOrderDetail, ORDER_DETAIL_QUERY_KEY } from '@/features/order/hooks/useOrderDetail'
+import { useCreateLineItemNote, useResolveLineItemNote } from '@/features/order/hooks/useLineItemNotes'
 import type { AxiosError } from 'axios'
+import type { LineItemNote, LineItemNoteAssignee } from '@/types/order'
 import { api } from '@/lib/axios'
+
+const ASSIGNEE_CHOICES: LineItemNoteAssignee[] = ['CS', '발주', '한국창고', '미국창고']
+
+const ASSIGNEE_COLORS: Record<LineItemNoteAssignee, string> = {
+  CS: 'bg-blue-100 text-blue-700',
+  발주: 'bg-orange-100 text-orange-700',
+  한국창고: 'bg-green-100 text-green-700',
+  미국창고: 'bg-purple-100 text-purple-700',
+}
 
 const FINANCIAL_STATUS_LABELS: Record<string, string> = {
   paid: '결제완료',
@@ -49,6 +60,11 @@ export function OrderDetailPage() {
 
   const queryClient = useQueryClient()
   const [syncError, setSyncError] = useState<string | null>(null)
+  const [expandedNotes, setExpandedNotes] = useState<Set<number>>(new Set())
+  const [noteContents, setNoteContents] = useState<Record<number, string>>({})
+  const [noteAssignees, setNoteAssignees] = useState<Record<number, LineItemNoteAssignee>>({})
+
+  const { mutate: resolveLineItemNote } = useResolveLineItemNote()
 
   const { mutate: resync, isPending: isSyncing } = useMutation({
     mutationFn: async () => {
@@ -239,41 +255,85 @@ export function OrderDetailPage() {
                 const subtotal =
                   Number(item.price ?? 0) * (item.quantity ?? 0) -
                   Number(item.total_discount ?? 0)
+                const isExpanded = expandedNotes.has(item.id)
+                const notes: LineItemNote[] = item.notes ?? []
+                const noteCount = notes.length
                 return (
-                  <tr key={item.id} className="border-b last:border-0">
-                    <td className="py-2 px-3">
-                      <div>{item.title ?? '-'}</div>
-                      {item.variant_title && (
-                        <div className="text-xs text-muted-foreground">{item.variant_title}</div>
-                      )}
-                    </td>
-                    <td className="py-2 px-3 font-mono text-xs text-muted-foreground">
-                      {item.sku ?? '-'}
-                    </td>
-                    <td className="py-2 px-3">
-                      {item.location
-                        ? <span className="text-xs font-mono">{item.location}</span>
-                        : <span className="text-xs text-muted-foreground">-</span>}
-                    </td>
-                    <td className="py-2 px-3 text-right">{item.quantity ?? '-'}</td>
-                    <td className="py-2 px-3 text-right">{formatPrice(item.price)}</td>
-                    <td className="py-2 px-3 text-right text-red-600">
-                      {item.total_discount && Number(item.total_discount) > 0
-                        ? `-${formatPrice(item.total_discount)}`
-                        : '-'}
-                    </td>
-                    <td className="py-2 px-3 text-right font-medium">
-                      {subtotal.toLocaleString()}
-                    </td>
-                    <td className="py-2 px-3 text-right">
-                      {item.confirmed_price !== null
-                        ? `${Number(item.confirmed_price).toLocaleString()}원`
-                        : '—'}
-                    </td>
-                    <td className="py-2 px-3">
-                      {item.confirmed_distributor !== null ? item.confirmed_distributor : '—'}
-                    </td>
-                  </tr>
+                  <>
+                    <tr key={item.id} className="border-b">
+                      <td className="py-2 px-3">
+                        <div className="flex items-center gap-2">
+                          <div>{item.title ?? '-'}</div>
+                          <button
+                            onClick={() =>
+                              setExpandedNotes((prev) => {
+                                const next = new Set(prev)
+                                if (next.has(item.id)) next.delete(item.id)
+                                else next.add(item.id)
+                                return next
+                              })
+                            }
+                            className={`text-xs px-1.5 py-0.5 rounded font-medium transition-colors ${
+                              noteCount > 0
+                                ? 'bg-blue-100 text-blue-700 hover:bg-blue-200'
+                                : 'bg-muted text-muted-foreground hover:bg-muted/80'
+                            }`}
+                          >
+                            노트 {noteCount}
+                          </button>
+                        </div>
+                        {item.variant_title && (
+                          <div className="text-xs text-muted-foreground">{item.variant_title}</div>
+                        )}
+                      </td>
+                      <td className="py-2 px-3 font-mono text-xs text-muted-foreground">
+                        {item.sku ?? '-'}
+                      </td>
+                      <td className="py-2 px-3">
+                        {item.location
+                          ? <span className="text-xs font-mono">{item.location}</span>
+                          : <span className="text-xs text-muted-foreground">-</span>}
+                      </td>
+                      <td className="py-2 px-3 text-right">{item.quantity ?? '-'}</td>
+                      <td className="py-2 px-3 text-right">{formatPrice(item.price)}</td>
+                      <td className="py-2 px-3 text-right text-red-600">
+                        {item.total_discount && Number(item.total_discount) > 0
+                          ? `-${formatPrice(item.total_discount)}`
+                          : '-'}
+                      </td>
+                      <td className="py-2 px-3 text-right font-medium">
+                        {subtotal.toLocaleString()}
+                      </td>
+                      <td className="py-2 px-3 text-right">
+                        {item.confirmed_price !== null
+                          ? `${Number(item.confirmed_price).toLocaleString()}원`
+                          : '—'}
+                      </td>
+                      <td className="py-2 px-3">
+                        {item.confirmed_distributor !== null ? item.confirmed_distributor : '—'}
+                      </td>
+                    </tr>
+                    {isExpanded && (
+                      <tr key={`${item.id}-notes`} className="border-b bg-muted/20">
+                        <td colSpan={9} className="py-3 px-4">
+                          <LineItemNotePanel
+                            lineItemId={item.id}
+                            orderId={orderId}
+                            notes={notes}
+                            noteContent={noteContents[item.id] ?? ''}
+                            noteAssignee={noteAssignees[item.id] ?? 'CS'}
+                            onContentChange={(v) =>
+                              setNoteContents((prev) => ({ ...prev, [item.id]: v }))
+                            }
+                            onAssigneeChange={(v) =>
+                              setNoteAssignees((prev) => ({ ...prev, [item.id]: v }))
+                            }
+                            onResolve={(noteId) => resolveLineItemNote(noteId)}
+                          />
+                        </td>
+                      </tr>
+                    )}
+                  </>
                 )
               })}
             </tbody>
@@ -414,6 +474,109 @@ export function OrderDetailPage() {
         </section>
       )}
 
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// LineItemNotePanel — inline note list + add form for a single line item
+// ---------------------------------------------------------------------------
+
+interface LineItemNotePanelProps {
+  lineItemId: number
+  orderId: number
+  notes: LineItemNote[]
+  noteContent: string
+  noteAssignee: LineItemNoteAssignee
+  onContentChange: (v: string) => void
+  onAssigneeChange: (v: LineItemNoteAssignee) => void
+  onResolve: (noteId: number) => void
+}
+
+function LineItemNotePanel({
+  lineItemId,
+  orderId,
+  notes,
+  noteContent,
+  noteAssignee,
+  onContentChange,
+  onAssigneeChange,
+  onResolve,
+}: LineItemNotePanelProps) {
+  const { mutate: createNote, isPending } = useCreateLineItemNote(lineItemId, orderId)
+
+  const handleSubmit = () => {
+    if (!noteContent.trim()) return
+    createNote(
+      { content: noteContent.trim(), assignee: noteAssignee },
+      { onSuccess: () => onContentChange('') },
+    )
+  }
+
+  return (
+    <div className="space-y-3">
+      {notes.length === 0 && (
+        <p className="text-xs text-muted-foreground">노트 없음</p>
+      )}
+      {notes.map((note) => (
+        <div key={note.id} className="flex items-start justify-between gap-3 text-sm">
+          <div className="flex-1 space-y-0.5">
+            <div className="flex items-center gap-2">
+              {note.assignee && (
+                <span
+                  className={`text-xs px-1.5 py-0.5 rounded font-medium ${
+                    ASSIGNEE_COLORS[note.assignee as LineItemNoteAssignee] ?? 'bg-gray-100 text-gray-700'
+                  }`}
+                >
+                  {note.assignee}
+                </span>
+              )}
+              {note.author_username && (
+                <span className="text-xs text-muted-foreground">{note.author_username}</span>
+              )}
+              <span className="text-xs text-muted-foreground">
+                {new Date(note.created_at).toLocaleDateString('ko-KR')}
+              </span>
+            </div>
+            <p className="whitespace-pre-wrap">{note.content}</p>
+          </div>
+          {!note.is_resolved && (
+            <button
+              onClick={() => onResolve(note.id)}
+              className="shrink-0 text-xs border rounded px-2 py-1 hover:bg-green-50 hover:border-green-400 hover:text-green-700 transition-colors"
+            >
+              해결
+            </button>
+          )}
+        </div>
+      ))}
+
+      {/* Add note form */}
+      <div className="flex gap-2 pt-2 border-t">
+        <select
+          value={noteAssignee}
+          onChange={(e) => onAssigneeChange(e.target.value as LineItemNoteAssignee)}
+          className="text-xs border rounded px-2 py-1.5 bg-background"
+        >
+          {ASSIGNEE_CHOICES.map((a) => (
+            <option key={a} value={a}>{a}</option>
+          ))}
+        </select>
+        <textarea
+          value={noteContent}
+          onChange={(e) => onContentChange(e.target.value)}
+          placeholder="노트 추가..."
+          rows={2}
+          className="flex-1 text-sm border rounded px-2 py-1.5 resize-none bg-background focus:outline-none focus:ring-1 focus:ring-ring"
+        />
+        <button
+          onClick={handleSubmit}
+          disabled={isPending || !noteContent.trim()}
+          className="shrink-0 text-sm border rounded px-3 py-1.5 font-medium hover:bg-blue-50 hover:border-blue-400 hover:text-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          추가
+        </button>
+      </div>
     </div>
   )
 }

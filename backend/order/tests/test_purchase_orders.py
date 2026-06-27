@@ -839,7 +839,8 @@ class TestConfirmOrderView:
         assert li.purchase_status == "on_hold"
 
     def test_confirm_saves_note_when_provided(self, auth_client):
-        """REQ-CON-032: Non-empty note → LineItem.note updated."""
+        """REQ-CON-032: Non-empty note → LineItemNote created (SPEC-ORDER-010 migration)."""
+        from order.models import LineItemNote
         order = _make_order(shopify_order_id=94007)
         li = _make_line_item(order, shopify_line_item_id=1, sku="ISBN-D007", quantity=1)
         payload = {
@@ -855,15 +856,13 @@ class TestConfirmOrderView:
         }
         res = auth_client.post(CONFIRM_URL, data=payload, format="json")
         assert res.status_code == 201
-        li.refresh_from_db()
-        assert li.note == "긴급 발주 필요"
+        assert LineItemNote.objects.filter(line_item=li, content="긴급 발주 필요").exists()
 
     def test_confirm_keeps_note_when_empty_string(self, auth_client):
-        """REQ-CON-033: note="" → LineItem.note unchanged (keeps existing value)."""
+        """REQ-CON-033: note="" → no LineItemNote created (skip empty string)."""
+        from order.models import LineItemNote
         order = _make_order(shopify_order_id=94008)
         li = _make_line_item(order, shopify_line_item_id=1, sku="ISBN-D008", quantity=1)
-        li.note = "기존 메모"
-        li.save()
         payload = {
             "items": [
                 {
@@ -877,15 +876,13 @@ class TestConfirmOrderView:
         }
         res = auth_client.post(CONFIRM_URL, data=payload, format="json")
         assert res.status_code == 201
-        li.refresh_from_db()
-        assert li.note == "기존 메모"
+        assert not LineItemNote.objects.filter(line_item=li).exists()
 
     def test_confirm_clears_note_when_null(self, auth_client):
-        """REQ-CON-034: note=null → LineItem.note = None."""
+        """REQ-CON-034: note=null → no LineItemNote created (null treated as no-op)."""
+        from order.models import LineItemNote
         order = _make_order(shopify_order_id=94009)
         li = _make_line_item(order, shopify_line_item_id=1, sku="ISBN-D009", quantity=1)
-        li.note = "삭제할 메모"
-        li.save()
         payload = {
             "items": [
                 {
@@ -899,8 +896,7 @@ class TestConfirmOrderView:
         }
         res = auth_client.post(CONFIRM_URL, data=payload, format="json")
         assert res.status_code == 201
-        li.refresh_from_db()
-        assert li.note is None
+        assert not LineItemNote.objects.filter(line_item=li).exists()
 
 
 # ---------------------------------------------------------------------------

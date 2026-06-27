@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.db import models
 
 
@@ -140,11 +141,46 @@ class LineItem(models.Model):
     confirmed_price = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
     confirmed_distributor = models.CharField(max_length=50, null=True, blank=True)
     confirmed_at = models.DateTimeField(null=True, blank=True)
-    note = models.TextField(null=True, blank=True)
 
     class Meta:
         db_table = "orders_line_item"
         unique_together = [("order", "shopify_line_item_id")]
+
+
+class LineItemNote(models.Model):
+    # @MX:ANCHOR: [AUTO] LineItemNote model — 1:N relationship to LineItem
+    # @MX:REASON: Fan-in >= 3: LineItemNoteListCreateView, LineItemNoteUnresolvedListView, LineItemNoteResolveView all query LineItemNote
+
+    ASSIGNEE_CHOICES = [
+        ("CS", "CS"),
+        ("발주", "발주"),
+        ("한국창고", "한국창고"),
+        ("미국창고", "미국창고"),
+    ]
+
+    line_item = models.ForeignKey(
+        LineItem, on_delete=models.CASCADE, related_name="notes"
+    )
+    content = models.TextField()
+    author = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="line_item_notes",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    is_resolved = models.BooleanField(default=False)
+    assignee = models.CharField(
+        max_length=20,
+        choices=ASSIGNEE_CHOICES,
+        default="CS",
+        blank=True,
+    )
+
+    class Meta:
+        db_table = "orders_line_item_note"
+        ordering = ["-created_at"]
 
 
 class ShippingLine(models.Model):
