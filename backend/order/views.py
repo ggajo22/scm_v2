@@ -3,6 +3,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from django.db import transaction
 from django.db.models import Q
+from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.exceptions import ValidationError
@@ -14,6 +15,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.authentication import JWTAuthentication
 
+from .excel_utils import generate_line_item_notes_excel
 from .models import ExchangeRate, LineItem, LineItemNote, Order
 from .serializers import (
     ExchangeRateSerializer,
@@ -280,3 +282,54 @@ class LineItemNoteResolveView(APIView):
         note.is_resolved = True
         note.save(update_fields=["is_resolved"])
         return Response({"is_resolved": True})
+
+
+class LineItemNoteExportView(APIView):
+    """GET /api/orders/line-item-notes/export/?publisher=agape|sungseoyunion|other — 타출판사 노트 엑셀 다운로드."""
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    PUBLISHER_LABELS = {
+        "agape": "아가페",
+        "sungseoyunion": "성서유니온",
+        "other": "기타",
+    }
+
+    def get(self, request):
+        publisher = request.query_params.get("publisher", "other")
+
+        qs = (
+            LineItemNote.objects.filter(is_resolved=False, note_type="타출판사")
+            .select_related("line_item__order", "author")
+            .order_by("-created_at")
+        )
+
+        if publisher in ("agape", "sungseoyunion"):
+            qs = qs.filter(line_item__confirmed_distributor=publisher)
+        else:
+            qs = qs.exclude(line_item__confirmed_distributor__in=["agape", "sungseoyunion"])
+
+        notes = [
+            {
+                "order_name": n.line_item.order.name if n.line_item and n.line_item.order else "",
+                "line_item_sku": n.line_item.sku if n.line_item else "",
+                "line_item_title": n.line_item.title if n.line_item else "",
+                "content": n.content,
+                "author_username": n.author.username if n.author else "",
+                "created_at": n.created_at.strftime("%Y-%m-%d %H:%M") if n.created_at else "",
+                "confirmed_distributor": n.line_item.confirmed_distributor if n.line_item else "",
+            }
+            for n in qs
+        ]
+
+        file_bytes = generate_line_item_notes_excel(notes)
+        label = self.PUBLISHER_LABELS.get(publisher, "기타")
+        filename = f"타출판사_메모_{label}.xlsx"
+
+        response = HttpResponse(
+            file_bytes,
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return response

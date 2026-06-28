@@ -18,6 +18,7 @@ from .purchase_order_views import (
 from .views import (
     ExchangeRateDetailView,
     ExchangeRateListCreateView,
+    LineItemNoteExportView,
     LineItemNoteListCreateView,
     LineItemNoteResolveView,
     LineItemNoteUnresolvedListView,
@@ -59,6 +60,7 @@ urlpatterns = [
     path("purchase-orders/vendor-rules/<int:pk>/", DistributorVendorRuleDeleteView.as_view(), name="po-rule-delete"),
     path("purchase-orders/", PurchaseOrderListView.as_view(), name="po-list"),
     # SPEC-ORDER-010: LineItemNote endpoints
+    path("orders/line-item-notes/export/", LineItemNoteExportView.as_view(), name="line-item-note-export"),
     path("orders/line-item-notes/", LineItemNoteUnresolvedListView.as_view(), name="line-item-note-unresolved"),
     path("orders/line-item-notes/<int:pk>/resolve/", LineItemNoteResolveView.as_view(), name="line-item-note-resolve"),
     path("orders/line-items/<int:pk>/notes/", LineItemNoteListCreateView.as_view(), name="line-item-note-list-create"),

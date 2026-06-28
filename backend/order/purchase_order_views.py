@@ -791,13 +791,32 @@ class DailyReviewExcelView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request) -> HttpResponse:
+        refund_sum_sq = (
+            Refund.objects.filter(
+                order_id=OuterRef("order_id"),
+                line_item_id=OuterRef("shopify_line_item_id"),
+            )
+            .values("order_id", "line_item_id")
+            .annotate(total=Sum("quantity"))
+            .values("total")[:1]
+        )
+
         line_items = (
             LineItem.objects.filter(sku__isnull=False, purchase_status="unordered")
             .exclude(purchase_orders__isnull=False)
+            .annotate(
+                refunded_qty=Coalesce(
+                    Subquery(refund_sum_sq, output_field=IntegerField()),
+                    0,
+                )
+            )
             .select_related("order")
             .prefetch_related("notes")
             .order_by("order__order_number")
         )
+
+        # Exclude fully refunded line items (same logic as UnorderedItemsView)
+        line_items = [li for li in line_items if (li.quantity or 0) - li.refunded_qty > 0]
 
         skus = list({li.sku for li in line_items if li.sku})
         bookseen_map = {bd.sku: bd for bd in BookseenData.objects.filter(sku__in=skus)}

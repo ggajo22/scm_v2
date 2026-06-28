@@ -79,10 +79,12 @@ class LineItemNoteSerializer(serializers.ModelSerializer):
 class LineItemNoteUnresolvedSerializer(serializers.ModelSerializer):
     # @MX:NOTE: [AUTO] Serializer for unresolved notes page — includes order and line_item context
     author_username = serializers.SerializerMethodField()
+    line_item_id = serializers.IntegerField()
     line_item_sku = serializers.CharField(source="line_item.sku", default=None)
     line_item_title = serializers.CharField(source="line_item.title", default=None)
     order_name = serializers.CharField(source="line_item.order.name", default=None)
     order_id = serializers.IntegerField(source="line_item.order.id")
+    confirmed_distributor = serializers.CharField(source="line_item.confirmed_distributor", default=None)
 
     def get_author_username(self, obj):
         return obj.author.username if obj.author else None
@@ -91,7 +93,7 @@ class LineItemNoteUnresolvedSerializer(serializers.ModelSerializer):
         model = LineItemNote
         fields = [
             "id", "content", "author_username", "assignee", "note_type", "created_at", "is_resolved",
-            "line_item_sku", "line_item_title", "order_name", "order_id",
+            "line_item_id", "line_item_sku", "line_item_title", "order_name", "order_id", "confirmed_distributor",
         ]
 
 

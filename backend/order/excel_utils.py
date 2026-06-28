@@ -68,6 +68,29 @@ def generate_order_excel(skus_data: list[dict], distributor: str) -> bytes:
     return buf.getvalue()
 
 
+def generate_line_item_notes_excel(notes: list[dict]) -> bytes:
+    """Generate an Excel (.xlsx) file for 타출판사 line item notes export."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "타출판사 메모"
+
+    ws.append(["주문명", "SKU", "도서명", "메모 내용", "작성자", "작성일", "유통사"])
+    for note in notes:
+        ws.append([
+            note.get("order_name") or "",
+            note.get("line_item_sku") or "",
+            note.get("line_item_title") or "",
+            note.get("content") or "",
+            note.get("author_username") or "",
+            note.get("created_at") or "",
+            note.get("confirmed_distributor") or "",
+        ])
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
 def parse_vendor_excel(file_bytes: bytes, distributor: str) -> list[dict]:
     """
     Parse a vendor-supplied Excel file into comparison records.

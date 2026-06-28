@@ -67,3 +67,17 @@ export function useUnresolvedLineItemNotes() {
     },
   })
 }
+
+export async function downloadLineItemNotesExcel(publisher: 'agape' | 'sungseoyunion' | 'other') {
+  const LABELS = { agape: '아가페', sungseoyunion: '성서유니온', other: '기타' }
+  const res = await api.get('/api/orders/line-item-notes/export/', {
+    params: { publisher },
+    responseType: 'blob',
+  })
+  const url = URL.createObjectURL(res.data)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `타출판사_메모_${LABELS[publisher]}.xlsx`
+  a.click()
+  URL.revokeObjectURL(url)
+}

@@ -101,10 +101,12 @@ export interface LineItemNote {
 }
 
 export interface LineItemNoteUnresolved extends LineItemNote {
+  line_item_id: number
   line_item_sku: string | null
   line_item_title: string | null
   order_name: string | null
   order_id: number
+  confirmed_distributor: string | null
 }
 
 export interface LineItemDetail {
