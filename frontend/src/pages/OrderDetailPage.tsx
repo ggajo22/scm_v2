@@ -243,12 +243,13 @@ export function OrderDetailPage() {
                 <th className="py-2 px-3 text-right font-medium">소계</th>
                 <th className="py-2 px-3 text-right font-medium">확정 단가</th>
                 <th className="py-2 px-3 text-left font-medium">확정 발주처</th>
+                <th className="py-2 px-3 text-center font-medium w-12">노트</th>
               </tr>
             </thead>
             <tbody>
               {normalItems.length === 0 && (
                 <tr>
-                  <td colSpan={9} className="py-4 text-center text-muted-foreground text-xs">
+                  <td colSpan={10} className="py-4 text-center text-muted-foreground text-xs">
                     상품 없음
                   </td>
                 </tr>
@@ -264,26 +265,7 @@ export function OrderDetailPage() {
                   <>
                     <tr key={item.id} className="border-b">
                       <td className="py-2 px-3">
-                        <div className="flex items-center gap-2">
-                          <div>{item.title ?? '-'}</div>
-                          <button
-                            onClick={() =>
-                              setExpandedNotes((prev) => {
-                                const next = new Set(prev)
-                                if (next.has(item.id)) next.delete(item.id)
-                                else next.add(item.id)
-                                return next
-                              })
-                            }
-                            className={`text-xs px-1.5 py-0.5 rounded font-medium transition-colors ${
-                              noteCount > 0
-                                ? 'bg-blue-100 text-blue-700 hover:bg-blue-200'
-                                : 'bg-muted text-muted-foreground hover:bg-muted/80'
-                            }`}
-                          >
-                            노트 {noteCount}
-                          </button>
-                        </div>
+                        <div>{item.title ?? '-'}</div>
                         {item.variant_title && (
                           <div className="text-xs text-muted-foreground">{item.variant_title}</div>
                         )}
@@ -314,16 +296,43 @@ export function OrderDetailPage() {
                       <td className="py-2 px-3">
                         {item.confirmed_distributor !== null ? item.confirmed_distributor : '—'}
                       </td>
+                      <td className="py-2 px-3 text-center">
+                        <button
+                          onClick={() =>
+                            setExpandedNotes((prev) => {
+                              const next = new Set(prev)
+                              if (next.has(item.id)) next.delete(item.id)
+                              else next.add(item.id)
+                              return next
+                            })
+                          }
+                          className={`inline-flex items-center justify-center gap-0.5 rounded transition-colors ${
+                            noteCount > 0
+                              ? 'w-auto h-[22px] px-1.5 bg-blue-100 text-blue-700 hover:bg-blue-200'
+                              : 'w-[22px] h-[22px] border border-border text-muted-foreground hover:bg-muted hover:text-foreground'
+                          }`}
+                          title={noteCount > 0 ? `노트 ${noteCount}개` : '노트 추가'}
+                        >
+                          {noteCount > 0 ? (
+                            <>
+                              <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                              <span className="text-[10px] font-semibold leading-none">{noteCount}</span>
+                            </>
+                          ) : (
+                            <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                          )}
+                        </button>
+                      </td>
                     </tr>
                     {isExpanded && (
                       <tr key={`${item.id}-notes`} className="border-b bg-muted/20">
-                        <td colSpan={9} className="py-3 px-4">
+                        <td colSpan={10} className="py-3 px-4">
                           <LineItemNotePanel
                             lineItemId={item.id}
                             orderId={orderId}
                             notes={notes}
                             noteContent={noteContents[item.id] ?? ''}
-                            noteAssignee={noteAssignees[item.id] ?? 'CS'}
+                            noteAssignee={noteAssignees[item.id] ?? '발주'}
                             noteType={noteTypes[item.id] ?? ''}
                             onContentChange={(v) =>
                               setNoteContents((prev) => ({ ...prev, [item.id]: v }))
