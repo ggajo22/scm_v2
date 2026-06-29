@@ -113,6 +113,13 @@ export const router = createBrowserRouter([
             },
           },
           {
+            path: '/settings/sku-sets',
+            lazy: async () => {
+              const { SkuSetsPage } = await import('@/features/sku-sets/SkuSetsPage')
+              return { Component: SkuSetsPage }
+            },
+          },
+          {
             element: <SuperAdminRoute />,
             children: [
               {

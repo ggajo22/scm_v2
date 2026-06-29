@@ -39,7 +39,7 @@ from .excel_utils import (
     parse_daily_review_excel,
     parse_vendor_excel,
 )
-from .models import BookseenData, DistributorVendorRule, KyoboData, LineItem, LineItemNote, PurchaseOrder, Refund, VendorComparison, WarehouseStock
+from .models import BookseenData, DistributorVendorRule, KyoboData, LineItem, LineItemNote, PurchaseOrder, Refund, ShopifySkuSetMapping, VendorComparison, WarehouseStock
 
 VALID_DISTRIBUTORS = {"bookseen", "kyobo", "choeumgoyuk", "agape", "sungseoyunion",
                       "warehouse_korea", "warehouse_ca", "warehouse_nj"}
@@ -116,7 +116,28 @@ class UnorderedItemsView(APIView):
                 }
             )
 
-        return Response({"count": len(results), "results": results})
+        # @MX:NOTE: [AUTO] Bundle expansion: if sku matches ShopifySkuSetMapping, expand to member ISBNs
+        # @MX:SPEC: SPEC-SHOPIFY-SKU-SET-001 REQ-SKU-SET-003
+        from collections import defaultdict as _defaultdict
+        bundle_map: dict[str, list[str]] = _defaultdict(list)
+        for mapping in ShopifySkuSetMapping.objects.order_by("bundle_sku", "sort_order").values("bundle_sku", "member_isbn"):
+            bundle_map[mapping["bundle_sku"]].append(mapping["member_isbn"])
+
+        expanded = []
+        for item in results:
+            sku = item["sku"]
+            if sku in bundle_map:
+                for member_isbn in bundle_map[sku]:
+                    expanded.append({
+                        **item,
+                        "sku": member_isbn,
+                        "is_bundle_member": True,
+                        "bundle_sku": sku,
+                    })
+            else:
+                expanded.append({**item, "is_bundle_member": False, "bundle_sku": None})
+
+        return Response({"count": len(expanded), "results": expanded})
 
 
 # ---------------------------------------------------------------------------
@@ -882,6 +903,7 @@ class DailyReviewExcelView(APIView):
                 "ca_stock": stock_map.get(sku, {}).get("ca", 0),
                 "nj_stock": stock_map.get(sku, {}).get("nj", 0),
                 "bs_price": bs_price,
+                "bs_stock": bd.stock if bd else None,
                 "ky_price": ky_price,
                 "bs_status": bd.status if bd else None,
                 "ky_stock": kd.stock if kd else None,

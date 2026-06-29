@@ -405,3 +405,23 @@ class DistributorVendorRule(models.Model):
 
     def __str__(self) -> str:
         return f"DistributorVendorRule({self.publisher_name} -> {self.distributor})"
+
+
+class ShopifySkuSetMapping(models.Model):
+    # @MX:ANCHOR: [AUTO] ShopifySkuSetMapping — bundle SKU to member ISBN mapping table
+    # @MX:REASON: Fan-in >= 3 expected: ShopifySkuSetListCreateView, ShopifySkuSetDetailView, UnorderedItemsView bundle expansion
+
+    bundle_sku = models.CharField(max_length=200, db_index=True)
+    member_isbn = models.CharField(max_length=20)
+    sort_order = models.IntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "order_shopify_sku_set_mapping"
+        ordering = ["bundle_sku", "sort_order"]
+        unique_together = [("bundle_sku", "member_isbn")]
+        indexes = [models.Index(fields=["bundle_sku"])]
+
+    def __str__(self) -> str:
+        return f"ShopifySkuSetMapping({self.bundle_sku} -> {self.member_isbn})"

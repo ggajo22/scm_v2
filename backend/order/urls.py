@@ -15,6 +15,7 @@ from .purchase_order_views import (
     UploadVendorFileView,
     VendorComparisonView,
 )
+from .shopify_sku_set_views import ShopifySkuSetDetailView, ShopifySkuSetListCreateView
 from .views import (
     ExchangeRateDetailView,
     ExchangeRateListCreateView,
@@ -37,6 +38,9 @@ from .warehouse_views import (
 )
 
 urlpatterns = [
+    # SPEC-SHOPIFY-SKU-SET-001: Bundle SKU mapping endpoints
+    path("shopify-sku-sets/", ShopifySkuSetListCreateView.as_view(), name="shopify-sku-set-list"),
+    path("shopify-sku-sets/<str:bundle_sku>/", ShopifySkuSetDetailView.as_view(), name="shopify-sku-set-detail"),
     # Shopify order sync and list
     path("orders/sync/", OrderSyncView.as_view(), name="order-sync"),
     path("orders/notes/", OrderNoteListView.as_view(), name="order-note-list"),
