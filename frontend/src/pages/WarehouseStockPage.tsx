@@ -209,7 +209,7 @@ export function WarehouseStockPage() {
           onClick={() => setShowAddModal(false)}
         >
           <div
-            className="bg-background rounded-lg border shadow-lg w-full max-w-sm p-6 space-y-4"
+            className="bg-white rounded-lg border shadow-lg w-full max-w-sm p-6 space-y-4"
             onClick={(e) => e.stopPropagation()}
           >
             <h2 className="text-lg font-semibold">재고 추가</h2>
@@ -226,7 +226,7 @@ export function WarehouseStockPage() {
               <div className="space-y-1">
                 <label className="text-sm font-medium">위치</label>
                 <select
-                  className="w-full rounded-md border bg-background px-3 py-2 text-sm"
+                  className="w-full rounded-md border bg-white px-3 py-2 text-sm"
                   value={form.location}
                   onChange={(e) =>
                     setForm((f) => ({ ...f, location: e.target.value as 'korea' | 'ca' | 'nj' }))
@@ -267,7 +267,7 @@ export function WarehouseStockPage() {
           onClick={() => setShowBulkModal(false)}
         >
           <div
-            className="bg-background rounded-lg border shadow-lg w-full max-w-lg p-6 space-y-4"
+            className="bg-white rounded-lg border shadow-lg w-full max-w-lg p-6 space-y-4"
             onClick={(e) => e.stopPropagation()}
           >
             <h2 className="text-lg font-semibold">일괄 등록</h2>
@@ -280,7 +280,7 @@ export function WarehouseStockPage() {
             </p>
             <form onSubmit={handleBulkSubmit} className="space-y-3">
               <textarea
-                className="w-full rounded-md border bg-background px-3 py-2 text-sm font-mono min-h-40 resize-y"
+                className="w-full rounded-md border bg-white px-3 py-2 text-sm font-mono min-h-40 resize-y"
                 placeholder={"9788901234567 korea 10\n9788901234568 ca 5\n9788901234568 nj 3"}
                 value={bulkText}
                 onChange={(e) => setBulkText(e.target.value)}
