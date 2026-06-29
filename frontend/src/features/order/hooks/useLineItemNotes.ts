@@ -77,7 +77,8 @@ export async function downloadLineItemNotesExcel(publisher: 'agape' | 'sungseoyu
   const url = URL.createObjectURL(res.data)
   const a = document.createElement('a')
   a.href = url
-  a.download = `타출판사_메모_${LABELS[publisher]}.xlsx`
+  const today = new Date().toISOString().slice(0, 10).replace(/-/g, '')
+  a.download = `${today}_${LABELS[publisher]}.xlsx`
   a.click()
   URL.revokeObjectURL(url)
 }

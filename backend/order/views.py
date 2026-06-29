@@ -305,10 +305,12 @@ class LineItemNoteExportView(APIView):
             .order_by("-created_at")
         )
 
-        if publisher in ("agape", "sungseoyunion"):
-            qs = qs.filter(line_item__confirmed_distributor=publisher)
+        if publisher == "agape":
+            qs = qs.filter(content="아가페")
+        elif publisher == "sungseoyunion":
+            qs = qs.filter(content="성서유니온")
         else:
-            qs = qs.exclude(line_item__confirmed_distributor__in=["agape", "sungseoyunion"])
+            qs = qs.exclude(content__in=["아가페", "성서유니온"])
 
         notes = [
             {
@@ -326,6 +328,8 @@ class LineItemNoteExportView(APIView):
         file_bytes = generate_line_item_notes_excel(notes)
         label = self.PUBLISHER_LABELS.get(publisher, "기타")
         filename = f"타출판사_메모_{label}.xlsx"
+
+        qs.update(is_resolved=True)
 
         response = HttpResponse(
             file_bytes,

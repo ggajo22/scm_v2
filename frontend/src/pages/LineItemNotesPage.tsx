@@ -1,4 +1,6 @@
 import { useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
+import { LINE_ITEM_NOTES_QUERY_KEY } from '@/features/order/hooks/useLineItemNotes'
 import { useNavigate } from 'react-router-dom'
 import {
   useUnresolvedLineItemNotes,
@@ -31,16 +33,25 @@ const ASSIGNEE_CHOICES: LineItemNoteAssignee[] = ['CS', '발주', '한국창고'
 type Tab = 'CS' | '발주' | '타출판사'
 
 function filterNotes(notes: LineItemNoteUnresolved[], tab: Tab): LineItemNoteUnresolved[] {
-  if (tab === 'CS') return notes.filter((n) => n.assignee === 'CS')
-  if (tab === '발주') return notes.filter((n) => n.assignee === '발주')
-  return notes.filter((n) => n.note_type === '타출판사')
+  if (tab === '타출판사') return notes.filter((n) => n.note_type === '타출판사')
+
+  // Group by line_item_id; pick latest note (highest id) per line item
+  const latestByLineItem = new Map<number, LineItemNoteUnresolved>()
+  for (const note of notes) {
+    if (note.note_type === '타출판사') continue
+    const existing = latestByLineItem.get(note.line_item_id)
+    if (!existing || note.id > existing.id) {
+      latestByLineItem.set(note.line_item_id, note)
+    }
+  }
+
+  return Array.from(latestByLineItem.values()).filter((n) => n.assignee === tab)
 }
 
 // ---------------------------------------------------------------------------
-// NoteHistory — unresolved note thread for a line item, collapsible
+// NoteHistory — unresolved note thread for a line item, always expanded
 // ---------------------------------------------------------------------------
 function NoteHistory({ lineItemId, excludeNoteId }: { lineItemId: number; excludeNoteId: number }) {
-  const [open, setOpen] = useState(false)
   const { data: allNotes } = useLineItemNotes(lineItemId)
 
   const others = allNotes?.filter((n: LineItemNote) => n.id !== excludeNoteId) ?? []
@@ -49,15 +60,9 @@ function NoteHistory({ lineItemId, excludeNoteId }: { lineItemId: number; exclud
 
   return (
     <div className="mt-2 border-t pt-2">
-      <button
-        onClick={() => setOpen((v) => !v)}
-        className="text-xs text-muted-foreground hover:text-foreground transition-colors"
-      >
-        {open ? '▲' : '▼'} 이력 {others.length}건
-      </button>
-      {open && (
-        <div className="mt-2 space-y-1.5">
-          {[...others].reverse().map((note: LineItemNote) => (
+      <p className="text-xs text-muted-foreground mb-1.5">이력 {others.length}건</p>
+      <div className="space-y-1.5">
+        {[...others].reverse().map((note: LineItemNote) => (
             <div key={note.id} className={`text-xs rounded px-2 py-1.5 bg-muted/40 ${note.is_resolved ? 'opacity-60' : ''}`}>
               <div className="flex items-center gap-1.5 flex-wrap mb-0.5">
                 {note.assignee && (
@@ -87,8 +92,7 @@ function NoteHistory({ lineItemId, excludeNoteId }: { lineItemId: number; exclud
               <p className="whitespace-pre-wrap text-foreground">{note.content}</p>
             </div>
           ))}
-        </div>
-      )}
+      </div>
     </div>
   )
 }
@@ -111,7 +115,9 @@ function InlineNoteForm({
 }) {
   const [open, setOpen] = useState(false)
   const [content, setContent] = useState('')
-  const [assignee, setAssignee] = useState<LineItemNoteAssignee>(currentTabAssignee)
+  const [assignee, setAssignee] = useState<LineItemNoteAssignee>(
+    currentTabAssignee === 'CS' ? '발주' : 'CS'
+  )
   const [noteType, setNoteType] = useState('')
   const { mutate: createNote, isPending } = useCreateLineItemNote(lineItemId, orderId)
 
@@ -220,33 +226,54 @@ function NoteCard({
   currentTabAssignee: LineItemNoteAssignee
 }) {
   const navigate = useNavigate()
+  const [expanded, setExpanded] = useState(false)
+
   return (
-    <div className="border rounded-lg p-4 bg-background hover:bg-muted/30 transition-colors">
-      <div className="flex items-start justify-between gap-4">
-        <div className="flex-1 min-w-0 space-y-1">
-          <div className="flex items-center gap-2 flex-wrap">
-            <button
-              onClick={() => navigate(`/orders/${note.order_id}`)}
-              className="font-mono text-sm font-medium hover:underline"
-            >
-              {note.order_name ?? `주문 #${note.order_id}`}
-            </button>
-            {note.assignee && (
-              <span
-                className={`text-xs px-1.5 py-0.5 rounded border font-medium ${
-                  ASSIGNEE_COLORS[note.assignee as LineItemNoteAssignee] ?? 'bg-gray-100 text-gray-700 border-gray-200'
-                }`}
-              >
-                {note.assignee}
-              </span>
-            )}
-            {note.note_type && (
-              <span className="text-xs px-1.5 py-0.5 rounded border font-medium bg-gray-100 text-gray-700 border-gray-200">
-                {note.note_type}
-              </span>
-            )}
-            <span className="text-xs text-muted-foreground">{formatDate(note.created_at)}</span>
-          </div>
+    <div className="border rounded-lg bg-background hover:bg-muted/30 transition-colors">
+      {/* 한 줄 요약 (항상 표시) */}
+      <div
+        className="flex items-center gap-2 px-4 py-2.5 cursor-pointer select-none"
+        onClick={() => setExpanded((v) => !v)}
+      >
+        <span className="text-xs text-muted-foreground">{expanded ? '▲' : '▼'}</span>
+        <button
+          onClick={(e) => { e.stopPropagation(); navigate(`/orders/${note.order_id}`) }}
+          className="font-mono text-sm font-medium hover:underline shrink-0"
+        >
+          {note.order_name ?? `주문 #${note.order_id}`}
+        </button>
+        {note.assignee && (
+          <span
+            className={`text-xs px-1.5 py-0.5 rounded border font-medium shrink-0 ${
+              ASSIGNEE_COLORS[note.assignee as LineItemNoteAssignee] ?? 'bg-gray-100 text-gray-700 border-gray-200'
+            }`}
+          >
+            {note.assignee}
+          </span>
+        )}
+        {note.note_type && (
+          <span className="text-xs px-1.5 py-0.5 rounded border font-medium bg-gray-100 text-gray-700 border-gray-200 shrink-0">
+            {note.note_type}
+          </span>
+        )}
+        <span className="text-sm truncate max-w-[200px] shrink-0">{note.content}</span>
+        <span className="text-muted-foreground shrink-0">|</span>
+        <span className="text-sm text-muted-foreground truncate flex-1 min-w-0">
+          {note.line_item_title ?? note.line_item_sku ?? ''}
+        </span>
+        <span className="text-xs text-muted-foreground shrink-0">{formatDate(note.created_at)}</span>
+        <button
+          onClick={(e) => { e.stopPropagation(); onResolve(note.id) }}
+          disabled={isResolving}
+          className="shrink-0 text-sm border rounded px-3 py-1 font-medium hover:bg-green-50 hover:border-green-400 hover:text-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          해결
+        </button>
+      </div>
+
+      {/* 펼쳐진 상세 */}
+      {expanded && (
+        <div className="px-4 pb-4 pt-1 border-t space-y-1">
           {(note.line_item_title || note.line_item_sku) && (
             <p className="text-xs text-muted-foreground">
               {note.line_item_title ?? '-'}
@@ -257,10 +284,7 @@ function NoteCard({
             <p className="text-xs text-muted-foreground">작성자: {note.author_username}</p>
           )}
           <p className="text-sm whitespace-pre-wrap text-foreground">{note.content}</p>
-
-          {/* 미해결 노트 이력 */}
           <NoteHistory lineItemId={note.line_item_id} excludeNoteId={note.id} />
-
           {showAddForm && (
             <InlineNoteForm
               lineItemId={note.line_item_id}
@@ -271,14 +295,7 @@ function NoteCard({
             />
           )}
         </div>
-        <button
-          onClick={() => onResolve(note.id)}
-          disabled={isResolving}
-          className="shrink-0 text-sm border rounded px-3 py-1.5 font-medium hover:bg-green-50 hover:border-green-400 hover:text-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          해결
-        </button>
-      </div>
+      )}
     </div>
   )
 }
@@ -290,6 +307,7 @@ export function LineItemNotesPage() {
   const [downloading, setDownloading] = useState<string | null>(null)
   const { data, isPending, isError } = useUnresolvedLineItemNotes()
   const { mutate: resolveNote, isPending: isResolving } = useResolveLineItemNote()
+  const queryClient = useQueryClient()
 
   const tabNotes = data ? filterNotes(data, activeTab) : []
 
@@ -297,6 +315,7 @@ export function LineItemNotesPage() {
     setDownloading(publisher)
     try {
       await downloadLineItemNotesExcel(publisher)
+      queryClient.invalidateQueries({ queryKey: LINE_ITEM_NOTES_QUERY_KEY })
     } finally {
       setDownloading(null)
     }
