@@ -145,9 +145,10 @@ function InlineNoteForm({
     return (
       <button
         onClick={() => setOpen(true)}
-        className="mt-2 text-xs text-muted-foreground hover:text-foreground transition-colors"
+        className="mt-2 flex items-center gap-1.5 text-xs font-medium text-blue-600 border border-blue-300 rounded-md px-2.5 py-1 hover:bg-blue-50 hover:border-blue-400 transition-colors"
       >
-        + 노트 추가
+        <span className="text-sm leading-none">+</span>
+        노트 추가
       </button>
     )
   }
