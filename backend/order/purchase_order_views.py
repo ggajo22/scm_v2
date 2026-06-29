@@ -792,11 +792,16 @@ _DISTRIBUTOR_CODE_TO_LABEL: dict[str, str] = {
     "bookseen": "북센",
     "kyobo": "교보",
     "choeumgoyuk": "처음교육",
-    "agape": "아가페",
-    "sungseoyunion": "성서유니온",
+    "agape": "타출판사",
+    "sungseoyunion": "타출판사",
     "warehouse": "재고",
     "warehouse_west": "재고(서부)",
     "check_required": "확인필요",
+}
+
+_OTHER_PUBLISHER_MEMO: dict[str, str] = {
+    "agape": "아가페",
+    "sungseoyunion": "성서유니온",
 }
 
 
@@ -917,6 +922,7 @@ class DailyReviewExcelView(APIView):
                 "publisher": kd.publisher if kd else None,
                 "candidate_basis": sel["candidate_basis"],
                 "selected": _DISTRIBUTOR_CODE_TO_LABEL.get(sel["selected_distributor"] or "", ""),
+                "other_publisher_memo": _OTHER_PUBLISHER_MEMO.get(sel["selected_distributor"] or ""),
             })
 
         file_bytes = generate_daily_review_excel(rows)
@@ -1070,15 +1076,6 @@ class UploadDailyReviewView(APIView):
                         update_fields = ["confirmed_distributor"]
                         for li in unordered_lis:
                             li.confirmed_distributor = distributor_code
-                        if note is not None:
-                            # Migrated to LineItemNote (SPEC-ORDER-010)
-                            for li in unordered_lis:
-                                LineItemNote.objects.create(
-                                    line_item=li,
-                                    content=note,
-                                    author=None,
-                                    assignee="발주",
-                                )
 
                         LineItem.objects.bulk_update(unordered_lis, update_fields)
 
