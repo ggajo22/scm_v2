@@ -639,6 +639,8 @@ def parse_daily_review_excel(file_bytes: bytes) -> list[dict]:
     sku_idx = header.index("ISBN")
     selected_idx = header.index("선택")
     note_idx = header.index("메모") if "메모" in header else None
+    bs_price_idx = header.index("북센 공급가") if "북센 공급가" in header else None
+    ky_price_idx = header.index("교보 공급가") if "교보 공급가" in header else None
 
     results = []
     for row in rows[1:]:
@@ -668,6 +670,29 @@ def parse_daily_review_excel(file_bytes: bytes) -> list[dict]:
             if raw_note is not None:
                 note = str(raw_note).strip() or None
 
-        results.append({"sku": sku, "distributor": distributor_code, "note_type": note_type, "note": note})
+        bs_price: float | None = None
+        if bs_price_idx is not None and len(row) > bs_price_idx:
+            raw = row[bs_price_idx]
+            try:
+                bs_price = float(raw) if raw not in (None, "") else None
+            except (ValueError, TypeError):
+                bs_price = None
+
+        ky_price: float | None = None
+        if ky_price_idx is not None and len(row) > ky_price_idx:
+            raw = row[ky_price_idx]
+            try:
+                ky_price = float(raw) if raw not in (None, "") else None
+            except (ValueError, TypeError):
+                ky_price = None
+
+        results.append({
+            "sku": sku,
+            "distributor": distributor_code,
+            "note_type": note_type,
+            "note": note,
+            "bs_price": bs_price,
+            "ky_price": ky_price,
+        })
 
     return results

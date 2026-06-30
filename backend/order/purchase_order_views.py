@@ -1054,15 +1054,20 @@ class UploadDailyReviewView(APIView):
 
                     else:
                         # Non-warehouse: existing flow — create PurchaseOrder
+                        # Prefer prices from the Excel file; fall back to DB
                         unit_price = None
                         if distributor_code == "booxen":
-                            bd = BooxenData.objects.filter(sku=sku).first()
-                            if bd:
-                                unit_price = bd.price
+                            unit_price = item.get("bs_price")
+                            if unit_price is None:
+                                bd = BooxenData.objects.filter(sku=sku).first()
+                                if bd:
+                                    unit_price = bd.price
                         elif distributor_code == "kyobo":
-                            kd = KyoboData.objects.filter(sku=sku).first()
-                            if kd:
-                                unit_price = kd.price
+                            unit_price = item.get("ky_price")
+                            if unit_price is None:
+                                kd = KyoboData.objects.filter(sku=sku).first()
+                                if kd:
+                                    unit_price = kd.price
 
                         po = PurchaseOrder.objects.create(
                             sku=sku,
