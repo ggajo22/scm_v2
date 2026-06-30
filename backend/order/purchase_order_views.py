@@ -746,9 +746,10 @@ class ConfirmOrderView(APIView):
                     created_ids.append(po.pk)
 
                     # REQ-CON-012: update confirmed_distributor on all linked LineItems
-                    update_fields = ["confirmed_distributor"]
+                    update_fields = ["confirmed_distributor", "confirmed_price"]
                     for li in unordered_lis:
                         li.confirmed_distributor = dist
+                        li.confirmed_price = unit_price
 
                     # REQ-CON-022/023: update purchase_status only when explicitly provided
                     if purchase_status is not None:
@@ -1073,9 +1074,10 @@ class UploadDailyReviewView(APIView):
                         )
                         po.line_items.add(*unordered_lis)
 
-                        update_fields = ["confirmed_distributor"]
+                        update_fields = ["confirmed_distributor", "confirmed_price"]
                         for li in unordered_lis:
                             li.confirmed_distributor = distributor_code
+                            li.confirmed_price = unit_price
 
                         LineItem.objects.bulk_update(unordered_lis, update_fields)
 
