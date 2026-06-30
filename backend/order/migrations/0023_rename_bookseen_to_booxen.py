@@ -49,12 +49,12 @@ class Migration(migrations.Migration):
             sql=[
                 "UPDATE orders_purchaseorder SET distributor = 'booxen' WHERE distributor = 'bookseen';",
                 "UPDATE orders_vendorcomparison SET selected_distributor = 'booxen' WHERE selected_distributor = 'bookseen';",
-                "UPDATE orders_purchaseorderlineitem SET confirmed_distributor = 'booxen' WHERE confirmed_distributor = 'bookseen';",
+                "UPDATE orders_line_item SET confirmed_distributor = 'booxen' WHERE confirmed_distributor = 'bookseen';",
             ],
             reverse_sql=[
                 "UPDATE orders_purchaseorder SET distributor = 'bookseen' WHERE distributor = 'booxen';",
                 "UPDATE orders_vendorcomparison SET selected_distributor = 'bookseen' WHERE selected_distributor = 'booxen';",
-                "UPDATE orders_purchaseorderlineitem SET confirmed_distributor = 'bookseen' WHERE confirmed_distributor = 'booxen';",
+                "UPDATE orders_line_item SET confirmed_distributor = 'bookseen' WHERE confirmed_distributor = 'booxen';",
             ],
         ),
     ]
