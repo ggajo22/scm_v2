@@ -39,11 +39,11 @@ from .excel_utils import (
     parse_daily_review_excel,
     parse_vendor_excel,
 )
-from .models import BookseenData, DistributorVendorRule, KyoboData, LineItem, LineItemNote, PurchaseOrder, Refund, ShopifySkuSetMapping, VendorComparison, WarehouseStock
+from .models import BooxenData, DistributorVendorRule, KyoboData, LineItem, LineItemNote, PurchaseOrder, Refund, ShopifySkuSetMapping, VendorComparison, WarehouseStock
 
-VALID_DISTRIBUTORS = {"bookseen", "kyobo", "choeumgoyuk", "agape", "sungseoyunion",
+VALID_DISTRIBUTORS = {"booxen", "kyobo", "choeumgoyuk", "agape", "sungseoyunion",
                       "warehouse_korea", "warehouse_ca", "warehouse_nj"}
-VENDOR_FILE_DISTRIBUTORS = {"bookseen", "kyobo"}
+VENDOR_FILE_DISTRIBUTORS = {"booxen", "kyobo"}
 VENDOR_RULE_DISTRIBUTORS = {"choeumgoyuk", "agape", "sungseoyunion"}
 
 EXCEL_CONTENT_TYPE = (
@@ -249,7 +249,7 @@ class UploadVendorFileView(APIView):
     """
     POST /api/purchase-orders/upload-vendor-file/
 
-    Multipart: distributor (bookseen|kyobo) + file (.xlsx/.xls)
+    Multipart: distributor (booxen|kyobo) + file (.xlsx/.xls)
     Parses the Excel file and upserts VendorComparison records.
     """
 
@@ -305,7 +305,7 @@ class UploadVendorFileView(APIView):
             raw_total = row.get("total_price")
             total_price = Decimal(str(raw_total)) if raw_total is not None else None
 
-            if distributor == "bookseen":
+            if distributor == "booxen":
                 defaults = {
                     "available": available,
                     "price": price,
@@ -314,7 +314,7 @@ class UploadVendorFileView(APIView):
                     "status": vendor_status,
                     "arrival": arrival,
                 }
-                BookseenData.objects.update_or_create(sku=sku, defaults=defaults)
+                BooxenData.objects.update_or_create(sku=sku, defaults=defaults)
             else:  # kyobo
                 defaults = {
                     "available": available,
@@ -404,8 +404,8 @@ class RunComparisonView(APIView):
             wstock_map.setdefault(s.isbn, {})
             wstock_map[s.isbn][s.location] = s.quantity
 
-        bs_map: dict[str, BookseenData] = {
-            bd.sku: bd for bd in BookseenData.objects.filter(sku__in=all_skus)
+        bs_map: dict[str, BooxenData] = {
+            bd.sku: bd for bd in BooxenData.objects.filter(sku__in=all_skus)
         }
         ky_map: dict[str, KyoboData] = {
             kd.sku: kd for kd in KyoboData.objects.filter(sku__in=all_skus)
@@ -420,10 +420,10 @@ class RunComparisonView(APIView):
 
             if bs is not None or ky is not None:
                 vc_ns = SimpleNamespace(
-                    bookseen_price=bs.price if bs else None,
-                    bookseen_stock=bs.stock if bs else None,
-                    bookseen_returnable=bs.returnable if bs else None,
-                    bookseen_status=bs.status if bs else None,
+                    booxen_price=bs.price if bs else None,
+                    booxen_stock=bs.stock if bs else None,
+                    booxen_returnable=bs.returnable if bs else None,
+                    booxen_status=bs.status if bs else None,
                     kyobo_price=ky.price if ky else None,
                     kyobo_stock=ky.stock if ky else None,
                     kyobo_returnable=ky.returnable if ky else None,
@@ -450,9 +450,9 @@ class RunComparisonView(APIView):
                 # Confirmed price on LineItem
                 now = timezone.now()
                 selected = sel["selected_distributor"]
-                if selected == "bookseen":
+                if selected == "booxen":
                     confirmed_price = bs.price if bs else None
-                    confirmed_dist = "bookseen"
+                    confirmed_dist = "booxen"
                 elif selected == "kyobo":
                     confirmed_price = ky.price if ky else None
                     confirmed_dist = "kyobo"
@@ -472,9 +472,9 @@ class RunComparisonView(APIView):
                     "title": data["title"],
                     "total_qty": total_qty,
                     "line_items": data["line_items"],
-                    "bookseen_available": bs.available if bs else None,
-                    "bookseen_price": str(bs.price) if bs and bs.price is not None else None,
-                    "bookseen_stock": bs.stock if bs else None,
+                    "booxen_available": bs.available if bs else None,
+                    "booxen_price": str(bs.price) if bs and bs.price is not None else None,
+                    "booxen_stock": bs.stock if bs else None,
                     "kyobo_available": ky.available if ky else None,
                     "kyobo_price": str(ky.price) if ky and ky.price is not None else None,
                     "kyobo_stock": ky.stock if ky else None,
@@ -491,9 +491,9 @@ class RunComparisonView(APIView):
                     "title": data["title"],
                     "total_qty": total_qty,
                     "line_items": data["line_items"],
-                    "bookseen_available": None,
-                    "bookseen_price": None,
-                    "bookseen_stock": None,
+                    "booxen_available": None,
+                    "booxen_price": None,
+                    "booxen_stock": None,
                     "kyobo_available": None,
                     "kyobo_price": None,
                     "kyobo_stock": None,
@@ -528,8 +528,8 @@ class VendorComparisonView(APIView):
         all_skus = [vc.sku for vc in comparisons]
 
         # Pre-fetch vendor data from the new split tables
-        bs_map: dict[str, BookseenData] = {
-            bd.sku: bd for bd in BookseenData.objects.filter(sku__in=all_skus)
+        bs_map: dict[str, BooxenData] = {
+            bd.sku: bd for bd in BooxenData.objects.filter(sku__in=all_skus)
         }
         ky_map: dict[str, KyoboData] = {
             kd.sku: kd for kd in KyoboData.objects.filter(sku__in=all_skus)
@@ -560,10 +560,10 @@ class VendorComparisonView(APIView):
             wstock = stock_map.get(isbn, {"korea": 0, "ca": 0, "nj": 0})
 
             vc_ns = SimpleNamespace(
-                bookseen_price=bs.price if bs else None,
-                bookseen_stock=bs.stock if bs else None,
-                bookseen_returnable=bs.returnable if bs else None,
-                bookseen_status=bs.status if bs else None,
+                booxen_price=bs.price if bs else None,
+                booxen_stock=bs.stock if bs else None,
+                booxen_returnable=bs.returnable if bs else None,
+                booxen_status=bs.status if bs else None,
                 kyobo_price=ky.price if ky else None,
                 kyobo_stock=ky.stock if ky else None,
                 kyobo_returnable=ky.returnable if ky else None,
@@ -589,7 +589,7 @@ class VendorComparisonView(APIView):
                 ]
             )
 
-            # Serialize bookseen_returnable as "가능"/"불가"/null
+            # Serialize booxen_returnable as "가능"/"불가"/null
             bs_returnable = bs.returnable if bs else None
             if bs_returnable is True:
                 bs_returnable_display = "가능"
@@ -610,12 +610,12 @@ class VendorComparisonView(APIView):
             results.append(
                 {
                     "sku": vc.sku,
-                    "bookseen_available": bs.available if bs else None,
-                    "bookseen_price": str(bs.price) if bs and bs.price is not None else None,
-                    "bookseen_stock": bs.stock if bs else None,
-                    "bookseen_returnable": bs_returnable_display,
-                    "bookseen_status": bs.status if bs else None,
-                    "bookseen_arrival": bs.arrival if bs else None,
+                    "booxen_available": bs.available if bs else None,
+                    "booxen_price": str(bs.price) if bs and bs.price is not None else None,
+                    "booxen_stock": bs.stock if bs else None,
+                    "booxen_returnable": bs_returnable_display,
+                    "booxen_status": bs.status if bs else None,
+                    "booxen_arrival": bs.arrival if bs else None,
                     "kyobo_available": ky.available if ky else None,
                     "kyobo_price": str(ky.price) if ky and ky.price is not None else None,
                     "kyobo_stock": ky.stock if ky else None,
@@ -789,7 +789,7 @@ class ConfirmOrderView(APIView):
 # ---------------------------------------------------------------------------
 
 _DISTRIBUTOR_CODE_TO_LABEL: dict[str, str] = {
-    "bookseen": "북센",
+    "booxen": "북센",
     "kyobo": "교보",
     "choeumgoyuk": "처음교육",
     "agape": "타출판사",
@@ -845,7 +845,7 @@ class DailyReviewExcelView(APIView):
         line_items = [li for li in line_items if (li.quantity or 0) - li.refunded_qty > 0]
 
         skus = list({li.sku for li in line_items if li.sku})
-        bookseen_map = {bd.sku: bd for bd in BookseenData.objects.filter(sku__in=skus)}
+        booxen_map = {bd.sku: bd for bd in BooxenData.objects.filter(sku__in=skus)}
         kyobo_map = {kd.sku: kd for kd in KyoboData.objects.filter(sku__in=skus)}
 
         # Real-time: vendor rules and warehouse stocks for auto-selection
@@ -863,7 +863,7 @@ class DailyReviewExcelView(APIView):
         rows = []
         for li in line_items:
             sku = li.sku
-            bd = bookseen_map.get(sku)
+            bd = booxen_map.get(sku)
             kd = kyobo_map.get(sku)
 
             wstock = stock_map.get(sku, {"korea": 0, "ca": 0, "nj": 0})
@@ -878,10 +878,10 @@ class DailyReviewExcelView(APIView):
 
             # Real-time auto-selection using current rules and stocks
             vc_ns = SimpleNamespace(
-                bookseen_price=bd.price if bd else None,
-                bookseen_stock=bd.stock if bd else None,
-                bookseen_returnable=bd.returnable if bd else None,
-                bookseen_status=bd.status if bd else None,
+                booxen_price=bd.price if bd else None,
+                booxen_stock=bd.stock if bd else None,
+                booxen_returnable=bd.returnable if bd else None,
+                booxen_status=bd.status if bd else None,
                 kyobo_price=kd.price if kd else None,
                 kyobo_stock=kd.stock if kd else None,
                 kyobo_returnable=kd.returnable if kd else None,
@@ -1054,8 +1054,8 @@ class UploadDailyReviewView(APIView):
                     else:
                         # Non-warehouse: existing flow — create PurchaseOrder
                         unit_price = None
-                        if distributor_code == "bookseen":
-                            bd = BookseenData.objects.filter(sku=sku).first()
+                        if distributor_code == "booxen":
+                            bd = BooxenData.objects.filter(sku=sku).first()
                             if bd:
                                 unit_price = bd.price
                         elif distributor_code == "kyobo":

@@ -232,7 +232,7 @@ class PurchaseOrder(models.Model):
     """Purchase order issued to a distributor for one or more SKUs."""
 
     DISTRIBUTOR_CHOICES = [
-        ("bookseen", "북센"),
+        ("booxen", "북센"),
         ("kyobo", "교보"),
         ("choeumgoyuk", "처음교육"),
         ("agape", "아가페"),
@@ -268,8 +268,8 @@ class PurchaseOrder(models.Model):
         return f"PurchaseOrder({self.sku}, {self.distributor}, qty={self.quantity})"
 
 
-class BookseenData(models.Model):
-    """Bookseen distributor vendor data, keyed by SKU."""
+class BooxenData(models.Model):
+    """Booxen distributor vendor data, keyed by SKU."""
 
     sku = models.CharField(max_length=255, unique=True)
     available = models.BooleanField(null=True, blank=True)
@@ -285,7 +285,7 @@ class BookseenData(models.Model):
         indexes = [models.Index(fields=["sku"])]
 
     def __str__(self) -> str:
-        return f"BookseenData({self.sku})"
+        return f"BooxenData({self.sku})"
 
 
 class KyoboData(models.Model):
@@ -314,7 +314,7 @@ class VendorComparison(models.Model):
     """Stores auto-selection results (selected distributor) for a SKU."""
 
     DISTRIBUTOR_CHOICES = [
-        ("bookseen", "북센"),
+        ("booxen", "북센"),
         ("kyobo", "교보"),
         ("warehouse", "재고"),
         ("warehouse_west", "재고-서부확인"),

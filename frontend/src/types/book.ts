@@ -150,6 +150,6 @@ export interface ShopifyStoreInfo {
 }
 
 export interface ShopifyLiveInfoResponse {
-  booksen: ShopifyStoreInfo
+  booxen: ShopifyStoreInfo
   etoile: ShopifyStoreInfo
 }

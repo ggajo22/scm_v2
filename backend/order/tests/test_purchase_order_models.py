@@ -2,7 +2,7 @@ import pytest
 from django.db import IntegrityError
 
 from order.models import (
-    BookseenData,
+    BooxenData,
     Customer,
     DistributorVendorRule,
     KyoboData,
@@ -46,7 +46,7 @@ class TestPurchaseOrder:
         po = PurchaseOrder.objects.create(
             sku="SKU-001",
             title="Some Book",
-            distributor="bookseen",
+            distributor="booxen",
             quantity=10,
         )
         assert po.pk is not None
@@ -71,7 +71,7 @@ class TestPurchaseOrder:
         po = PurchaseOrder.objects.create(
             sku="SKU-003",
             title="Book A",
-            distributor="bookseen",
+            distributor="booxen",
             quantity=3,
         )
         po.line_items.add(li1, li2)
@@ -97,7 +97,7 @@ class TestPurchaseOrder:
 
     def test_distributor_choices(self):
         """All four distributor values should be accepted without error."""
-        valid_distributors = ["bookseen", "kyobo", "choeumgoyuk", "agape"]
+        valid_distributors = ["booxen", "kyobo", "choeumgoyuk", "agape"]
         for i, dist in enumerate(valid_distributors):
             po = PurchaseOrder.objects.create(
                 sku=f"SKU-DIST-{i}",
@@ -123,7 +123,7 @@ class TestPurchaseOrder:
         po = PurchaseOrder.objects.create(
             sku="SKU-006",
             title="No Price Book",
-            distributor="bookseen",
+            distributor="booxen",
             quantity=1,
             unit_price=None,
         )
@@ -156,7 +156,7 @@ class TestVendorComparison:
         """Basic creation should persist the record with selection metadata."""
         vc = VendorComparison.objects.create(
             sku="ISBN-9780001",
-            selected_distributor="bookseen",
+            selected_distributor="booxen",
         )
         assert vc.pk is not None
         assert vc.sku == "ISBN-9780001"
@@ -187,12 +187,12 @@ class TestVendorComparison:
 
 
 @pytest.mark.django_db
-class TestBookseenData:
-    def test_create_bookseen_data(self):
-        """BookseenData stores bookseen vendor info independently."""
+class TestBooxenData:
+    def test_create_booxen_data(self):
+        """BooxenData stores booxen vendor info independently."""
         from decimal import Decimal
 
-        bd = BookseenData.objects.create(
+        bd = BooxenData.objects.create(
             sku="ISBN-9780010",
             available=True,
             price=Decimal("15000.00"),
@@ -204,14 +204,14 @@ class TestBookseenData:
         assert bd.stock == 5
 
     def test_sku_uniqueness(self):
-        """BookseenData SKU must be unique."""
-        BookseenData.objects.create(sku="ISBN-9780011")
+        """BooxenData SKU must be unique."""
+        BooxenData.objects.create(sku="ISBN-9780011")
         with pytest.raises(IntegrityError):
-            BookseenData.objects.create(sku="ISBN-9780011")
+            BooxenData.objects.create(sku="ISBN-9780011")
 
     def test_db_table_name(self):
         """Table name must match declared db_table."""
-        assert BookseenData._meta.db_table == "orders_booksendata"
+        assert BooxenData._meta.db_table == "orders_booksendata"
 
 
 @pytest.mark.django_db

@@ -4,7 +4,7 @@ belonging to specified order numbers.
 
 Usage:
     python manage.py process_purchase_orders --orders 1001 1002 1003
-    python manage.py process_purchase_orders --orders 1001 --distributor bookseen
+    python manage.py process_purchase_orders --orders 1001 --distributor booxen
     python manage.py process_purchase_orders --orders 1001 1002 --dry-run
 """
 
@@ -14,7 +14,7 @@ from django.db.models import Sum
 
 from order.models import DistributorVendorRule, LineItem, Order, PurchaseOrder
 
-VALID_DISTRIBUTORS = {"bookseen", "kyobo", "choeumgoyuk", "agape"}
+VALID_DISTRIBUTORS = {"booxen", "kyobo", "choeumgoyuk", "agape"}
 
 
 class Command(BaseCommand):
@@ -130,8 +130,8 @@ class Command(BaseCommand):
             sku_map[sku]["total_quantity"] += li.quantity or 0
             sku_map[sku]["line_items"].append(li)
 
-        # Resolve distributor per SKU — fallback to bookseen if no rule and no --distributor
-        DEFAULT_DISTRIBUTOR = "bookseen"
+        # Resolve distributor per SKU — fallback to booxen if no rule and no --distributor
+        DEFAULT_DISTRIBUTOR = "booxen"
         skus_to_create: list[dict] = []
 
         for sku, info in sku_map.items():

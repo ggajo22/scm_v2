@@ -8,6 +8,17 @@ import type { LineItemNote, LineItemNoteAssignee } from '@/types/order'
 import { ASSIGNEE_NOTE_TYPES } from '@/types/order'
 import { api } from '@/lib/axios'
 
+const DISTRIBUTOR_LABELS: Record<string, string> = {
+  booxen: '북센',
+  kyobo: '교보',
+  choeumgoyuk: '처음교육',
+  agape: '아가페',
+  sungseoyunion: '성서유니온',
+  warehouse_korea: '창고(한국)',
+  warehouse_ca: '창고(CA)',
+  warehouse_nj: '창고(NJ)',
+}
+
 const ASSIGNEE_CHOICES: LineItemNoteAssignee[] = ['CS', '발주', '한국창고', '미국창고']
 
 const ASSIGNEE_COLORS: Record<LineItemNoteAssignee, string> = {
@@ -294,7 +305,9 @@ export function OrderDetailPage() {
                           : '—'}
                       </td>
                       <td className="py-2 px-3">
-                        {item.confirmed_distributor !== null ? item.confirmed_distributor : '—'}
+                        {item.confirmed_distributor !== null
+                          ? (DISTRIBUTOR_LABELS[item.confirmed_distributor] ?? item.confirmed_distributor)
+                          : '—'}
                       </td>
                       <td className="py-2 px-3 text-center">
                         <button

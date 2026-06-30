@@ -15,7 +15,7 @@ from book import shopify_client
 from book.constants import ERROR_STATUSES, ETOILE_STATUS_LABELS, LISTED_STATUSES, STATUS_LABELS, WAITING_STATUSES
 from book.models import (
     BookNote,
-    Booksen_category,
+    Booxen_category,
     EtoileBookInfo,
     EtoileBookInven,
     EtoileShopifyProduct,
@@ -172,13 +172,13 @@ class DashboardMetricsView(APIView):
 
 
 # ---------------------------------------------------------------------------
-# Booksen category cascade API
+# Booxen category cascade API
 # ---------------------------------------------------------------------------
 
-class BooksenCategoryListView(APIView):
+class BooxenCategoryListView(APIView):
     """
-    GET /api/book/booksen-categories/?top_code=<int>
-    Returns Booksen_category entries with the given top_category_code.
+    GET /api/book/booxen-categories/?top_code=<int>
+    Returns Booxen_category entries with the given top_category_code.
     top_code=0 returns top-level categories (rank 2 / 대).
     """
     authentication_classes = [JWTAuthentication]
@@ -190,7 +190,7 @@ class BooksenCategoryListView(APIView):
         except (TypeError, ValueError):
             return Response({"detail": "top_code must be an integer."}, status=400)
 
-        qs = Booksen_category.objects.filter(top_category_code=top_code)
+        qs = Booxen_category.objects.filter(top_category_code=top_code)
         if top_code == 0:
             qs = qs.filter(category_rank=1)
         categories = qs.order_by("category_code").values(
@@ -623,11 +623,11 @@ class FastListingSkuView(APIView):
 
 # @MX:ANCHOR: [AUTO] ShopifyLiveInfoView.get — real-time Shopify product info entry point
 # @MX:REASON: SPEC-SHOPIFY-INFO-001 REQ-SHPINFO-001; called on every BookDetailPage load
-# for both Booksen and Etoile stores simultaneously
+# for both Booxen and Etoile stores simultaneously
 class ShopifyLiveInfoView(APIView):
     """
     GET /api/book/{pk}/shopify-live-info/
-    Returns real-time Shopify product info for Booksen and Etoile stores.
+    Returns real-time Shopify product info for Booxen and Etoile stores.
     SPEC-SHOPIFY-INFO-001: REQ-SHPINFO-001 through REQ-SHPINFO-014
     """
 
@@ -640,8 +640,8 @@ class ShopifyLiveInfoView(APIView):
         except Inven.DoesNotExist:
             return Response({"detail": "Not found."}, status=404)
 
-        # Booksen: Inven → Shopify_product (first match)
-        booksen_product = Shopify_product.objects.filter(inven=inven).first()
+        # Booxen: Inven → Shopify_product (first match)
+        booxen_product = Shopify_product.objects.filter(inven=inven).first()
 
         # Etoile: Inven → EtoileBookInven → EtoileShopifyProduct
         etoile_sp = None
@@ -651,13 +651,13 @@ class ShopifyLiveInfoView(APIView):
         except EtoileBookInven.DoesNotExist:
             pass
 
-        booksen_domain = settings.SHOPIFY_BOOKSEN_DOMAIN
-        booksen_token = settings.SHOPIFY_BOOKSEN_TOKEN
+        booxen_domain = settings.SHOPIFY_BOOXEN_DOMAIN
+        booxen_token = settings.SHOPIFY_BOOXEN_TOKEN
         etoile_domain = settings.SHOPIFY_ETOILE_DOMAIN
         etoile_token = settings.SHOPIFY_ETOILE_TOKEN
 
-        def get_booksen() -> dict:
-            if not booksen_product:
+        def get_booxen() -> dict:
+            if not booxen_product:
                 return {
                     "registered": False,
                     "product_id": None,
@@ -668,15 +668,15 @@ class ShopifyLiveInfoView(APIView):
                     "error": None,
                 }
             info = shopify_client.fetch_store_live_info(
-                booksen_domain,
-                booksen_token,
-                booksen_product.product_id,
-                booksen_product.variant_id,
+                booxen_domain,
+                booxen_token,
+                booxen_product.product_id,
+                booxen_product.variant_id,
             )
             return {
                 "registered": True,
-                "product_id": booksen_product.product_id,
-                "variant_id": booksen_product.variant_id,
+                "product_id": booxen_product.product_id,
+                "variant_id": booxen_product.variant_id,
                 **info,
             }
 
@@ -705,12 +705,12 @@ class ShopifyLiveInfoView(APIView):
             }
 
         with ThreadPoolExecutor(max_workers=2) as executor:
-            f_booksen = executor.submit(get_booksen)
+            f_booxen = executor.submit(get_booxen)
             f_etoile = executor.submit(get_etoile)
-            booksen_data = f_booksen.result()
+            booxen_data = f_booxen.result()
             etoile_data = f_etoile.result()
 
-        return Response({"booksen": booksen_data, "etoile": etoile_data})
+        return Response({"booxen": booxen_data, "etoile": etoile_data})
 
 
 # SPEC-ETOILE-DASHBOARD-001: etoile inventory status dashboard

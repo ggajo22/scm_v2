@@ -33,8 +33,8 @@ def set_shopify_product_status_for_inven(inven_id: int, status: str) -> bool:
 
     from book.shopify_client import SHOPIFY_API_VERSION
 
-    domain = settings.SHOPIFY_BOOKSEN_DOMAIN
-    token = settings.SHOPIFY_BOOKSEN_TOKEN
+    domain = settings.SHOPIFY_BOOXEN_DOMAIN
+    token = settings.SHOPIFY_BOOXEN_TOKEN
 
     if not domain or not token:
         return False

@@ -8,7 +8,7 @@ import {
 import type { UploadDailyReviewResponse } from '@/services/purchaseOrderApi'
 
 const DISTRIBUTOR_DISPLAY_NAMES: Record<string, string> = {
-  bookseen: '북센',
+  booxen: '북센',
   kyobo: '교보',
   choeumgoyuk: '처음교육',
   agape: '아가페',

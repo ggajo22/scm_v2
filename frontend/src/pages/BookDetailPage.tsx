@@ -208,24 +208,24 @@ function BasicInfoSection({ info, bookId }: { info: BookInfo; bookId: number }) 
 // Section: 북센 카테고리 (cascading dropdowns)
 // ---------------------------------------------------------------------------
 
-interface BooksenCategoryItem {
+interface BooxenCategoryItem {
   category_code: number
   category_name: string
   category_rank: number
 }
 
-function useBooksenCategories(topCode: number) {
-  return useQuery<BooksenCategoryItem[]>({
-    queryKey: ['booksen-categories', topCode],
+function useBooxenCategories(topCode: number) {
+  return useQuery<BooxenCategoryItem[]>({
+    queryKey: ['booxen-categories', topCode],
     queryFn: async () => {
-      const res = await api.get(`/api/book/booksen-categories/?top_code=${topCode}`)
+      const res = await api.get(`/api/book/booxen-categories/?top_code=${topCode}`)
       return res.data
     },
     staleTime: 1000 * 60 * 10,
   })
 }
 
-function BooksenCategorySection({ info, bookId }: { info: BookInfo; bookId: number }) {
+function BooxenCategorySection({ info, bookId }: { info: BookInfo; bookId: number }) {
   const [cd1, setCd1] = useState(info.booxen_cate_cd1)
   const [cd2, setCd2] = useState(info.booxen_cate_cd2)
   const [cd3, setCd3] = useState(info.booxen_cate_cd3)
@@ -236,9 +236,9 @@ function BooksenCategorySection({ info, bookId }: { info: BookInfo; bookId: numb
     setCd3(info.booxen_cate_cd3)
   }, [info])
 
-  const { data: level1 = [] } = useBooksenCategories(0)
-  const { data: level2 = [] } = useBooksenCategories(cd1)
-  const { data: level3 = [] } = useBooksenCategories(cd2)
+  const { data: level1 = [] } = useBooxenCategories(0)
+  const { data: level2 = [] } = useBooxenCategories(cd1)
+  const { data: level3 = [] } = useBooxenCategories(cd2)
 
   const mutation = useUpdateBookInfo(bookId)
 
@@ -263,7 +263,7 @@ function BooksenCategorySection({ info, bookId }: { info: BookInfo; bookId: numb
     placeholder,
   }: {
     value: number
-    options: BooksenCategoryItem[]
+    options: BooxenCategoryItem[]
     onChange: (val: string) => void
     disabled?: boolean
     placeholder: string
@@ -738,7 +738,7 @@ function ShopifyLiveInfoSection({
   etoileInfo: import('@/types/book').EtoileInfo | null | undefined
 }) {
   const { data, isPending, isError } = useShopifyLiveInfo(bookId)
-  const booksenMutation = useUpdateShopifyStatus(bookId)
+  const booxenMutation = useUpdateShopifyStatus(bookId)
   const etoileMutation = useUpdateEtoileShopifyStatus(bookId)
   const tagsMutation = useUpdateEtoileTags(bookId)
 
@@ -772,7 +772,7 @@ function ShopifyLiveInfoSection({
     mutation: ReturnType<typeof useUpdateShopifyStatus>
     showTags?: boolean
   }> = [
-    { label: 'GIMSSINE', info: data.booksen, mutation: booksenMutation },
+    { label: 'GIMSSINE', info: data.booxen, mutation: booxenMutation },
     ...(data.etoile.registered
       ? [{ label: 'ETOILE', info: data.etoile, mutation: etoileMutation, showTags: !!etoileInfo }]
       : []),
@@ -920,7 +920,7 @@ export function BookDetailPage() {
 
           {/* Row 2: 카테고리 2열 */}
           <div className="grid grid-cols-2 gap-6 items-start">
-            <BooksenCategorySection info={data.info} bookId={data.id} />
+            <BooxenCategorySection info={data.info} bookId={data.id} />
             <KyboCategorySection info={data.info} bookId={data.id} />
           </div>
 

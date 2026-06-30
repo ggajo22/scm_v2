@@ -572,7 +572,7 @@ class TestUploadResponseConfirmedByDistributor:
         assert entries[0]["quantity"] == 3
 
     def test_non_warehouse_entry_appears_in_confirmed_by_distributor(self, auth_client):
-        """Non-warehouse SKU (bookseen) appears under bookseen key."""
+        """Non-warehouse SKU (booxen) appears under booxen key."""
         sku = "9788901299009"
         order = _make_order(shopify_order_id=87003)
         _make_line_item(order, sku=sku, quantity=2, title="북센 도서", shopify_line_item_id=1)
@@ -586,9 +586,9 @@ class TestUploadResponseConfirmedByDistributor:
         assert res.status_code == 201
 
         cbd = res.data["confirmed_by_distributor"]
-        assert "bookseen" in cbd
-        assert len(cbd["bookseen"]) == 1
-        assert cbd["bookseen"][0]["sku"] == sku
+        assert "booxen" in cbd
+        assert len(cbd["booxen"]) == 1
+        assert cbd["booxen"][0]["sku"] == sku
 
     def test_mixed_upload_groups_correctly(self, auth_client):
         """Mixed warehouse + regular upload groups all SKUs correctly."""
@@ -611,7 +611,7 @@ class TestUploadResponseConfirmedByDistributor:
 
         cbd = res.data["confirmed_by_distributor"]
         assert "warehouse_nj" in cbd
-        assert "bookseen" in cbd
+        assert "booxen" in cbd
         assert res.data["confirmed_count"] == 2
 
 

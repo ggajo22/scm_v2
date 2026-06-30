@@ -6,7 +6,7 @@ const DISTRIBUTOR_OPTIONS = ['북센', '교보'] as const
 type Distributor = (typeof DISTRIBUTOR_OPTIONS)[number]
 
 const DISTRIBUTOR_API_KEY: Record<Distributor, string> = {
-  '북센': 'bookseen',
+  '북센': 'booxen',
   '교보': 'kyobo',
 }
 

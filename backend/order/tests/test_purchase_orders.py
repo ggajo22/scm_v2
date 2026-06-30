@@ -15,7 +15,7 @@ Coverage targets:
   SC-PO-015  invalid file format → 400
   EC-PO-001  empty skus → 400
   EC-PO-002  no unordered items → 200 empty
-  EC-PO-003  only bookseen uploaded → kyobo fields null
+  EC-PO-003  only booxen uploaded → kyobo fields null
   EC-PO-004  delete non-existent rule → 404
   EC-PO-005  invalid distributor → 400
   EC-PO-006  missing Excel columns → 422
@@ -34,7 +34,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from types import SimpleNamespace
 
 from order.models import (
-    BookseenData,
+    BooxenData,
     DistributorVendorRule,
     KyoboData,
     LineItem,
@@ -111,7 +111,7 @@ def _make_line_item(
 
 
 def _make_excel(rows: list[list], with_header: bool = True) -> bytes:
-    """Build a generic .xlsx file (bookseen-generic format: header row + data)."""
+    """Build a generic .xlsx file (booxen-generic format: header row + data)."""
     wb = openpyxl.Workbook()
     ws = wb.active
     if with_header:
@@ -183,7 +183,7 @@ class TestUnauthorizedAccess:
         assert res.status_code == 401
 
     def test_generate_requires_auth(self, anon_client):
-        res = anon_client.post(GENERATE_URL, data={"distributor": "bookseen", "skus": []}, format="json")
+        res = anon_client.post(GENERATE_URL, data={"distributor": "booxen", "skus": []}, format="json")
         assert res.status_code == 401
 
     def test_upload_requires_auth(self, anon_client):
@@ -244,7 +244,7 @@ class TestUnorderedItemsView:
         order = _make_order(shopify_order_id=91003)
         li = _make_line_item(order, shopify_line_item_id=1, sku="SKU-B")
         po = PurchaseOrder.objects.create(
-            sku="SKU-B", title="Book B", distributor="bookseen", quantity=2
+            sku="SKU-B", title="Book B", distributor="booxen", quantity=2
         )
         po.line_items.add(li)
 
@@ -347,7 +347,7 @@ class TestGenerateOrderFileView:
     def test_returns_excel_for_valid_skus(self, auth_client):
         """SC-PO-002: Valid SKUs → returns Excel binary with correct Content-Type."""
         self._setup_sku("9788901234567", "Great Gatsby", 3)
-        payload = {"distributor": "bookseen", "skus": ["9788901234567"]}
+        payload = {"distributor": "booxen", "skus": ["9788901234567"]}
         res = auth_client.post(GENERATE_URL, data=payload, format="json")
         assert res.status_code == 200
         assert EXCEL_CONTENT_TYPE in res["Content-Type"]
@@ -370,13 +370,13 @@ class TestGenerateOrderFileView:
 
     def test_empty_skus_returns_400(self, auth_client):
         """EC-PO-001: skus=[] → HTTP 400."""
-        payload = {"distributor": "bookseen", "skus": []}
+        payload = {"distributor": "booxen", "skus": []}
         res = auth_client.post(GENERATE_URL, data=payload, format="json")
         assert res.status_code == 400
 
     def test_all_unknown_skus_returns_warning_json(self, auth_client):
         """SC-PO-003: All SKUs unknown → JSON warning (no Excel)."""
-        payload = {"distributor": "bookseen", "skus": ["0000000000000"]}
+        payload = {"distributor": "booxen", "skus": ["0000000000000"]}
         res = auth_client.post(GENERATE_URL, data=payload, format="json")
         assert res.status_code == 200
         assert "unknown_skus" in res.data
@@ -387,7 +387,7 @@ class TestGenerateOrderFileView:
         """SC-PO-003: Some unknown SKUs → JSON warning with unknown_skus list."""
         self._setup_sku("9788901234567", "Valid Book", 2)
         payload = {
-            "distributor": "bookseen",
+            "distributor": "booxen",
             "skus": ["9788901234567", "0000000000000"],
         }
         res = auth_client.post(GENERATE_URL, data=payload, format="json")
@@ -412,7 +412,7 @@ class TestGenerateOrderFileView:
         order = _make_order(shopify_order_id=92010)
         li = _make_line_item(order, shopify_line_item_id=600, sku="9788901299991", quantity=2)
         _make_refund(order, shopify_line_item_id=600, quantity=1, shopify_refund_id=801)
-        payload = {"distributor": "bookseen", "skus": ["9788901299991"]}
+        payload = {"distributor": "booxen", "skus": ["9788901299991"]}
         res = auth_client.post(GENERATE_URL, data=payload, format="json")
         assert res.status_code == 200
         assert EXCEL_CONTENT_TYPE in res["Content-Type"]
@@ -428,7 +428,7 @@ class TestGenerateOrderFileView:
         order = _make_order(shopify_order_id=92011)
         _make_line_item(order, shopify_line_item_id=601, sku="9788901299992", quantity=3)
         _make_refund(order, shopify_line_item_id=601, quantity=3, shopify_refund_id=802)
-        payload = {"distributor": "bookseen", "skus": ["9788901299992"]}
+        payload = {"distributor": "booxen", "skus": ["9788901299992"]}
         res = auth_client.post(GENERATE_URL, data=payload, format="json")
         assert res.status_code == 200
         assert "unknown_skus" in res.data
@@ -444,24 +444,24 @@ class TestGenerateOrderFileView:
 class TestUploadVendorFileView:
     """SC-PO-004, SC-PO-015, EC-PO-003, EC-PO-006"""
 
-    def test_upload_bookseen_file(self, auth_client):
-        """SC-PO-004: Upload bookseen Excel → VendorComparison created/updated."""
+    def test_upload_booxen_file(self, auth_client):
+        """SC-PO-004: Upload booxen Excel → VendorComparison created/updated."""
         excel_bytes = _make_excel([
             ["9788901234567", True, 12000],
             ["9788901234568", False, 0],
         ])
         file_obj = io.BytesIO(excel_bytes)
-        file_obj.name = "bookseen.xlsx"
+        file_obj.name = "booxen.xlsx"
         res = auth_client.post(
             UPLOAD_URL,
-            data={"distributor": "bookseen", "file": file_obj},
+            data={"distributor": "booxen", "file": file_obj},
             format="multipart",
         )
         assert res.status_code == 200
         assert res.data["parsed_count"] == 2
-        assert res.data["distributor"] == "bookseen"
+        assert res.data["distributor"] == "booxen"
 
-        bd = BookseenData.objects.get(sku="9788901234567")
+        bd = BooxenData.objects.get(sku="9788901234567")
         assert bd.available is True
         assert bd.price == Decimal("12000")
 
@@ -490,17 +490,17 @@ class TestUploadVendorFileView:
         assert kd.ordered_qty == 2
         assert kd.total_price == Decimal("23000")
 
-    def test_only_bookseen_uploaded_kyobo_fields_null(self, auth_client):
-        """EC-PO-003: Only bookseen uploaded → no KyoboData record created."""
+    def test_only_booxen_uploaded_kyobo_fields_null(self, auth_client):
+        """EC-PO-003: Only booxen uploaded → no KyoboData record created."""
         excel_bytes = _make_excel([["9788901234569", True, 10000]])
         file_obj = io.BytesIO(excel_bytes)
-        file_obj.name = "bookseen.xlsx"
+        file_obj.name = "booxen.xlsx"
         auth_client.post(
             UPLOAD_URL,
-            data={"distributor": "bookseen", "file": file_obj},
+            data={"distributor": "booxen", "file": file_obj},
             format="multipart",
         )
-        assert BookseenData.objects.filter(sku="9788901234569").exists()
+        assert BooxenData.objects.filter(sku="9788901234569").exists()
         assert not KyoboData.objects.filter(sku="9788901234569").exists()
 
     def test_invalid_file_format_returns_400(self, auth_client):
@@ -509,28 +509,28 @@ class TestUploadVendorFileView:
         fake_csv.name = "data.csv"
         res = auth_client.post(
             UPLOAD_URL,
-            data={"distributor": "bookseen", "file": fake_csv},
+            data={"distributor": "booxen", "file": fake_csv},
             format="multipart",
         )
         assert res.status_code == 400
 
     def test_upsert_updates_existing_record(self, auth_client):
-        """SC-PO-004: Re-upload updates existing BookseenData record."""
-        BookseenData.objects.create(
+        """SC-PO-004: Re-upload updates existing BooxenData record."""
+        BooxenData.objects.create(
             sku="9788901234567", available=False, price=Decimal("9000")
         )
         excel_bytes = _make_excel([["9788901234567", True, 12000]])
         file_obj = io.BytesIO(excel_bytes)
-        file_obj.name = "bookseen.xlsx"
+        file_obj.name = "booxen.xlsx"
         auth_client.post(
             UPLOAD_URL,
-            data={"distributor": "bookseen", "file": file_obj},
+            data={"distributor": "booxen", "file": file_obj},
             format="multipart",
         )
-        bd = BookseenData.objects.get(sku="9788901234567")
+        bd = BooxenData.objects.get(sku="9788901234567")
         assert bd.available is True
         assert bd.price == Decimal("12000")
-        assert BookseenData.objects.filter(sku="9788901234567").count() == 1
+        assert BooxenData.objects.filter(sku="9788901234567").count() == 1
 
 
 # ---------------------------------------------------------------------------
@@ -547,10 +547,10 @@ class TestAutoSelectDistributor:
 
     def _vc(self, **kwargs) -> SimpleNamespace:
         defaults = {
-            "bookseen_price": None,
-            "bookseen_stock": kwargs.pop("bookseen_stock", 10),
-            "bookseen_returnable": None,
-            "bookseen_status": None,
+            "booxen_price": None,
+            "booxen_stock": kwargs.pop("booxen_stock", 10),
+            "booxen_returnable": None,
+            "booxen_status": None,
             "kyobo_price": None,
             "kyobo_stock": kwargs.pop("kyobo_stock", 10),
             "kyobo_returnable": None,
@@ -564,43 +564,43 @@ class TestAutoSelectDistributor:
         from order.excel_utils import auto_select_distributor
 
         vc = self._vc(
-            bookseen_price=Decimal("10000"),
+            booxen_price=Decimal("10000"),
             kyobo_price=Decimal("11000"),
         )
         result = auto_select_distributor(vc=vc, total_qty=5)
-        assert result["selected_distributor"] == "bookseen"
+        assert result["selected_distributor"] == "booxen"
 
     def test_both_available_kyobo_cheaper(self):
         from order.excel_utils import auto_select_distributor
 
         vc = self._vc(
-            bookseen_price=Decimal("12000"),
+            booxen_price=Decimal("12000"),
             kyobo_price=Decimal("10000"),
         )
         result = auto_select_distributor(vc=vc, total_qty=5)
         assert result["selected_distributor"] == "kyobo"
 
-    def test_only_bookseen_has_stock(self):
+    def test_only_booxen_has_stock(self):
         from order.excel_utils import auto_select_distributor
 
         vc = self._vc(
-            bookseen_stock=10,
+            booxen_stock=10,
             kyobo_stock=0,
-            bookseen_price=None,
+            booxen_price=None,
             kyobo_price=Decimal("11000"),
         )
         result = auto_select_distributor(vc=vc, total_qty=5)
-        assert result["selected_distributor"] == "bookseen"
+        assert result["selected_distributor"] == "booxen"
 
     def test_no_stock_check_required(self):
         from order.excel_utils import auto_select_distributor
 
         vc = self._vc(
-            bookseen_stock=0,
+            booxen_stock=0,
             kyobo_stock=0,
-            bookseen_price=None,
+            booxen_price=None,
             kyobo_price=None,
-            bookseen_status="품절",
+            booxen_status="품절",
             kyobo_status="품절",
         )
         result = auto_select_distributor(vc=vc, total_qty=5)
@@ -623,7 +623,7 @@ class TestVendorComparisonView:
 
     def test_returns_comparison_records(self, auth_client):
         VendorComparison.objects.create(sku="9788901234567")
-        BookseenData.objects.create(
+        BooxenData.objects.create(
             sku="9788901234567",
             available=True,
             price=Decimal("12000"),
@@ -633,7 +633,7 @@ class TestVendorComparisonView:
         assert res.data["count"] == 1
         record = res.data["results"][0]
         assert record["sku"] == "9788901234567"
-        assert record["bookseen_available"] is True
+        assert record["booxen_available"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -655,7 +655,7 @@ class TestConfirmOrderView:
             "items": [
                 {
                     "sku": "ISBN-001",
-                    "distributor": "bookseen",
+                    "distributor": "booxen",
                     "quantity": 3,
                     "unit_price": "10500.00",
                 }
@@ -668,7 +668,7 @@ class TestConfirmOrderView:
 
         po = PurchaseOrder.objects.get(pk=res.data["purchase_order_ids"][0])
         assert po.sku == "ISBN-001"
-        assert po.distributor == "bookseen"
+        assert po.distributor == "booxen"
         assert po.line_items.count() >= 1
 
     def test_confirm_multiple_skus(self, auth_client):
@@ -678,7 +678,7 @@ class TestConfirmOrderView:
         _make_line_item(order, shopify_line_item_id=2, sku="ISBN-B", quantity=1)
         payload = {
             "items": [
-                {"sku": "ISBN-A", "distributor": "bookseen", "quantity": 2, "unit_price": "10000.00"},
+                {"sku": "ISBN-A", "distributor": "booxen", "quantity": 2, "unit_price": "10000.00"},
                 {"sku": "ISBN-B", "distributor": "kyobo", "quantity": 1, "unit_price": "8000.00"},
             ]
         }
@@ -694,12 +694,12 @@ class TestConfirmOrderView:
         )
         # First confirmation
         po = PurchaseOrder.objects.create(
-            sku="ISBN-DUPE", title="Dupe Book", distributor="bookseen", quantity=2
+            sku="ISBN-DUPE", title="Dupe Book", distributor="booxen", quantity=2
         )
         po.line_items.add(li)
 
         payload = {
-            "items": [{"sku": "ISBN-DUPE", "distributor": "bookseen", "quantity": 2, "unit_price": "9000.00"}]
+            "items": [{"sku": "ISBN-DUPE", "distributor": "booxen", "quantity": 2, "unit_price": "9000.00"}]
         }
         res = auth_client.post(CONFIRM_URL, data=payload, format="json")
         assert res.status_code == 409
@@ -707,7 +707,7 @@ class TestConfirmOrderView:
     def test_sku_with_no_unordered_items_returns_400(self, auth_client):
         """EC-PO-002 variant: SKU has no unordered LineItem → HTTP 400."""
         payload = {
-            "items": [{"sku": "NONEXISTENT-SKU", "distributor": "bookseen", "quantity": 1, "unit_price": "9000.00"}]
+            "items": [{"sku": "NONEXISTENT-SKU", "distributor": "booxen", "quantity": 1, "unit_price": "9000.00"}]
         }
         res = auth_client.post(CONFIRM_URL, data=payload, format="json")
         assert res.status_code == 400
@@ -729,7 +729,7 @@ class TestConfirmOrderView:
             "items": [
                 {
                     "sku": "ISBN-D001",
-                    "distributor": "bookseen",
+                    "distributor": "booxen",
                     "quantity": 2,
                     "unit_price": "10000.00",
                 }
@@ -738,7 +738,7 @@ class TestConfirmOrderView:
         res = auth_client.post(CONFIRM_URL, data=payload, format="json")
         assert res.status_code == 201
         li.refresh_from_db()
-        assert li.confirmed_distributor == "bookseen"
+        assert li.confirmed_distributor == "booxen"
 
     def test_confirm_rejects_empty_distributor(self, auth_client):
         """REQ-CON-013: Empty distributor string → 400."""
@@ -785,7 +785,7 @@ class TestConfirmOrderView:
             "items": [
                 {
                     "sku": "ISBN-D004",
-                    "distributor": "bookseen",
+                    "distributor": "booxen",
                     "quantity": 1,
                     "unit_price": "9000.00",
                     "purchase_status": "in_stock",
@@ -805,7 +805,7 @@ class TestConfirmOrderView:
             "items": [
                 {
                     "sku": "ISBN-D005",
-                    "distributor": "bookseen",
+                    "distributor": "booxen",
                     "quantity": 1,
                     "unit_price": "9000.00",
                     "purchase_status": "invalid_status",
@@ -826,7 +826,7 @@ class TestConfirmOrderView:
             "items": [
                 {
                     "sku": "ISBN-D006",
-                    "distributor": "bookseen",
+                    "distributor": "booxen",
                     "quantity": 1,
                     "unit_price": "9000.00",
                     # purchase_status not included
@@ -847,7 +847,7 @@ class TestConfirmOrderView:
             "items": [
                 {
                     "sku": "ISBN-D007",
-                    "distributor": "bookseen",
+                    "distributor": "booxen",
                     "quantity": 1,
                     "unit_price": "9000.00",
                     "note": "긴급 발주 필요",
@@ -867,7 +867,7 @@ class TestConfirmOrderView:
             "items": [
                 {
                     "sku": "ISBN-D008",
-                    "distributor": "bookseen",
+                    "distributor": "booxen",
                     "quantity": 1,
                     "unit_price": "9000.00",
                     "note": "",
@@ -887,7 +887,7 @@ class TestConfirmOrderView:
             "items": [
                 {
                     "sku": "ISBN-D009",
-                    "distributor": "bookseen",
+                    "distributor": "booxen",
                     "quantity": 1,
                     "unit_price": "9000.00",
                     "note": None,
@@ -960,7 +960,7 @@ class TestDistributorVendorRuleViews:
 class TestPurchaseOrderListView:
     """M7: List PurchaseOrders with filters and pagination."""
 
-    def _create_po(self, sku: str, distributor: str = "bookseen", status: str = "pending") -> PurchaseOrder:
+    def _create_po(self, sku: str, distributor: str = "booxen", status: str = "pending") -> PurchaseOrder:
         return PurchaseOrder.objects.create(
             sku=sku, title=f"Book {sku}", distributor=distributor, quantity=1, status=status
         )
@@ -973,12 +973,12 @@ class TestPurchaseOrderListView:
         assert res.data["count"] == 3
 
     def test_filter_by_distributor(self, auth_client):
-        self._create_po("SKU-BS", distributor="bookseen")
+        self._create_po("SKU-BS", distributor="booxen")
         self._create_po("SKU-KY", distributor="kyobo")
-        res = auth_client.get(PO_LIST_URL, {"distributor": "bookseen"})
+        res = auth_client.get(PO_LIST_URL, {"distributor": "booxen"})
         assert res.status_code == 200
         assert res.data["count"] == 1
-        assert res.data["results"][0]["distributor"] == "bookseen"
+        assert res.data["results"][0]["distributor"] == "booxen"
 
     def test_filter_by_status(self, auth_client):
         self._create_po("SKU-PEND", status="pending")
@@ -1021,11 +1021,11 @@ class TestPurchaseOrderListView:
 class TestGenerateOrderExcel:
     """Unit tests for excel_utils.generate_order_excel."""
 
-    def test_bookseen_column_format(self):
+    def test_booxen_column_format(self):
         from order.excel_utils import generate_order_excel
 
         data = [{"sku": "9780001", "title": "Test Book", "total_quantity": 5}]
-        result = generate_order_excel(data, "bookseen")
+        result = generate_order_excel(data, "booxen")
         assert isinstance(result, bytes)
         wb = openpyxl.load_workbook(io.BytesIO(result))
         ws = wb.active
@@ -1063,7 +1063,7 @@ class TestParseVendorExcel:
         from order.excel_utils import parse_vendor_excel
 
         excel_bytes = _make_excel([["9780001", True, 12000]])
-        results = parse_vendor_excel(excel_bytes, "bookseen")
+        results = parse_vendor_excel(excel_bytes, "booxen")
         assert len(results) == 1
         assert results[0]["sku"] == "9780001"
         assert results[0]["available"] is True
@@ -1073,7 +1073,7 @@ class TestParseVendorExcel:
         from order.excel_utils import parse_vendor_excel
 
         excel_bytes = _make_excel([["", True, 5000], ["9780002", False, 0]])
-        results = parse_vendor_excel(excel_bytes, "bookseen")
+        results = parse_vendor_excel(excel_bytes, "booxen")
         assert len(results) == 1
         assert results[0]["sku"] == "9780002"
 
@@ -1084,10 +1084,10 @@ class TestParseVendorExcel:
         buf = io.BytesIO()
         wb.save(buf)
         with pytest.raises(ValueError, match="Empty file"):
-            parse_vendor_excel(buf.getvalue(), "bookseen")
+            parse_vendor_excel(buf.getvalue(), "booxen")
 
-    def test_parses_bookseen_xls_format(self):
-        """Bookseen .xls: row 0 = timestamp, row 1 = headers, row 2+ = data.
+    def test_parses_booxen_xls_format(self):
+        """Booxen .xls: row 0 = timestamp, row 1 = headers, row 2+ = data.
         ISBN at col 14, 출고가 at col 6, 재고량 at col 7."""
         from order.excel_utils import _XLS_MAGIC, parse_vendor_excel
 
@@ -1107,14 +1107,14 @@ class TestParseVendorExcel:
         xls_magic_bytes = _XLS_MAGIC + b"\x00" * 100
 
         with patch("order.excel_utils.xlrd.open_workbook", return_value=mock_wb):
-            results = parse_vendor_excel(xls_magic_bytes, "bookseen")
+            results = parse_vendor_excel(xls_magic_bytes, "booxen")
 
         assert len(results) == 1
         assert results[0]["sku"] == "8809264180921"
         assert results[0]["available"] is True
         assert results[0]["price"] == 15260.0
 
-    def test_bookseen_xls_zero_stock_is_unavailable(self):
+    def test_booxen_xls_zero_stock_is_unavailable(self):
         """재고량 == 0 → available = False."""
         from order.excel_utils import _XLS_MAGIC, parse_vendor_excel
 
@@ -1131,7 +1131,7 @@ class TestParseVendorExcel:
         mock_wb.sheet_by_index.return_value = mock_sheet
 
         with patch("order.excel_utils.xlrd.open_workbook", return_value=mock_wb):
-            results = parse_vendor_excel(_XLS_MAGIC + b"\x00" * 100, "bookseen")
+            results = parse_vendor_excel(_XLS_MAGIC + b"\x00" * 100, "booxen")
 
         assert results[0]["available"] is False
 
@@ -1163,7 +1163,7 @@ class TestPurchaseOrderListRefundExclusion:
         """AC-01: LineItem qty=5, Refund qty=5 → PO excluded from response."""
         order = _make_order(shopify_order_id=80001)
         li = _make_line_item(order, shopify_line_item_id=10, quantity=5)
-        po = PurchaseOrder.objects.create(sku=li.sku, title=li.title, distributor="bookseen", quantity=5)
+        po = PurchaseOrder.objects.create(sku=li.sku, title=li.title, distributor="booxen", quantity=5)
         po.line_items.add(li)
         _make_refund(order, shopify_line_item_id=10, quantity=5, shopify_refund_id=101)
 
@@ -1176,7 +1176,7 @@ class TestPurchaseOrderListRefundExclusion:
         """AC-02: LineItem qty=5, Refund qty=3 → shown, net_quantity=2."""
         order = _make_order(shopify_order_id=80002)
         li = _make_line_item(order, shopify_line_item_id=20, quantity=5)
-        po = PurchaseOrder.objects.create(sku=li.sku, title=li.title, distributor="bookseen", quantity=5)
+        po = PurchaseOrder.objects.create(sku=li.sku, title=li.title, distributor="booxen", quantity=5)
         po.line_items.add(li)
         _make_refund(order, shopify_line_item_id=20, quantity=3, shopify_refund_id=201)
 
@@ -1187,7 +1187,7 @@ class TestPurchaseOrderListRefundExclusion:
 
     def test_ac03_po_with_no_line_items_shown_with_original_quantity(self, auth_client):
         """AC-03: PO with no LineItems → shown, net_quantity = PO.quantity."""
-        po = PurchaseOrder.objects.create(sku="9780000000001", title="노라인아이템", distributor="bookseen", quantity=7)
+        po = PurchaseOrder.objects.create(sku="9780000000001", title="노라인아이템", distributor="booxen", quantity=7)
 
         res = auth_client.get(PO_LIST_URL)
         assert res.status_code == 200
@@ -1199,7 +1199,7 @@ class TestPurchaseOrderListRefundExclusion:
         order = _make_order(shopify_order_id=80004)
         li1 = _make_line_item(order, shopify_line_item_id=41, sku="SKU-AC04-A", quantity=3)
         li2 = _make_line_item(order, shopify_line_item_id=42, sku="SKU-AC04-B", quantity=2)
-        po = PurchaseOrder.objects.create(sku="SKU-AC04-A", title="멀티라인 전환불", distributor="bookseen", quantity=5)
+        po = PurchaseOrder.objects.create(sku="SKU-AC04-A", title="멀티라인 전환불", distributor="booxen", quantity=5)
         po.line_items.add(li1, li2)
         _make_refund(order, shopify_line_item_id=41, quantity=3, shopify_refund_id=401)
         _make_refund(order, shopify_line_item_id=42, quantity=2, shopify_refund_id=402)
@@ -1214,7 +1214,7 @@ class TestPurchaseOrderListRefundExclusion:
         order = _make_order(shopify_order_id=80005)
         li1 = _make_line_item(order, shopify_line_item_id=51, sku="SKU-AC05-A", quantity=3)
         li2 = _make_line_item(order, shopify_line_item_id=52, sku="SKU-AC05-B", quantity=2)
-        po = PurchaseOrder.objects.create(sku="SKU-AC05-A", title="멀티라인 부분환불", distributor="bookseen", quantity=5)
+        po = PurchaseOrder.objects.create(sku="SKU-AC05-A", title="멀티라인 부분환불", distributor="booxen", quantity=5)
         po.line_items.add(li1, li2)
         _make_refund(order, shopify_line_item_id=51, quantity=3, shopify_refund_id=501)
         _make_refund(order, shopify_line_item_id=52, quantity=1, shopify_refund_id=502)
@@ -1228,7 +1228,7 @@ class TestPurchaseOrderListRefundExclusion:
         """AC-06: LineItem qty=5, Refund qty=6 → treated fully refunded, PO excluded."""
         order = _make_order(shopify_order_id=80006)
         li = _make_line_item(order, shopify_line_item_id=60, quantity=5)
-        po = PurchaseOrder.objects.create(sku=li.sku, title=li.title, distributor="bookseen", quantity=5)
+        po = PurchaseOrder.objects.create(sku=li.sku, title=li.title, distributor="booxen", quantity=5)
         po.line_items.add(li)
         _make_refund(order, shopify_line_item_id=60, quantity=6, shopify_refund_id=601)
 
@@ -1242,16 +1242,16 @@ class TestPurchaseOrderListRefundExclusion:
         order = _make_order(shopify_order_id=80007)
         li = _make_line_item(order, shopify_line_item_id=70, quantity=3)
         po_fully_refunded = PurchaseOrder.objects.create(
-            sku=li.sku, title=li.title, distributor="bookseen", quantity=3
+            sku=li.sku, title=li.title, distributor="booxen", quantity=3
         )
         po_fully_refunded.line_items.add(li)
         _make_refund(order, shopify_line_item_id=70, quantity=3, shopify_refund_id=701)
 
         po_normal = PurchaseOrder.objects.create(
-            sku="SKU-AC07-NORMAL", title="일반 PO", distributor="bookseen", quantity=2
+            sku="SKU-AC07-NORMAL", title="일반 PO", distributor="booxen", quantity=2
         )
 
-        res = auth_client.get(PO_LIST_URL, {"distributor": "bookseen"})
+        res = auth_client.get(PO_LIST_URL, {"distributor": "booxen"})
         assert res.status_code == 200
         ids = [item["id"] for item in res.data["results"]]
         assert po_fully_refunded.id not in ids
@@ -1261,7 +1261,7 @@ class TestPurchaseOrderListRefundExclusion:
         """AC-08: PO with LineItem but no Refund records → shown, net_quantity=LineItem.quantity."""
         order = _make_order(shopify_order_id=80008)
         li = _make_line_item(order, shopify_line_item_id=80, quantity=4)
-        po = PurchaseOrder.objects.create(sku=li.sku, title=li.title, distributor="bookseen", quantity=4)
+        po = PurchaseOrder.objects.create(sku=li.sku, title=li.title, distributor="booxen", quantity=4)
         po.line_items.add(li)
 
         res = auth_client.get(PO_LIST_URL)
@@ -1271,7 +1271,7 @@ class TestPurchaseOrderListRefundExclusion:
 
     def test_ac09_net_quantity_field_present_in_response(self, auth_client):
         """AC-09: net_quantity field present in API response for non-excluded POs."""
-        po = PurchaseOrder.objects.create(sku="9780000000009", title="필드존재확인", distributor="bookseen", quantity=3)
+        po = PurchaseOrder.objects.create(sku="9780000000009", title="필드존재확인", distributor="booxen", quantity=3)
 
         res = auth_client.get(PO_LIST_URL)
         assert res.status_code == 200
@@ -1343,7 +1343,7 @@ class TestUnorderedItemsViewPurchaseStatusFilter:
             purchase_status="unordered",
         )
         po = PurchaseOrder.objects.create(
-            sku="SKU-PO-LINKED", title="Linked Book PO", distributor="bookseen", quantity=2
+            sku="SKU-PO-LINKED", title="Linked Book PO", distributor="booxen", quantity=2
         )
         po.line_items.add(li)
         res = auth_client.get(UNORDERED_URL)

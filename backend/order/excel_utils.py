@@ -15,15 +15,15 @@ from openpyxl import Workbook
 # OLE2 Compound Document magic bytes — identifies legacy .xls (BIFF) format
 _XLS_MAGIC = b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1"
 
-# Bookseen result file (.xls): row 0 = timestamp, row 1 = headers (encoding-unreliable).
+# Booxen result file (.xls): row 0 = timestamp, row 1 = headers (encoding-unreliable).
 # Column positions confirmed from sample file analysis.
-_BOOKSEEN_COL_TITLE = 1      # 도서명
-_BOOKSEEN_COL_PRICE = 6      # 출고가 (단가)
-_BOOKSEEN_COL_STOCK = 7      # 재고량
-_BOOKSEEN_COL_RETURNABLE = 10  # 반품 ('가능'/'불가')
-_BOOKSEEN_COL_STATUS = 11    # 상태 ('정상', '품절' 등)
-_BOOKSEEN_COL_ISBN = 14      # ISBN
-_BOOKSEEN_COL_ARRIVAL = 15   # 입고예정
+_BOOXEN_COL_TITLE = 1      # 도서명
+_BOOXEN_COL_PRICE = 6      # 출고가 (단가)
+_BOOXEN_COL_STOCK = 7      # 재고량
+_BOOXEN_COL_RETURNABLE = 10  # 반품 ('가능'/'불가')
+_BOOXEN_COL_STATUS = 11    # 상태 ('정상', '품절' 등)
+_BOOXEN_COL_ISBN = 14      # ISBN
+_BOOXEN_COL_ARRIVAL = 15   # 입고예정
 
 # Kyobo result file (.xlsx): row 0 = "엑셀주문" (skip), row 1 = headers, row 2+ = data.
 _KYOBO_COL_ISBN = 1          # ISBN
@@ -51,7 +51,7 @@ def generate_order_excel(skus_data: list[dict], distributor: str) -> bytes:
     ws = wb.active
     ws.title = "발주서"
 
-    if distributor == "bookseen":
+    if distributor == "booxen":
         ws.append(["ISBN", "주문수량", "도서명", "출판사", "저자", "정가"])
         for row in skus_data:
             ws.append([row["sku"], row["total_quantity"], "", "", "", ""])
@@ -95,27 +95,27 @@ def parse_vendor_excel(file_bytes: bytes, distributor: str) -> list[dict]:
     """
     Parse a vendor-supplied Excel file into comparison records.
 
-    Supports .xls (xlrd, bookseen) and .xlsx (openpyxl, kyobo), detected via magic bytes.
+    Supports .xls (xlrd, booxen) and .xlsx (openpyxl, kyobo), detected via magic bytes.
 
     Returns:
         List of dicts with keys:
           sku, available, price,
           stock, returnable, status,
-          arrival (bookseen only)
+          arrival (booxen only)
 
     Raises:
         ValueError: If the file is empty or unreadable.
     """
     if file_bytes[:8] == _XLS_MAGIC:
-        return _parse_bookseen_xls(file_bytes)
+        return _parse_booxen_xls(file_bytes)
     if distributor == "kyobo":
         return _parse_kyobo_xlsx(file_bytes)
     return _parse_generic_xlsx(file_bytes)
 
 
-def _parse_bookseen_xls(file_bytes: bytes) -> list[dict]:
+def _parse_booxen_xls(file_bytes: bytes) -> list[dict]:
     """
-    Parse a Bookseen result .xls file.
+    Parse a Booxen result .xls file.
 
     Structure: row 0 = timestamp/title, row 1 = headers (encoding unreliable),
     row 2+ = data. Column positions are fixed (confirmed from sample file).
@@ -130,12 +130,12 @@ def _parse_bookseen_xls(file_bytes: bytes) -> list[dict]:
         raise ValueError("Empty file")
 
     required_max_col = max(
-        _BOOKSEEN_COL_ISBN,
-        _BOOKSEEN_COL_PRICE,
-        _BOOKSEEN_COL_STOCK,
-        _BOOKSEEN_COL_RETURNABLE,
-        _BOOKSEEN_COL_STATUS,
-        _BOOKSEEN_COL_ARRIVAL,
+        _BOOXEN_COL_ISBN,
+        _BOOXEN_COL_PRICE,
+        _BOOXEN_COL_STOCK,
+        _BOOXEN_COL_RETURNABLE,
+        _BOOXEN_COL_STATUS,
+        _BOOXEN_COL_ARRIVAL,
     )
 
     results = []
@@ -144,7 +144,7 @@ def _parse_bookseen_xls(file_bytes: bytes) -> list[dict]:
         if len(row) <= required_max_col:
             continue
 
-        raw_sku = row[_BOOKSEEN_COL_ISBN]
+        raw_sku = row[_BOOXEN_COL_ISBN]
         if raw_sku is None or raw_sku == "":
             continue
         # xlrd reads numeric ISBN cells as float
@@ -152,7 +152,7 @@ def _parse_bookseen_xls(file_bytes: bytes) -> list[dict]:
         if not sku:
             continue
 
-        raw_stock = row[_BOOKSEEN_COL_STOCK]
+        raw_stock = row[_BOOXEN_COL_STOCK]
         stock: int | None = None
         try:
             stock = int(float(raw_stock)) if raw_stock not in (None, "") else None
@@ -160,7 +160,7 @@ def _parse_bookseen_xls(file_bytes: bytes) -> list[dict]:
             stock = None
         available = (stock is not None and stock > 0)
 
-        raw_price = row[_BOOKSEEN_COL_PRICE]
+        raw_price = row[_BOOXEN_COL_PRICE]
         price: float | None = None
         try:
             price = float(raw_price) if raw_price not in (None, "") else None
@@ -168,13 +168,13 @@ def _parse_bookseen_xls(file_bytes: bytes) -> list[dict]:
             price = None
 
         # 반품: '가능' → True, anything else → False
-        raw_returnable = row[_BOOKSEEN_COL_RETURNABLE]
+        raw_returnable = row[_BOOXEN_COL_RETURNABLE]
         returnable = str(raw_returnable).strip() == "가능" if raw_returnable not in (None, "") else None
 
-        raw_status = row[_BOOKSEEN_COL_STATUS]
+        raw_status = row[_BOOXEN_COL_STATUS]
         status = str(raw_status).strip() if raw_status not in (None, "") else None
 
-        raw_arrival = row[_BOOKSEEN_COL_ARRIVAL]
+        raw_arrival = row[_BOOXEN_COL_ARRIVAL]
         arrival = str(raw_arrival).strip() if raw_arrival not in (None, "") else None
 
         results.append({
@@ -359,21 +359,21 @@ def _compare_both(
     """
     if bs_price is not None and ky_price is not None:
         if bs_price < ky_price:
-            return "bookseen", "양사재고/북센저가"
+            return "booxen", "양사재고/북센저가"
         if ky_price < bs_price:
             return "kyobo", "양사재고/교보저가"
         # Same price → check returnability
         if bs_ret is True and ky_ret is not True:
-            return "bookseen", "양사재고/동가/북센반품"
+            return "booxen", "양사재고/동가/북센반품"
         if ky_ret is True and bs_ret is not True:
             return "kyobo", "양사재고/동가/교보반품"
-        return "bookseen", "양사재고/동가/반품동일"
+        return "booxen", "양사재고/동가/반품동일"
 
     if bs_price is None and ky_price is not None:
         return "kyobo", "양사재고/교보가격만확인"
     if ky_price is None and bs_price is not None:
-        return "bookseen", "양사재고/북센가격만확인"
-    return "bookseen", "양사재고/가격없음"
+        return "booxen", "양사재고/북센가격만확인"
+    return "booxen", "양사재고/가격없음"
 
 
 def _no_stock_logic(
@@ -399,7 +399,7 @@ def _no_stock_logic(
     # Step 2-D: status/price heuristics
     if bs_status == "정상":
         if bs_cheaper:
-            selected = "bookseen"
+            selected = "booxen"
         else:
             selected = "kyobo" if ky_status == "정상" else "check_required"
     elif ky_status in ("정상", "주문판매"):
@@ -446,12 +446,12 @@ def auto_select_distributor(
         dict with keys:
             selected_distributor: str code or None
             candidate_basis: str label describing the selection reason
-            price_diff: Decimal (bookseen_price - kyobo_price) or None
+            price_diff: Decimal (booxen_price - kyobo_price) or None
             price_diff_alert: bool
     """
     # Lazy import to avoid circular dependency at module level
     # (VendorComparison is in models.py which imports nothing from excel_utils)
-    bs_price: Decimal | None = vc.bookseen_price
+    bs_price: Decimal | None = vc.booxen_price
     ky_price: Decimal | None = vc.kyobo_price
     price_diff: Decimal | None = (
         (bs_price - ky_price)
@@ -482,11 +482,11 @@ def auto_select_distributor(
     # ------------------------------------------------------------------
     # Step 2: Vendor comparison
     # ------------------------------------------------------------------
-    bs_stock: int = vc.bookseen_stock or 0
+    bs_stock: int = vc.booxen_stock or 0
     ky_stock: int = vc.kyobo_stock or 0
-    bs_ret: bool | None = vc.bookseen_returnable
+    bs_ret: bool | None = vc.booxen_returnable
     ky_ret: bool | None = vc.kyobo_returnable
-    bs_status: str = vc.bookseen_status or ""
+    bs_status: str = vc.booxen_status or ""
     ky_status: str = vc.kyobo_status or ""
 
     bs_enough = bs_stock >= total_qty
@@ -495,7 +495,7 @@ def auto_select_distributor(
     if bs_enough and ky_enough:
         selected, basis = _compare_both(bs_price, ky_price, bs_ret, ky_ret)
     elif bs_enough and not ky_enough:
-        selected, basis = "bookseen", "북센재고우선"
+        selected, basis = "booxen", "북센재고우선"
     elif ky_enough and not bs_enough:
         selected, basis = "kyobo", "교보재고우선"
     else:
@@ -510,7 +510,7 @@ def auto_select_distributor(
     if price_diff is not None and abs(price_diff) >= 3000:
         if (
             selected == "check_required"
-            or (selected == "bookseen" and bs_price is not None and ky_price is not None and bs_price > ky_price)
+            or (selected == "booxen" and bs_price is not None and ky_price is not None and bs_price > ky_price)
             or (selected == "kyobo" and ky_price is not None and bs_price is not None and ky_price > bs_price)
         ):
             price_diff_alert = True
@@ -520,7 +520,7 @@ def auto_select_distributor(
 
 # Distributor display name ↔ internal code mappings
 _DISTRIBUTOR_LABEL_MAP: dict[str, str] = {
-    "북센": "bookseen",
+    "북센": "booxen",
     "교보": "kyobo",
     "처음교육": "choeumgoyuk",
     "아가페": "agape",
@@ -617,7 +617,7 @@ def parse_daily_review_excel(file_bytes: bytes) -> list[dict]:
 
     Returns:
         List of dicts: {sku: str, distributor: str, note: str|None}
-        distributor is the internal code (bookseen, kyobo, choeumgoyuk, agape).
+        distributor is the internal code (booxen, kyobo, choeumgoyuk, agape).
 
     Raises:
         ValueError: If file is unreadable or missing required columns.

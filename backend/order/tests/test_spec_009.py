@@ -86,7 +86,7 @@ def order_with_confirmed_items_usd(db):
         quantity=2,
         price="50.00",
         confirmed_price="50000.00",
-        confirmed_distributor="bookseen",
+        confirmed_distributor="booxen",
     )
     LineItem.objects.create(
         order=order,
@@ -123,7 +123,7 @@ def order_dated_2026_01_12(db):
         quantity=1,
         price="50.00",
         confirmed_price="30000.00",
-        confirmed_distributor="bookseen",
+        confirmed_distributor="booxen",
     )
     return order
 
@@ -147,7 +147,7 @@ def order_no_exchange_rate(db):
         quantity=1,
         price="100.00",
         confirmed_price="50000.00",
-        confirmed_distributor="bookseen",
+        confirmed_distributor="booxen",
     )
     return order
 

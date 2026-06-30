@@ -92,7 +92,7 @@ class Shopify_product(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
 
-class Booksen_category(models.Model):
+class Booxen_category(models.Model):
     category_rank = models.SmallIntegerField(default=0)
     category_code = models.IntegerField(default=0)
     category_name = models.CharField(max_length=30)
