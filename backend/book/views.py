@@ -15,7 +15,7 @@ from book import shopify_client
 from book.constants import ERROR_STATUSES, ETOILE_STATUS_LABELS, LISTED_STATUSES, STATUS_LABELS, WAITING_STATUSES
 from book.models import (
     BookNote,
-    Booxen_category,
+    Booksen_category,
     EtoileBookInfo,
     EtoileBookInven,
     EtoileShopifyProduct,
@@ -178,7 +178,7 @@ class DashboardMetricsView(APIView):
 class BooxenCategoryListView(APIView):
     """
     GET /api/book/booxen-categories/?top_code=<int>
-    Returns Booxen_category entries with the given top_category_code.
+    Returns Booksen_category entries with the given top_category_code.
     top_code=0 returns top-level categories (rank 2 / 대).
     """
     authentication_classes = [JWTAuthentication]
@@ -190,7 +190,7 @@ class BooxenCategoryListView(APIView):
         except (TypeError, ValueError):
             return Response({"detail": "top_code must be an integer."}, status=400)
 
-        qs = Booxen_category.objects.filter(top_category_code=top_code)
+        qs = Booksen_category.objects.filter(top_category_code=top_code)
         if top_code == 0:
             qs = qs.filter(category_rank=1)
         categories = qs.order_by("category_code").values(
