@@ -176,6 +176,79 @@ evaluator-active가 확인한 리스크: `backend/order/views.py`의 `OrderSyncV
   위반만 남아있음(I001 import 정렬, 사전 존재 E501 등 — 모두 이 변경 범위 밖의 기존 라인,
   신규 추가 코드에는 0건). Scope Discipline 준수.
 
+## Phase 8 — 후속 버그 수정: title 데이터 버그 (commit e9a6f42) — done
+
+별도 신규 SPEC 없이 이 SPEC의 직접적인 후속 버그로 처리(아키텍처 결정이 아닌 단순 버그 수정).
+
+### 근본 원인
+
+`_sync_single_order()`가 번들 Shopify 라인 아이템을 N개의 member-ISBN `LineItem` 행으로
+전개할 때, `common_defaults`(번들 자신의 Shopify 표시 title, 예: "GITANMATH-F SET" 포함)를
+Shopify 라인 아이템 1건당 1회만 생성한 뒤 이를 **모든** member 행에 그대로 복사하고
+있었음 — 결과적으로 전개된 모든 행이 각자의 실제 도서 제목이 아니라 번들 제목을 갖게 됨.
+두 화면에 영향:
+- 주문 상세 페이지(`OrderDetailPage.tsx`)가 `LineItem.title`을 직접 표시
+- 발주 관리 페이지(`PurchaseOrderHistoryTab.tsx`)가 `PurchaseOrder.title`(PO 확정 시점에
+  `LineItem.title`에서 스냅샷된 값)을 표시 — 스냅샷이므로 싱크 파이프라인만 고쳐서는
+  이미 생성된 PO는 고쳐지지 않아 별도 백필 필요.
+
+### RED-GREEN-REFACTOR (reproduction-first)
+
+- RED: `test_shopify_orders.py`에 3개 신규 테스트 추가
+  (`test_sync_bundle_expands_with_real_book_titles`,
+  `test_sync_bundle_member_title_none_when_isbn_not_in_catalog`,
+  `test_sync_non_bundle_line_item_title_unaffected_by_title_fix`) — 앞의 2개가 정확한 이유로
+  실패함을 확인(`title == "Test Book"`/번들 title, 기대값은 실제 도서 제목/`None`).
+  기존 `test_sync_bundle_sku_expands_to_member_isbn_rows`의 `row.title == "Test Book"` 단언도
+  버그를 정답으로 고정하고 있었으므로 `row.title is None`(해당 테스트의 ISBN-A/B는 Inven/Info
+  미등록)으로 함께 수정.
+- GREEN: `shopify_orders.py`에 `book.models.Inven` 임포트 + `_build_title_map()` 헬퍼
+  (shopify_sku_set_views.py의 동일 패턴 재사용) 추가. `_sync_single_order()`에서 주문 내 모든
+  번들 라인 아이템의 member ISBN을 먼저 수집한 뒤 **주문 1회당 1회**만 title_map을 배치 조회
+  (기존 `bundle_map` 1회 로드와 동일한 N+1 방지 원칙), member 행 각각에
+  `title_map.get(member_isbn)`(카탈로그에 없으면 `None`) 적용. 비번들 경로는 `common_defaults`를
+  그대로 사용해 100% 영향 없음.
+- 3개 신규 테스트 GREEN 전환 확인, 기존 `test_shopify_orders.py` 전체 회귀 없음.
+
+### 데이터 백필 마이그레이션 — `0027_backfill_bundle_title_data.py`
+
+0026과 별개(0026은 스키마 이후 행 분할, 0027은 그 분할된 행들에 남은 잘못된 title 데이터 정정).
+`dependencies=[("order", "0026_backfill_bundle_lineitems")]`. 두 개의 `RunPython` 연산:
+
+1. `backfill_lineitem_titles`: `ShopifySkuSetMapping`의 (bundle_sku, member_isbn) 쌍 전체를
+   기준으로, `LineItem.objects.filter(sku=member_isbn, title=bundle_sku)`(버그로만 도달 가능한
+   정밀 시그니처 — 이미 정상이거나 수동 수정된 행은 건드리지 않음)를 실제 도서 제목(없으면
+   `None`)으로 갱신.
+2. `backfill_purchase_order_titles`: 동일 시그니처로 `PurchaseOrder`를 갱신하되, `title`이
+   NOT NULL이므로 카탈로그 미매치 시 `sku`(ISBN) 자체로 폴백
+   (`purchase_order_views.py`의 `title = unordered_lis[0].title or sku` 관례와 동일).
+
+`reverse_code = migrations.RunPython.noop`(양쪽 연산 모두) — 스키마가 아닌 데이터 정정이라
+역백필이 의미 없음을 모듈 docstring에 명시(0026과 달리 PK/관계 정보 손실 위험은 없지만,
+"버그로 인한 원상태"와 "그 이후 수동 재수정" 구분이 불가능해 원복 자체가 무의미).
+
+### 신규 테스트 — `test_backfill_bundle_title_data_migration.py`
+
+`MigrationLoader`로 두 `RunPython` 연산을 직접 호출하는 방식(0026 테스트와 동일 컨벤션).
+11개 테스트: LineItem 정정(실제 제목/`None`), 정밀도(이미 정상인 행·무관 SKU·수동 수정된 행은
+불변), PurchaseOrder 정정(실제 제목/ISBN 폴백, 절대 `None` 아님), 멱등성, `reverse_code`가
+양쪽 연산 모두 `noop`인지, 매핑 자체가 없을 때 no-op인지.
+
+### 품질 게이트
+
+- `ruff check`: `shopify_orders.py`는 신규 임포트(`from book.models import Inven`)를 기존
+  I001 위반 블록에 추가하면서 동일 블록에 대해 `--fix`(import 정렬)만 적용 —
+  baseline 7건 → 7건(구성만 이동, 신규 위반 0건). `test_shopify_orders.py`는 baseline 7건과
+  완전 동일(신규 테스트 코드에는 0건). 신규 파일(`0027_*.py`,
+  `test_backfill_bundle_title_data_migration.py`)은 위반 0건.
+- `ruff format`: 신규 파일(`0027_*.py`)에는 전체 적용. 기존 수정 파일(`shopify_orders.py`,
+  `test_shopify_orders.py`)은 SPEC-002 선례와 동일하게 baseline 자체가 비정렬 상태라 전체
+  재포맷은 강제하지 않음(변경 범위 밖 Scope Discipline).
+- Scope: `backend/order/shopify_orders.py`, `backend/order/migrations/0027_*.py`,
+  `backend/order/tests/test_shopify_orders.py`, `backend/order/tests/test_backfill_bundle_title_data_migration.py`,
+  이 progress.md만 수정. 프론트엔드는 무변경(두 화면 모두 백엔드가 주는 title을 그대로
+  렌더링하므로 프론트 로직 변경 불필요).
+
 ## 발견된 사실 (research.md 대비 차이)
 
 - research.md는 pytest 실행 환경을 SQLite로 서술했으나, 실제로는 `.env`의

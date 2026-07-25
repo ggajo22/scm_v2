@@ -1,9 +1,11 @@
 import json
 import re
-import urllib.request
 import urllib.error
+import urllib.request
 
 from django.conf import settings
+
+from book.models import Inven
 
 SHOPIFY_API_VERSION = "2024-10"
 REQUEST_TIMEOUT = 30
@@ -45,6 +47,24 @@ def _decimal_or_none(value):
     if value is None or value == "":
         return None
     return value
+
+
+def _build_title_map(isbn_list: list[str]) -> dict[str, str | None]:
+    """Batch-query real book titles for member ISBNs (once per order sync).
+
+    Mirrors the same Inven/Info join pattern as
+    shopify_sku_set_views._build_title_map. Returns {isbn: title_or_None};
+    ISBNs with no matching Inven/Info row are simply omitted (lookup via
+    .get() then returns None).
+    """
+    if not isbn_list:
+        return {}
+    rows = (
+        Inven.objects.filter(inven_SKU__in=isbn_list)
+        .select_related("info")
+        .values("inven_SKU", "info__name")
+    )
+    return {row["inven_SKU"]: row["info__name"] for row in rows}
 
 
 def _build_fulfillment_location_data(domain, token, order_id):
@@ -166,6 +186,17 @@ def _sync_single_order(order_data, store_type, location_code="", line_item_locat
     for mapping in bundle_mapping_rows:
         bundle_map.setdefault(mapping["bundle_sku"], []).append(mapping["member_isbn"])
 
+    # Title-data fix (follow-up to SPEC-SHOPIFY-SKU-SET-002): batch-load the
+    # real book title for every member ISBN that will be split out below,
+    # ONCE per order-sync call across ALL bundle line items — never per
+    # line item, never per member — matching the bundle_map query discipline.
+    relevant_member_isbns: set[str] = set()
+    for li in order_data.get("line_items", []):
+        member_isbns = bundle_map.get(li.get("sku"))
+        if member_isbns:
+            relevant_member_isbns.update(member_isbns)
+    title_map = _build_title_map(list(relevant_member_isbns))
+
     incoming_shopify_ids = set()
     for li in order_data.get("line_items", []):
         incoming_shopify_ids.add(li["id"])
@@ -190,11 +221,16 @@ def _sync_single_order(order_data, store_type, location_code="", line_item_locat
             # quantity — required for refund math (REQ-SKUSET2-006) to stay
             # correct with zero changes to the 6 Refund OuterRef subquery sites.
             for member_isbn in member_isbns:
+                # Each member row gets its OWN book title (or None if the
+                # ISBN isn't in the catalog yet) — never the bundle's own
+                # Shopify-reported title. LineItem.title is nullable and
+                # downstream code already has title-or-fallback handling.
+                member_defaults = {**common_defaults, "title": title_map.get(member_isbn)}
                 LineItem.objects.update_or_create(
                     order=order_obj,
                     shopify_line_item_id=li["id"],
                     sku=member_isbn,
-                    defaults=common_defaults,
+                    defaults=member_defaults,
                 )
         else:
             # No bundle mapping: single-row update_or_create, 100% unchanged.

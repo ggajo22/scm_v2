@@ -223,7 +223,15 @@ def _make_bundle_mapping(bundle_sku=_BUNDLE_SKU, member_isbns=("ISBN-A", "ISBN-B
 def test_sync_bundle_sku_expands_to_member_isbn_rows():
     """AC-003-1: a bundle SKU line item expands into one LineItem row per
     member ISBN, all sharing the same shopify_line_item_id, each with the
-    FULL (undivided) quantity and the rest of the fields copied verbatim."""
+    FULL (undivided) quantity and the rest of the fields copied verbatim.
+
+    NOTE: title is intentionally NOT asserted here to equal the bundle's
+    Shopify-reported title — that was the bug fixed by the title-data fix
+    (see test_sync_bundle_expands_with_real_book_titles and
+    test_sync_bundle_member_title_none_when_isbn_not_in_catalog below).
+    Neither ISBN-A nor ISBN-B is registered in Inven/Info here, so title is
+    expected to be None post-fix.
+    """
     _make_bundle_mapping()
     order = Order.objects.create(
         shopify_order_id=910001,
@@ -243,9 +251,93 @@ def test_sync_bundle_sku_expands_to_member_isbn_rows():
     assert list(rows.values_list("sku", flat=True)) == ["ISBN-A", "ISBN-B"]
     for row in rows:
         assert row.quantity == 2  # full bundle quantity, not divided
-        assert row.title == "Test Book"
+        assert row.title is None  # no Inven/Info registered for these ISBNs
         assert row.vendor == "Test Publisher"
         assert row.price == Decimal("5000.00")
+
+
+@pytest.mark.django_db
+def test_sync_bundle_expands_with_real_book_titles():
+    """Title-data fix: when member ISBNs ARE registered in Inven/Info, each
+    resulting LineItem.title must be that member's own book title — NOT the
+    bundle's Shopify-reported title ("GITANMATH-F SET")."""
+    from book.models import Info, Inven
+
+    _make_bundle_mapping()
+    inven_a = Inven.objects.create(inven_SKU="ISBN-A")
+    Info.objects.create(inven=inven_a, name="기탄수학 F1")
+    inven_b = Inven.objects.create(inven_SKU="ISBN-B")
+    Info.objects.create(inven=inven_b, name="기탄수학 F2")
+
+    order = Order.objects.create(
+        shopify_order_id=910009,
+        store_type="gimssine",
+        order_number=41009,
+        name="#41009",
+        shopify_created_at=timezone.now(),
+    )
+    li = _make_shopify_line_item(9111, sku=_BUNDLE_SKU)
+    order_data = _make_order_data(910009, [li])
+
+    _sync_single_order(order_data, "gimssine")
+
+    rows = {
+        row.sku: row.title
+        for row in LineItem.objects.filter(order=order, shopify_line_item_id=9111)
+    }
+    assert rows == {"ISBN-A": "기탄수학 F1", "ISBN-B": "기탄수학 F2"}
+    # Explicitly assert the bundle's own Shopify title never leaks through.
+    assert "GITANMATH-F SET" not in rows.values()
+
+
+@pytest.mark.django_db
+def test_sync_bundle_member_title_none_when_isbn_not_in_catalog():
+    """Title-data fix: a member ISBN with no matching Inven/Info row gets
+    title=None (nullable field, has downstream `title or sku` fallbacks) —
+    NOT the bundle's title and NOT an empty string."""
+    _make_bundle_mapping(member_isbns=("ISBN-A", "ISBN-UNCATALOGED"))
+    order = Order.objects.create(
+        shopify_order_id=910010,
+        store_type="gimssine",
+        order_number=41010,
+        name="#41010",
+        shopify_created_at=timezone.now(),
+    )
+    li = _make_shopify_line_item(9112, sku=_BUNDLE_SKU)
+    order_data = _make_order_data(910010, [li])
+
+    _sync_single_order(order_data, "gimssine")
+
+    row = LineItem.objects.get(
+        order=order, shopify_line_item_id=9112, sku="ISBN-UNCATALOGED"
+    )
+    assert row.title is None
+
+
+@pytest.mark.django_db
+def test_sync_non_bundle_line_item_title_unaffected_by_title_fix():
+    """Regression: a regular (non-bundle) SKU's title continues to come
+    straight from Shopify's line item data, even when an Inven/Info record
+    with a DIFFERENT title exists for that same SKU."""
+    from book.models import Info, Inven
+
+    inven = Inven.objects.create(inven_SKU="REGULAR-SKU")
+    Info.objects.create(inven=inven, name="Catalog Title (should NOT be used)")
+
+    order = Order.objects.create(
+        shopify_order_id=910011,
+        store_type="gimssine",
+        order_number=41011,
+        name="#41011",
+        shopify_created_at=timezone.now(),
+    )
+    li = _make_shopify_line_item(9113, sku="REGULAR-SKU")
+    order_data = _make_order_data(910011, [li])
+
+    _sync_single_order(order_data, "gimssine")
+
+    row = LineItem.objects.get(order=order, shopify_line_item_id=9113)
+    assert row.title == "Test Book"  # straight from Shopify, unchanged
 
 
 @pytest.mark.django_db
