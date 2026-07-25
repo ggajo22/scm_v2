@@ -193,8 +193,16 @@ class GenerateOrderFileView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # @MX:NOTE: [AUTO] Bundle-aware SKU resolution: requested SKUs may be bundle
+        # member ISBNs (ShopifySkuSetMapping) whose underlying LineItem.sku is the
+        # bundle_sku, never the member ISBN itself (Shopify sync stores the raw value).
+        # @MX:SPEC: SPEC-SHOPIFY-SKU-SET-001 REQ-SKU-SET-003
+        member_to_bundle: dict[str, str] = dict(
+            ShopifySkuSetMapping.objects.values_list("member_isbn", "bundle_sku")
+        )
+
         # Aggregate net quantities (after refunds) for requested SKUs from unordered LineItems
-        requested = set(skus)
+        requested_underlying = {member_to_bundle.get(sku, sku) for sku in skus}
         refund_sum_sq = (
             Refund.objects.filter(
                 order_id=OuterRef("order_id"),
@@ -205,7 +213,7 @@ class GenerateOrderFileView(APIView):
             .values("total")[:1]
         )
         li_qs = (
-            LineItem.objects.filter(sku__in=requested)
+            LineItem.objects.filter(sku__in=requested_underlying)
             .exclude(purchase_orders__isnull=False)
             .annotate(
                 refunded_qty=Coalesce(
@@ -215,15 +223,29 @@ class GenerateOrderFileView(APIView):
             )
             .values("sku", "title", "quantity", "refunded_qty")
         )
-        found_map: dict[str, dict] = {}
+        underlying_found_map: dict[str, dict] = {}
         for row in li_qs:
             net = max((row["quantity"] or 0) - row["refunded_qty"], 0)
             if net == 0:
                 continue
             sku = row["sku"]
-            if sku not in found_map:
-                found_map[sku] = {"sku": sku, "title": row["title"] or "", "total_quantity": 0}
-            found_map[sku]["total_quantity"] += net
+            if sku not in underlying_found_map:
+                underlying_found_map[sku] = {"title": row["title"] or "", "total_quantity": 0}
+            underlying_found_map[sku]["total_quantity"] += net
+
+        # Map back to originally requested SKUs (bundle members keep the requested
+        # member ISBN in the output, carrying the full underlying bundle quantity).
+        found_map: dict[str, dict] = {}
+        for requested_sku in skus:
+            underlying_sku = member_to_bundle.get(requested_sku, requested_sku)
+            underlying = underlying_found_map.get(underlying_sku)
+            if underlying is None:
+                continue
+            found_map[requested_sku] = {
+                "sku": requested_sku,
+                "title": underlying["title"],
+                "total_quantity": underlying["total_quantity"],
+            }
         unknown_skus = [s for s in skus if s not in found_map]
 
         if unknown_skus:

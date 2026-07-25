@@ -41,6 +41,7 @@ from order.models import (
     Order,
     PurchaseOrder,
     Refund,
+    ShopifySkuSetMapping,
     VendorComparison,
     Yes24Data,
 )
@@ -490,6 +491,104 @@ class TestGenerateOrderFileView:
         assert res.status_code == 200
         assert "unknown_skus" in res.data
         assert "9788901299992" in res.data["unknown_skus"]
+
+    # -----------------------------------------------------------------
+    # SPEC-PURCHASE-ORDER-007: Bundle SKU (ShopifySkuSetMapping) support
+    # -----------------------------------------------------------------
+
+    def test_bundle_member_sku_resolves_to_full_bundle_quantity(self, auth_client):
+        """A single requested member ISBN resolves via the bundle_sku LineItem and
+        keeps the FULL bundle quantity (not divided) in the generated Excel row."""
+        ShopifySkuSetMapping.objects.create(
+            bundle_sku="GITANMATH-F SET", member_isbn="9788926025451", sort_order=0
+        )
+        ShopifySkuSetMapping.objects.create(
+            bundle_sku="GITANMATH-F SET", member_isbn="9788926025468", sort_order=1
+        )
+        order = _make_order(shopify_order_id=92020)
+        _make_line_item(
+            order,
+            shopify_line_item_id=700,
+            sku="GITANMATH-F SET",
+            title="기탄수학 F 세트",
+            quantity=4,
+        )
+        payload = {"distributor": "booxen", "skus": ["9788926025451"]}
+        res = auth_client.post(GENERATE_URL, data=payload, format="json")
+        assert res.status_code == 200
+        assert EXCEL_CONTENT_TYPE in res["Content-Type"]
+        wb = openpyxl.load_workbook(io.BytesIO(res.content))
+        ws = wb.active
+        rows = list(ws.iter_rows(values_only=True))
+        data_row = next((r for r in rows if r[0] == "9788926025451"), None)
+        assert data_row is not None
+        assert data_row[1] == 4  # full bundle quantity, not divided by member count
+
+    def test_two_bundle_members_each_get_own_row_with_full_quantity(self, auth_client):
+        """Selecting 2 of a bundle's member ISBNs produces 2 separate Excel rows,
+        each carrying the SAME full bundle quantity (not merged, not divided)."""
+        ShopifySkuSetMapping.objects.create(
+            bundle_sku="GITANMATH-F SET", member_isbn="9788926025451", sort_order=0
+        )
+        ShopifySkuSetMapping.objects.create(
+            bundle_sku="GITANMATH-F SET", member_isbn="9788926025468", sort_order=1
+        )
+        order = _make_order(shopify_order_id=92021)
+        _make_line_item(
+            order,
+            shopify_line_item_id=701,
+            sku="GITANMATH-F SET",
+            title="기탄수학 F 세트",
+            quantity=4,
+        )
+        payload = {
+            "distributor": "booxen",
+            "skus": ["9788926025451", "9788926025468"],
+        }
+        res = auth_client.post(GENERATE_URL, data=payload, format="json")
+        assert res.status_code == 200
+        assert EXCEL_CONTENT_TYPE in res["Content-Type"]
+        wb = openpyxl.load_workbook(io.BytesIO(res.content))
+        ws = wb.active
+        rows = list(ws.iter_rows(values_only=True))
+        row_a = next((r for r in rows if r[0] == "9788926025451"), None)
+        row_b = next((r for r in rows if r[0] == "9788926025468"), None)
+        assert row_a is not None
+        assert row_b is not None
+        assert row_a[1] == 4
+        assert row_b[1] == 4
+
+    def test_bundle_member_mixed_with_ordinary_sku(self, auth_client):
+        """One bundle-member ISBN + one ordinary (non-bundle) SKU in the same
+        request both resolve correctly in a single generated Excel."""
+        ShopifySkuSetMapping.objects.create(
+            bundle_sku="GITANMATH-F SET", member_isbn="9788926025451", sort_order=0
+        )
+        bundle_order = _make_order(shopify_order_id=92022)
+        _make_line_item(
+            bundle_order,
+            shopify_line_item_id=702,
+            sku="GITANMATH-F SET",
+            title="기탄수학 F 세트",
+            quantity=4,
+        )
+        self._setup_sku("9788901234567", "Great Gatsby", 3)
+        payload = {
+            "distributor": "booxen",
+            "skus": ["9788926025451", "9788901234567"],
+        }
+        res = auth_client.post(GENERATE_URL, data=payload, format="json")
+        assert res.status_code == 200
+        assert EXCEL_CONTENT_TYPE in res["Content-Type"]
+        wb = openpyxl.load_workbook(io.BytesIO(res.content))
+        ws = wb.active
+        rows = list(ws.iter_rows(values_only=True))
+        bundle_row = next((r for r in rows if r[0] == "9788926025451"), None)
+        plain_row = next((r for r in rows if r[0] == "9788901234567"), None)
+        assert bundle_row is not None
+        assert plain_row is not None
+        assert bundle_row[1] == 4
+        assert plain_row[1] == 3
 
 
 # ---------------------------------------------------------------------------
