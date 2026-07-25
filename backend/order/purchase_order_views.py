@@ -39,11 +39,23 @@ from .excel_utils import (
     parse_daily_review_excel,
     parse_vendor_excel,
 )
-from .models import BooxenData, DistributorVendorRule, KyoboData, LineItem, LineItemNote, PurchaseOrder, Refund, ShopifySkuSetMapping, VendorComparison, WarehouseStock
+from .models import (
+    BooxenData,
+    DistributorVendorRule,
+    KyoboData,
+    LineItem,
+    LineItemNote,
+    PurchaseOrder,
+    Refund,
+    ShopifySkuSetMapping,
+    VendorComparison,
+    WarehouseStock,
+    Yes24Data,
+)
 
 VALID_DISTRIBUTORS = {"booxen", "kyobo", "choeumgoyuk", "agape", "sungseoyunion",
                       "warehouse_korea", "warehouse_ca", "warehouse_nj"}
-VENDOR_FILE_DISTRIBUTORS = {"booxen", "kyobo"}
+VENDOR_FILE_DISTRIBUTORS = {"booxen", "kyobo", "yes24"}
 VENDOR_RULE_DISTRIBUTORS = {"choeumgoyuk", "agape", "sungseoyunion"}
 
 EXCEL_CONTENT_TYPE = (
@@ -315,6 +327,15 @@ class UploadVendorFileView(APIView):
                     "arrival": arrival,
                 }
                 BooxenData.objects.update_or_create(sku=sku, defaults=defaults)
+            elif distributor == "yes24":
+                raw_list_price = row.get("list_price")
+                list_price = Decimal(str(raw_list_price)) if raw_list_price is not None else None
+                defaults = {
+                    "price": price,
+                    "list_price": list_price,
+                    "status": vendor_status,
+                }
+                Yes24Data.objects.update_or_create(sku=sku, defaults=defaults)
             else:  # kyobo
                 defaults = {
                     "available": available,

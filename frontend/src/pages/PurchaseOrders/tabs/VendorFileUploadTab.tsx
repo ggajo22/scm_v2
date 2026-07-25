@@ -2,12 +2,13 @@ import { useState, useRef } from 'react'
 import { Upload } from 'lucide-react'
 import { useUploadVendorFile } from '@/hooks/usePurchaseOrderQueries'
 
-const DISTRIBUTOR_OPTIONS = ['북센', '교보'] as const
+const DISTRIBUTOR_OPTIONS = ['북센', '교보', 'YES24'] as const
 type Distributor = (typeof DISTRIBUTOR_OPTIONS)[number]
 
 const DISTRIBUTOR_API_KEY: Record<Distributor, string> = {
   '북센': 'booxen',
   '교보': 'kyobo',
+  'YES24': 'yes24',
 }
 
 export function VendorFileUploadTab() {
@@ -118,7 +119,7 @@ export function VendorFileUploadTab() {
       )}
 
       <p className="text-xs text-muted-foreground">
-        북센·교보 파일 업로드 후 Daily Review 탭에서 발주처를 확인하고 확정하세요.
+        북센·교보·YES24 파일 업로드 후 Daily Review 탭에서 발주처를 확인하고 확정하세요.
       </p>
     </div>
   )

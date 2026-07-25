@@ -310,6 +310,23 @@ class KyoboData(models.Model):
         return f"KyoboData({self.sku})"
 
 
+class Yes24Data(models.Model):
+    """YES24 distributor vendor data (reference-only), keyed by SKU."""
+
+    sku = models.CharField(max_length=255, unique=True)
+    price = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    list_price = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    status = models.CharField(max_length=50, null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "orders_yes24data"
+        indexes = [models.Index(fields=["sku"])]
+
+    def __str__(self) -> str:
+        return f"Yes24Data({self.sku})"
+
+
 class VendorComparison(models.Model):
     """Stores auto-selection results (selected distributor) for a SKU."""
 

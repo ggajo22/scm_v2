@@ -35,6 +35,13 @@ _KYOBO_COL_QTY = 11          # 주문수량 (출고가 계산에 사용)
 _KYOBO_COL_TOTAL_PRICE = 14  # 출고가합 (÷ 주문수량 = 단가)
 _KYOBO_COL_STOCK = 15        # 보유재고
 
+# YES24 result file (.xlsx): row 0 = headers (no title row), row 1+ = data.
+# Column positions confirmed from sample file analysis.
+_YES24_COL_LIST_PRICE = 6    # 정가
+_YES24_COL_ISBN = 8          # ISBN
+_YES24_COL_STATUS = 11       # 유통상태
+_YES24_COL_PRICE = 13        # 공급가
+
 
 def generate_order_excel(skus_data: list[dict], distributor: str) -> bytes:
     """
@@ -110,6 +117,8 @@ def parse_vendor_excel(file_bytes: bytes, distributor: str) -> list[dict]:
         return _parse_booxen_xls(file_bytes)
     if distributor == "kyobo":
         return _parse_kyobo_xlsx(file_bytes)
+    if distributor == "yes24":
+        return _parse_yes24_xlsx(file_bytes)
     return _parse_generic_xlsx(file_bytes)
 
 
@@ -279,6 +288,69 @@ def _parse_kyobo_xlsx(file_bytes: bytes) -> list[dict]:
             "ordered_qty": ordered_qty,
             "total_price": total_price,
             "arrival": None,
+        })
+
+    return results
+
+
+def _parse_yes24_xlsx(file_bytes: bytes) -> list[dict]:
+    """
+    Parse a YES24 result .xlsx file.
+
+    Structure: row 0 = headers (no title row, unlike booxen/kyobo), row 1+ = data.
+    Column positions are fixed (confirmed from sample file analysis).
+    YES24 has no availability/stock/returnable data, so `available` is always None.
+    """
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
+    except Exception as exc:
+        raise ValueError(f"Cannot read .xlsx file: {exc}") from exc
+
+    ws = wb.active
+    rows = list(ws.iter_rows(values_only=True))
+    if len(rows) < 2:
+        raise ValueError("Empty file")
+
+    required_max_col = max(
+        _YES24_COL_ISBN,
+        _YES24_COL_LIST_PRICE,
+        _YES24_COL_PRICE,
+        _YES24_COL_STATUS,
+    )
+
+    results = []
+    for row in rows[1:]:  # skip row 0 (headers) only
+        if len(row) <= required_max_col:
+            continue
+
+        raw_sku = row[_YES24_COL_ISBN]
+        sku = str(raw_sku).strip() if raw_sku is not None else None
+        if not sku or not sku.isdigit():
+            continue
+
+        raw_list_price = row[_YES24_COL_LIST_PRICE]
+        list_price: float | None = None
+        try:
+            list_price = float(raw_list_price) if raw_list_price not in (None, "") else None
+        except (TypeError, ValueError):
+            list_price = None
+
+        raw_price = row[_YES24_COL_PRICE]
+        price: float | None = None
+        try:
+            price = float(raw_price) if raw_price not in (None, "") else None
+        except (TypeError, ValueError):
+            price = None
+
+        raw_status = row[_YES24_COL_STATUS]
+        status = str(raw_status).strip() if raw_status not in (None, "") else None
+
+        results.append({
+            "sku": sku,
+            "available": None,
+            "price": price,
+            "list_price": list_price,
+            "status": status,
         })
 
     return results

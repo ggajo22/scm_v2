@@ -42,6 +42,7 @@ from order.models import (
     PurchaseOrder,
     Refund,
     VendorComparison,
+    Yes24Data,
 )
 
 User = get_user_model()
@@ -163,6 +164,46 @@ def _make_kyobo_excel(rows: list[dict]) -> bytes:
             total_price,               # 14: 출고가합
             float(r.get("stock", 0)),  # 15: 보유재고
             None, None,
+        ])
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def _make_yes24_excel(rows: list[dict]) -> bytes:
+    """Build a YES24-format .xlsx file.
+
+    Format: row 0 = headers, row 1+ = data (no title row, unlike booxen/kyobo).
+    Each dict in rows must have: isbn, list_price, price, status.
+    Columns (0-based): ISBN=8, 정가(list_price)=6, 공급가(price)=13, 유통상태(status)=11.
+    """
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append([
+        "번호", "상품번호", "도서명", "출판사", "저자", "출간일",
+        "정가", "주문수량", "ISBN", "부가코드", "분야명",
+        "유통상태", "중복여부", "공급가", "공급률",
+    ])
+    # col: 0=번호 1=상품번호 2=도서명 3=출판사 4=저자 5=출간일 6=정가
+    #      7=주문수량 8=ISBN 9=부가코드 10=분야명 11=유통상태 12=중복여부
+    #      13=공급가 14=공급률
+    for i, r in enumerate(rows, start=1):
+        ws.append([
+            i,                          # 0: 번호
+            f"P{i:06d}",                # 1: 상품번호
+            r.get("title", ""),         # 2: 도서명
+            r.get("publisher", ""),     # 3: 출판사
+            r.get("author", ""),        # 4: 저자
+            r.get("pub_date", ""),      # 5: 출간일
+            r.get("list_price", 0),     # 6: 정가
+            r.get("qty", 1),            # 7: 주문수량
+            r.get("isbn"),              # 8: ISBN
+            r.get("extra_code", ""),    # 9: 부가코드
+            r.get("category", ""),      # 10: 분야명
+            r.get("status", "판매중"),  # 11: 유통상태
+            r.get("duplicate", ""),     # 12: 중복여부
+            r.get("price", 0),          # 13: 공급가
+            r.get("rate", "65%"),       # 14: 공급률
         ])
     buf = io.BytesIO()
     wb.save(buf)
@@ -531,6 +572,80 @@ class TestUploadVendorFileView:
         assert bd.available is True
         assert bd.price == Decimal("12000")
         assert BooxenData.objects.filter(sku="9788901234567").count() == 1
+
+    # -----------------------------------------------------------------
+    # SPEC-PURCHASE-ORDER-006: YES24 upload API (REQ-PO6-004/005/009)
+    # -----------------------------------------------------------------
+
+    def test_upload_yes24_file_creates_record(self, auth_client):
+        """AC-005: YES24 업로드 → 200 + Yes24Data 레코드가 price/list_price/status와 함께 생성."""
+        excel_bytes = _make_yes24_excel([{
+            "isbn": "8809226729403", "list_price": 15000, "price": 9750,
+            "status": "판매중",
+        }])
+        file_obj = io.BytesIO(excel_bytes)
+        file_obj.name = "yes24.xlsx"
+        res = auth_client.post(
+            UPLOAD_URL,
+            data={"distributor": "yes24", "file": file_obj},
+            format="multipart",
+        )
+        assert res.status_code == 200
+        assert res.data["parsed_count"] == 1
+        assert res.data["distributor"] == "yes24"
+
+        yd = Yes24Data.objects.get(sku="8809226729403")
+        assert yd.price == Decimal("9750")
+        assert yd.list_price == Decimal("15000")
+        assert yd.status == "판매중"
+
+    def test_upload_yes24_reupload_upserts_not_duplicates(self, auth_client):
+        """AC-006: 동일 SKU 재업로드 시 신규 레코드가 아닌 기존 레코드가 갱신된다."""
+        Yes24Data.objects.create(
+            sku="8809226729403",
+            price=Decimal("9750"),
+            list_price=Decimal("15000"),
+            status="판매중",
+        )
+        excel_bytes = _make_yes24_excel([{
+            "isbn": "8809226729403", "list_price": 15000, "price": 9500,
+            "status": "품절",
+        }])
+        file_obj = io.BytesIO(excel_bytes)
+        file_obj.name = "yes24.xlsx"
+        auth_client.post(
+            UPLOAD_URL,
+            data={"distributor": "yes24", "file": file_obj},
+            format="multipart",
+        )
+        assert Yes24Data.objects.filter(sku="8809226729403").count() == 1
+        yd = Yes24Data.objects.get(sku="8809226729403")
+        assert yd.price == Decimal("9500")
+        assert yd.status == "품절"
+
+    def test_upload_unknown_distributor_returns_400_with_yes24_in_message(self, auth_client):
+        """AC-007: distributor=unknown_vendor → 400, 에러 메시지에 yes24 포함."""
+        fake_file = io.BytesIO(b"dummy")
+        fake_file.name = "dummy.xlsx"
+        res = auth_client.post(
+            UPLOAD_URL,
+            data={"distributor": "unknown_vendor", "file": fake_file},
+            format="multipart",
+        )
+        assert res.status_code == 400
+        assert "yes24" in str(res.data["detail"])
+
+    def test_upload_yes24_empty_data_returns_422(self, auth_client):
+        """AC-010: 헤더만 있고 데이터 행이 없는 YES24 파일 업로드 → 422."""
+        excel_bytes = _make_yes24_excel([])
+        file_obj = io.BytesIO(excel_bytes)
+        file_obj.name = "yes24.xlsx"
+        res = auth_client.post(
+            UPLOAD_URL,
+            data={"distributor": "yes24", "file": file_obj},
+            format="multipart",
+        )
+        assert res.status_code == 422
 
 
 # ---------------------------------------------------------------------------
@@ -1135,6 +1250,74 @@ class TestParseVendorExcel:
 
         assert results[0]["available"] is False
 
+    # -----------------------------------------------------------------
+    # SPEC-PURCHASE-ORDER-006: YES24 parser (REQ-PO6-002, REQ-PO6-008)
+    # -----------------------------------------------------------------
+
+    def test_yes24_column_mapping_correct(self):
+        """AC-001: ISBN/정가/공급가/유통상태 컬럼이 올바르게 매핑된다."""
+        from order.excel_utils import parse_vendor_excel
+
+        excel_bytes = _make_yes24_excel([{
+            "isbn": "8809226729403", "list_price": 15000, "price": 9750,
+            "status": "판매중",
+        }])
+        results = parse_vendor_excel(excel_bytes, "yes24")
+        assert len(results) == 1
+        assert results[0]["sku"] == "8809226729403"
+        assert results[0]["list_price"] == 15000
+        assert results[0]["price"] == 9750
+        assert results[0]["status"] == "판매중"
+        assert results[0]["available"] is None
+
+    def test_yes24_skips_only_one_header_row(self):
+        """AC-002: row 0만 헤더로 스킵하고 row 1부터 데이터로 취급한다."""
+        from order.excel_utils import parse_vendor_excel
+
+        excel_bytes = _make_yes24_excel([
+            {"isbn": "8809226729403", "list_price": 15000, "price": 9750},
+        ])
+        results = parse_vendor_excel(excel_bytes, "yes24")
+        assert len(results) == 1
+        assert results[0]["sku"] == "8809226729403"
+
+    @pytest.mark.parametrize(
+        "raw_status",
+        ["판매중", "절판", "품절", "일시품절", "예약판매", None],
+    )
+    def test_yes24_all_status_values_parse_without_error(self, raw_status):
+        """AC-003: 관측된 6개 유통상태 값 모두 오류 없이 파싱된다."""
+        from order.excel_utils import parse_vendor_excel
+
+        excel_bytes = _make_yes24_excel([{
+            "isbn": "8809226729403", "list_price": 15000, "price": 9750,
+            "status": raw_status,
+        }])
+        results = parse_vendor_excel(excel_bytes, "yes24")
+        assert len(results) == 1
+        assert results[0]["status"] == raw_status
+
+    def test_yes24_excludes_invalid_isbn_rows(self):
+        """AC-004: ISBN이 비어있거나 숫자가 아닌 행은 제외된다."""
+        from order.excel_utils import parse_vendor_excel
+
+        excel_bytes = _make_yes24_excel([
+            {"isbn": None, "list_price": 15000, "price": 9750},
+            {"isbn": "N/A", "list_price": 15000, "price": 9750},
+            {"isbn": "8809226729403", "list_price": 15000, "price": 9750},
+        ])
+        results = parse_vendor_excel(excel_bytes, "yes24")
+        assert len(results) == 1
+        assert results[0]["sku"] == "8809226729403"
+
+    def test_yes24_empty_data_raises_value_error(self):
+        """AC-010: 헤더만 있고 데이터 행이 없으면 ValueError가 발생한다."""
+        from order.excel_utils import parse_vendor_excel
+
+        excel_bytes = _make_yes24_excel([])
+        with pytest.raises(ValueError):
+            parse_vendor_excel(excel_bytes, "yes24")
+
 
 # ---------------------------------------------------------------------------
 # SPEC-PURCHASE-ORDER-003: Refund exclusion & net_quantity field
@@ -1511,3 +1694,31 @@ class TestLineItemBulkStatusUpdateView:
             format="json",
         )
         assert res.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# SPEC-PURCHASE-ORDER-006: YES24 vendor data model
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestYes24DataModel:
+    """REQ-PO6-001: Yes24Data model, keyed by unique sku."""
+
+    def test_create_and_query_by_sku(self):
+        Yes24Data.objects.create(
+            sku="8809226729403",
+            price=Decimal("9750"),
+            list_price=Decimal("15000"),
+            status="판매중",
+        )
+        record = Yes24Data.objects.get(sku="8809226729403")
+        assert record.price == Decimal("9750")
+        assert record.list_price == Decimal("15000")
+        assert record.status == "판매중"
+        assert record.updated_at is not None
+
+    def test_sku_is_unique(self):
+        Yes24Data.objects.create(sku="8809226729404", price=Decimal("1000"))
+        with pytest.raises(Exception):
+            Yes24Data.objects.create(sku="8809226729404", price=Decimal("2000"))
