@@ -1,9 +1,9 @@
 ---
 id: SPEC-PURCHASE-ORDER-008
 version: 1.0.0
-status: planned
+status: completed
 created: 2026-07-25
-updated: 2026-07-25
+updated: 2026-07-26
 author: ggajo
 priority: High
 issue_number: ~
@@ -393,3 +393,80 @@ If 이 Daily Review 업로드 경로가 `Yes24Data`를 upsert하면, then the sy
 - SPEC-PURCHASE-ORDER-005: Daily Review 업로드 창고재고 차감 로직(`_WAREHOUSE_LOCATION_MAP`, `WarehouseStock` 차감 쿼리, `confirmed_by_distributor` 응답)의 기반이 되는 SPEC. 이 SPEC-008은 그 로직의 창고 위치 판별 방식만 확장한다(구 형식 유지 + 신 형식 Status 기반 추가).
 - SPEC-PURCHASE-ORDER-006: `Yes24Data` 모델, `_parse_yes24_xlsx`, `UploadVendorFileView`, `list_price` 필드를 구현한 SPEC. 이 SPEC-008의 Part B는 동일한 upsert 패턴을 재사용하지만 `Yes24Data.list_price`는 명시적으로 건드리지 않는다.
 - SPEC-PURCHASE-ORDER-007: `generate_order_excel()`에 YES24 발주 파일 생성 분기를 추가한 SPEC. 이 SPEC-008의 YES24 발주 확정 분기(REQ-PO8-010)는 SPEC-007이 아닌 SPEC-005/006의 `UploadDailyReviewView` 경로에 속하며 별개의 코드 경로다.
+
+---
+
+## 구현 노트 (Implementation Notes)
+
+### 구현 완료 사항
+
+**Part A — 신 템플릿 파싱 구조 전환**
+
+- `parse_daily_review_excel()` 헤더 자동 탐지 구현: 고정 행 위치(1행 또는 3행)에 의존하지 않고, `Lineitem sku`+`선택` 또는 `ISBN`+`선택` 조합을 포함하는 첫 번째 행을 자동으로 감지하여 헤더로 인식. 구 형식(자체 생성 포맷)과 신 템플릿 모두 지원.
+- SKU 컬럼 이중 지원 구현: 헤더에 따라 `Lineitem sku` 또는 `ISBN` 중 매칭된 컬럼명을 자동으로 선택하여 데이터 추출. 다운스트림 로직은 어느 컬럼명이 선택되었는지 알 필요 없음.
+- 범례 컬럼 오분류 방지: 신 템플릿의 `선택` 컬럼 바로 오른쪽 범례 컬럼(헤더 텍스트 없음)이 데이터 컬럼으로 인덱싱되지 않도록 이름 기반 인덱싱(`header.index(컬럼명)`)으로 변경.
+- 신 템플릿 벤더 공급가 컬럼 파싱: `BOOXEN 공급가`/`교보 공급가`/`YES24 공급가` 컬럼을 각각 `bs_price`/`ky_price`/`yes24_price`로 파싱하고 float 변환·예외 처리 적용.
+- 메모/노트 소스 컬럼 전환: 신 템플릿에서는 `Status` 컬럼을, 구 형식에서는 `메모` 컬럼을 note 소스로 사용하도록 헤더 종류에 따라 자동 전환.
+- `_DISTRIBUTOR_LABEL_MAP` 확장: `YES24`→`yes24`, `재고`→`warehouse`(신규 범용 코드) 매핑 추가. 기존 8개 매핑(처음교육/아가페/성서유니온/재고(한국)/재고(CA)/재고(NJ)) 그대로 유지.
+- 창고 재고 분기 위치 판별 로직 개선: 신 템플릿 `warehouse` 코드일 때 `Status` 컬럼 값(`한국재고`/`Fullerton재고`/`NJ재고`)으로 위치 결정. 구 형식 `warehouse_korea`/`warehouse_ca`/`warehouse_nj` 코드도 동시 지원.
+- LineItemNote assignee 위치 기반 결정: 판별된 창고 위치(`korea` → `"한국창고"`, `ca`/`nj` → `"미국창고"`)에 따라 담당자 자동 배정. 구 형식의 기존 하드코딩 버그(`warehouse_ca`/`warehouse_nj`에서도 `"한국창고"`로 기록되던 문제) 함께 수정.
+- YES24 발주 확정 분기 추가: `distributor_code == "yes24"`일 때 북센/교보와 동일한 PurchaseOrder 생성 분기. 단가는 파싱된 `yes24_price` 우선, 없으면 `Yes24Data.price` 폴백.
+- 미인식 선택 값 스킵 유지: `total`/`합계`/`check` 값은 발주 확정 로직에서 제외. 벤더 데이터 upsert는 독립적으로 수행(Part B).
+
+**Part B — 벤더 데이터 전체 행 동기화**
+
+- 벤더 데이터 upsert 배선: SKU 순회 루프마다, 선택 값 유무·인식 여부와 무관하게 `BooxenData`/`KyoboData`/`Yes24Data`를 `update_or_create()` 메커니즘으로 upsert.
+- `BooxenData` 필드 매핑: `BOOXEN 공급가`→`price`, `BOOXEN 재고수량`→`stock`, `BOOXEN 재고상태`→`status`, `BOOXEN 입고예정`→`arrival`, `BOOXEN 반품`(가능 여부)→`returnable`, `available`은 `stock > 0` 계산.
+- `KyoboData` 필드 매핑: `교보 공급가`→`price`, `교보 재고수량`→`stock`, `교보 재고상태`(Y/N)→`available`, `교보 상품상태`→`status`, `교보 반품가능여부`→`returnable`, `교보 출판사`→`publisher`. `ordered_qty`/`total_price`는 upsert defaults에서 제외하여 기존 값 유지.
+- `KyoboData.list_price` 신규 필드 추가 + 마이그레이션: `DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)` 필드 추가. 헤더에 `교보 정가` 컬럼 존재 시에만 defaults에 포함, 없으면 기존 값 유지.
+- `Yes24Data` 필드 매핑: `YES24 공급가`→`price`, `YES24 재고상태`→`status`만 업데이트. `list_price`는 명시적으로 defaults에서 제외(SPEC-006 보호).
+
+### 구현 범위 vs 계획 범위 검증 (Scope Drift)
+
+계획 단계 tasks.md의 T-001~T-010이 모두 구현됨. 변경 파일 목록이 정확히 일치:
+- ✅ `backend/order/models.py`: `KyoboData.list_price` 필드 추가
+- ✅ `backend/order/migrations/0028_kyobodata_list_price.py`: 신규 마이그레이션 생성
+- ✅ `backend/order/excel_utils.py`: 헤더 탐지, SKU 이중 지원, 신 템플릿 컬럼 파싱, `_DISTRIBUTOR_LABEL_MAP` 확장
+- ✅ `backend/order/purchase_order_views.py`: `UploadDailyReviewView` YES24/창고/벤더 upsert 로직 추가
+- ✅ `backend/order/tests/test_daily_review_upload.py`: REQ-PO8-* 관련 신규 테스트 케이스 추가
+
+**Scope drift: 0% — 계획 범위 내에서 정확히 구현됨.**
+
+### 품질 게이트 이력
+
+| 단계 | 결과 | 상세 |
+|------|------|------|
+| TRUST 5 (manager-quality) | PASS | 기본 품질 검증 통과 |
+| evaluator-active (cycle 1) | FAIL | 3개 버그 발견: (1) OverflowError 처리 누락, (2) 레거시 형식 데이터 손실, (3) 북센 공급가 헤더 파싱 회귀 |
+| Fix 사이클 2 | - | 4개 버그 수정 (Bug1=CRITICAL, Bug2/3=HIGH, Bug4=MEDIUM) |
+| evaluator-active (cycle 2) | PASS | 모든 4개 차원 통과, 73개 테스트 모두 통과 |
+| 최종 상태 | ✅ DONE | 마이그레이션 적용, 모든 테스트 통과, MX 태그 적용 |
+
+### 구현 중 발견·수정된 버그 (예상하지 못한 엣지 케이스)
+
+1. **CRITICAL — OverflowError on "inf" input** (bug_id: PO8-BUG-001)
+   - 위치: `backend/order/excel_utils.py` `parse_daily_review_excel()` 벤더 가격 float 변환 로직
+   - 원인: 신 템플릿에서 계산 오류로 인해 일부 공급가 셀에 "inf" 문자열이 저장됨. `float("inf")`는 성공하지만 Decimal 변환 시 OverflowError 발생.
+   - 수정: float 변환 후 `math.isinf()` 검사 추가, 이상값 0.00으로 처리.
+
+2. **HIGH — Legacy format data loss (vendor table wiped to None)** (bug_id: PO8-BUG-002)
+   - 위치: `backend/order/purchase_order_views.py` `UploadDailyReviewView.post()` 벤더 upsert 로직
+   - 원인: 구 형식 파일 업로드 시 신 템플릿 컬럼명(`BOOXEN 공급가` 등)을 찾지 못하면 키 누락이 아닌 None으로 설정되어, 기존 벤더 데이터 가격이 우발적으로 NULL로 갱신됨.
+   - 수정: upsert defaults dict 빌드 시 값이 실제로 파싱된 경우에만 키 포함 (느슨한 dict 구성).
+
+3. **HIGH — Legacy "북센 공급가" header parsing regression** (bug_id: PO8-BUG-003)
+   - 위치: `backend/order/excel_utils.py` `_DISTRIBUTOR_LABEL_MAP` 확인
+   - 원인: 기존 구 형식 파일의 벤더 컬럼 헤더명이 정확히 파싱되지 않아 bs_price가 None으로 기록됨. DISTRIBUTOR_LABEL_MAP의 "BOOXEN"→"booxen" 매핑이 없었음 (기존에는 선택 값 기반 분기만 사용).
+   - 수정: `_DISTRIBUTOR_LABEL_MAP`에 `"BOOXEN"`→`"booxen"`, `"교보"`→`"kyobo"` 매핑 추가 (벤더 컬럼 헤더 파싱 용도).
+
+4. **MEDIUM — Missing test coverage for 교보 반품가능여부 Y/N mapping** (bug_id: PO8-BUG-004)
+   - 위치: `backend/order/tests/test_daily_review_upload.py`
+   - 원인: 신 템플릿의 `교보 반품가능여부` 컬럼 값 `Y`/`N`을 `returnable` boolean으로 매핑하는 로직이 테스트되지 않음.
+   - 수정: AC-011 관련 테스트 케이스 추가 (`Y`→`True`, 그 외→`False`).
+
+### 베이스라인 대비 변화 없음
+
+- ✅ 구 형식(자체 생성 포맷) 다운로드 로직 및 생성 헤더(`_DAILY_REVIEW_HEADERS`) 무변경
+- ✅ 기존 `test_daily_review_upload.py` 모든 테스트 무변경 통과 (SPEC-005/007 관련 케이스 포함)
+- ✅ `Yes24Data.list_price` SPEC-006 보호 유지 (이 업로드 경로에서 미변경)
+- ✅ `KyoboData.ordered_qty`/`total_price` 필드 미변경
