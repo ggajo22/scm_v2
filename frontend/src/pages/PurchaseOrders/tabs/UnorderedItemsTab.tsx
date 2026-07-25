@@ -81,7 +81,7 @@ export function UnorderedItemsTab() {
     )
   }
 
-  const distributorLabel: Record<string, string> = { booxen: '북센', kyobo: '교보' }
+  const distributorLabel: Record<string, string> = { booxen: '북센', kyobo: '교보', yes24: 'YES24' }
 
   const handleGenerateFile = async (distributor: string) => {
     if (selectedSkus.length === 0) return
@@ -160,6 +160,16 @@ export function UnorderedItemsTab() {
           >
             <Download className="h-4 w-4" aria-hidden="true" />
             {loadingDistributor === 'kyobo' ? '생성 중...' : '교보 발주 파일 생성'}
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={selectedSkus.length === 0 || loadingDistributor === 'yes24'}
+            onClick={() => handleGenerateFile('yes24')}
+            className="gap-2"
+          >
+            <Download className="h-4 w-4" aria-hidden="true" />
+            {loadingDistributor === 'yes24' ? '생성 중...' : 'YES24 발주 파일 생성'}
           </Button>
         </div>
       </div>

@@ -66,6 +66,10 @@ def generate_order_excel(skus_data: list[dict], distributor: str) -> bytes:
         ws.append(["ISBN", "수량"])
         for row in skus_data:
             ws.append([row["sku"], row["total_quantity"]])
+    elif distributor == "yes24":
+        ws.append(["번호", "도서명", "ISBN", "출판사", "정가", "수량"])
+        for row in skus_data:
+            ws.append(["", "", row["sku"], "", "", row["total_quantity"]])
     else:
         ws.append(["ISBN", "도서명", "수량"])
         for row in skus_data:

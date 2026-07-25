@@ -448,6 +448,22 @@ class TestGenerateOrderFileView:
         res = auth_client.post(GENERATE_URL, data=payload, format="json")
         assert res.status_code == 400
 
+    def test_returns_excel_for_yes24_distributor(self, auth_client):
+        """AC-003: yes24 is accepted as a valid distributor and returns YES24-format Excel."""
+        self._setup_sku("8809226729403", "테스트 도서", 5)
+        payload = {"distributor": "yes24", "skus": ["8809226729403"]}
+        res = auth_client.post(GENERATE_URL, data=payload, format="json")
+        assert res.status_code == 200
+        assert EXCEL_CONTENT_TYPE in res["Content-Type"]
+        wb = openpyxl.load_workbook(io.BytesIO(res.content))
+        ws = wb.active
+        rows = list(ws.iter_rows(values_only=True))
+        assert rows[0] == ("번호", "도서명", "ISBN", "출판사", "정가", "수량")
+        assert rows[1][2] == "8809226729403"
+        assert rows[1][5] == 5
+        disposition = res.get("Content-Disposition", "")
+        assert "yes24" in disposition
+
     def test_partial_refund_reduces_excel_quantity(self, auth_client):
         """Excel quantity reflects net (original − refund): qty=2, refund=1 → Excel shows 1."""
         order = _make_order(shopify_order_id=92010)
@@ -1160,6 +1176,26 @@ class TestGenerateOrderExcel:
         assert rows[0] == ("ISBN", "수량")
         assert rows[1][0] == "9780001"
         assert rows[1][1] == 3
+
+    def test_yes24_column_format(self):
+        from order.excel_utils import generate_order_excel
+
+        data = [{"sku": "8809226729403", "title": "테스트 도서", "total_quantity": 5}]
+        result = generate_order_excel(data, "yes24")
+        wb = openpyxl.load_workbook(io.BytesIO(result))
+        ws = wb.active
+        rows = list(ws.iter_rows(values_only=True))
+        assert rows[0] == ("번호", "도서명", "ISBN", "출판사", "정가", "수량")
+        assert rows[1][2] == "8809226729403"
+        assert rows[1][5] == 5
+        # NOTE: openpyxl round-trips empty-string cells as None on read
+        # (xlsx does not persist a distinction between "" and a blank cell).
+        # The write side still emits "" per REQ-PO7-001; this assertion
+        # reflects the actual observed read-back value, not a literal "".
+        assert rows[1][0] is None
+        assert rows[1][1] is None
+        assert rows[1][3] is None
+        assert rows[1][4] is None
 
     def test_empty_data_still_has_header(self):
         from order.excel_utils import generate_order_excel

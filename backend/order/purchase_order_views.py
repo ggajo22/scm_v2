@@ -53,7 +53,7 @@ from .models import (
     Yes24Data,
 )
 
-VALID_DISTRIBUTORS = {"booxen", "kyobo", "choeumgoyuk", "agape", "sungseoyunion",
+VALID_DISTRIBUTORS = {"booxen", "kyobo", "yes24", "choeumgoyuk", "agape", "sungseoyunion",
                       "warehouse_korea", "warehouse_ca", "warehouse_nj"}
 VENDOR_FILE_DISTRIBUTORS = {"booxen", "kyobo", "yes24"}
 VENDOR_RULE_DISTRIBUTORS = {"choeumgoyuk", "agape", "sungseoyunion"}
