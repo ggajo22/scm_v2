@@ -604,6 +604,10 @@ _DISTRIBUTOR_LABEL_MAP: dict[str, str] = {
     "재고(한국)": "warehouse_korea",
     "재고(CA)": "warehouse_ca",
     "재고(NJ)": "warehouse_nj",
+    # SPEC-PURCHASE-ORDER-008: new external template labels (AC-004, REQ-PO8-006/007)
+    "BOOXEN": "booxen",  # new template legend uses English "BOOXEN" instead of "북센"
+    "YES24": "yes24",
+    "재고": "warehouse",  # generic warehouse code; location resolved from Status (REQ-PO8-008)
 }
 
 # Maps '선택' column CS-type values to purchase_status codes
@@ -684,19 +688,80 @@ def generate_daily_review_excel(rows: list[dict]) -> bytes:
     return buf.getvalue()
 
 
+def _cell(row: tuple, idx: int | None):
+    """Safely read a cell by index; returns None when idx is unset or out of range."""
+    if idx is None or len(row) <= idx:
+        return None
+    return row[idx]
+
+
+def _str_or_none(value) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _float_or_none(value) -> float | None:
+    try:
+        return float(value) if value not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _int_or_none(value) -> int | None:
+    f = _float_or_none(value)
+    if f is None:
+        return None
+    try:
+        return int(f)
+    except (OverflowError, ValueError):
+        # e.g. float("inf")/"nan" parse fine but cannot convert to int —
+        # degrade gracefully to None instead of propagating an unhandled 500.
+        return None
+
+
 def parse_daily_review_excel(file_bytes: bytes) -> list[dict]:
     """
     Parse an uploaded Daily Review Excel file.
 
-    Reads the '선택' column (Korean display name) and 'ISBN' column.
-    Skips rows where '선택' is empty or maps to an unknown distributor.
+    Supports two header layouts, auto-detected by scanning rows for the first
+    one that contains a '선택' cell together with either a 'Lineitem sku' cell
+    (external "Daily Order Review Template", header typically on row 3) or an
+    'ISBN' cell (legacy self-generated format, header on row 1) — REQ-PO8-001.
+    All column lookups are name-based (header.index()), never positional, so
+    the headerless legend column that sits immediately right of '선택' in the
+    new template is never read as data (REQ-PO8-003).
+
+    The note/memo source column also depends on which SKU column matched: the
+    new template has no '메모' column and uses 'Status' instead; the legacy
+    format keeps using '메모' (REQ-PO8-005).
+
+    Rows are returned for every non-empty SKU regardless of whether '선택' is
+    populated or recognized (REQ-PO8-011, REQ-PO8-014) — Part B vendor-table
+    sync consumes every such row independently of purchase-order confirmation.
 
     Returns:
-        List of dicts: {sku: str, distributor: str, note: str|None}
-        distributor is the internal code (booxen, kyobo, choeumgoyuk, agape).
+        List of dicts:
+            sku, distributor, note_type, note,
+            bs_price, ky_price, yes24_price (always present, value None when
+                the cell/column is unset — safe because callers only act on
+                these when not None),
+            bs_stock, bs_status, bs_arrival, bs_returnable, bs_available,
+            yes24_status,
+            ky_stock, ky_available, ky_status, ky_returnable, ky_publisher,
+            ky_list_price
+                — each of these keys is present ONLY when its source header
+                column exists in this file (same convention as ky_list_price
+                below), so a legacy-format upload (which lacks these columns
+                under these names) never overwrites existing vendor-table
+                values with None/False (Bug-1-fix, REQ-PO8-014 hardening).
+        distributor is the internal code (booxen, kyobo, yes24, choeumgoyuk,
+        agape, sungseoyunion, warehouse, warehouse_korea/ca/nj) or None when
+        '선택' is empty or unrecognized.
 
     Raises:
-        ValueError: If file is unreadable or missing required columns.
+        ValueError: If file is unreadable or no header row is found.
     """
     try:
         wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
@@ -708,18 +773,66 @@ def parse_daily_review_excel(file_bytes: bytes) -> list[dict]:
     if len(rows) < 2:
         raise ValueError("파일이 비어 있습니다.")
 
-    header = [str(h).strip() if h is not None else "" for h in rows[0]]
-    if "ISBN" not in header or "선택" not in header:
-        raise ValueError("올바른 Daily Review 형식의 파일이 아닙니다 (ISBN, 선택 컬럼 필요).")
+    header: list[str] | None = None
+    header_row_idx: int | None = None
+    sku_header_name: str | None = None
+    for idx, raw_row in enumerate(rows):
+        candidate = [str(h).strip() if h is not None else "" for h in raw_row]
+        if "선택" not in candidate:
+            continue
+        if "Lineitem sku" in candidate:
+            sku_header_name = "Lineitem sku"
+        elif "ISBN" in candidate:
+            sku_header_name = "ISBN"
+        else:
+            continue
+        header = candidate
+        header_row_idx = idx
+        break
 
-    sku_idx = header.index("ISBN")
+    if header is None or header_row_idx is None or sku_header_name is None:
+        raise ValueError(
+            "올바른 Daily Review 형식의 파일이 아닙니다 (ISBN 또는 Lineitem sku, 선택 컬럼 필요)."
+        )
+
+    sku_idx = header.index(sku_header_name)
     selected_idx = header.index("선택")
-    note_idx = header.index("메모") if "메모" in header else None
-    bs_price_idx = header.index("북센 공급가") if "북센 공급가" in header else None
+    is_new_template = sku_header_name == "Lineitem sku"
+
+    if is_new_template:
+        note_idx = header.index("Status") if "Status" in header else None
+    else:
+        note_idx = header.index("메모") if "메모" in header else None
+
+    # REQ-PO8-004/Bug-3-fix: new template uses "BOOXEN 공급가"; the legacy
+    # self-generated format (_DAILY_REVIEW_HEADERS) uses "북센 공급가" for the
+    # same column. Check the new-template name first, fall back to legacy —
+    # same dual-alias pattern already used for the SKU column.
+    if "BOOXEN 공급가" in header:
+        bs_price_idx = header.index("BOOXEN 공급가")
+    elif "북센 공급가" in header:
+        bs_price_idx = header.index("북센 공급가")
+    else:
+        bs_price_idx = None
     ky_price_idx = header.index("교보 공급가") if "교보 공급가" in header else None
+    yes24_price_idx = header.index("YES24 공급가") if "YES24 공급가" in header else None
+
+    bs_stock_idx = header.index("BOOXEN 재고수량") if "BOOXEN 재고수량" in header else None
+    bs_status_idx = header.index("BOOXEN 재고상태") if "BOOXEN 재고상태" in header else None
+    bs_arrival_idx = header.index("BOOXEN 입고예정") if "BOOXEN 입고예정" in header else None
+    bs_returnable_idx = header.index("BOOXEN 반품") if "BOOXEN 반품" in header else None
+
+    yes24_status_idx = header.index("YES24 재고상태") if "YES24 재고상태" in header else None
+
+    ky_stock_idx = header.index("교보 재고수량") if "교보 재고수량" in header else None
+    ky_available_idx = header.index("교보 재고상태") if "교보 재고상태" in header else None
+    ky_status_idx = header.index("교보 상품상태") if "교보 상품상태" in header else None
+    ky_returnable_idx = header.index("교보 반품가능여부") if "교보 반품가능여부" in header else None
+    ky_publisher_idx = header.index("교보 출판사") if "교보 출판사" in header else None
+    ky_list_price_idx = header.index("교보 정가") if "교보 정가" in header else None
 
     results = []
-    for row in rows[1:]:
+    for row in rows[header_row_idx + 1:]:
         if len(row) <= max(sku_idx, selected_idx):
             continue
 
@@ -728,47 +841,83 @@ def parse_daily_review_excel(file_bytes: bytes) -> list[dict]:
         if not sku:
             continue
 
-        raw_selected = row[selected_idx]
-        selected_label = str(raw_selected).strip() if raw_selected is not None else ""
-        if not selected_label:
-            continue
+        selected_label = _str_or_none(_cell(row, selected_idx)) or ""
 
-        distributor_code = _DISTRIBUTOR_LABEL_MAP.get(selected_label)
+        distributor_code = _DISTRIBUTOR_LABEL_MAP.get(selected_label) if selected_label else None
         note_type: str | None = None
-        if not distributor_code:
-            note_type = _NOTE_TYPE_STATUS_MAP.get(selected_label) and selected_label
-            if not note_type:
-                continue  # Unknown label — skip silently
+        if selected_label and not distributor_code and selected_label in _NOTE_TYPE_STATUS_MAP:
+            note_type = selected_label
 
-        note: str | None = None
-        if note_idx is not None and len(row) > note_idx:
-            raw_note = row[note_idx]
-            if raw_note is not None:
-                note = str(raw_note).strip() or None
+        note = _str_or_none(_cell(row, note_idx))
 
-        bs_price: float | None = None
-        if bs_price_idx is not None and len(row) > bs_price_idx:
-            raw = row[bs_price_idx]
-            try:
-                bs_price = float(raw) if raw not in (None, "") else None
-            except (ValueError, TypeError):
-                bs_price = None
+        bs_price = _float_or_none(_cell(row, bs_price_idx))
+        ky_price = _float_or_none(_cell(row, ky_price_idx))
+        yes24_price = _float_or_none(_cell(row, yes24_price_idx))
 
-        ky_price: float | None = None
-        if ky_price_idx is not None and len(row) > ky_price_idx:
-            raw = row[ky_price_idx]
-            try:
-                ky_price = float(raw) if raw not in (None, "") else None
-            except (ValueError, TypeError):
-                ky_price = None
+        bs_stock = _int_or_none(_cell(row, bs_stock_idx))
+        bs_status = _str_or_none(_cell(row, bs_status_idx))
+        bs_arrival = _str_or_none(_cell(row, bs_arrival_idx))
+        # REQ-PO8-015: '가능' -> True, any other value (including blank) -> False.
+        bs_returnable = _str_or_none(_cell(row, bs_returnable_idx)) == "가능"
+        bs_available = bs_stock is not None and bs_stock > 0
 
-        results.append({
+        yes24_status = _str_or_none(_cell(row, yes24_status_idx))
+
+        ky_stock = _int_or_none(_cell(row, ky_stock_idx))
+        raw_ky_available = _cell(row, ky_available_idx)
+        ky_available = (
+            str(raw_ky_available).strip().upper() == "Y" if raw_ky_available is not None else None
+        )
+        ky_status = _str_or_none(_cell(row, ky_status_idx))
+        raw_ky_returnable = _cell(row, ky_returnable_idx)
+        ky_returnable = (
+            str(raw_ky_returnable).strip().upper() == "Y" if raw_ky_returnable is not None else None
+        )
+        ky_publisher = _str_or_none(_cell(row, ky_publisher_idx))
+
+        result = {
             "sku": sku,
             "distributor": distributor_code,
             "note_type": note_type,
             "note": note,
             "bs_price": bs_price,
             "ky_price": ky_price,
-        })
+            "yes24_price": yes24_price,
+        }
+        # Bug-1-fix (REQ-PO8-014 hardening): only include a Part B vendor
+        # field in the result dict when its source column actually exists in
+        # this file's header. Legacy-format files (ISBN+선택, row 1) never had
+        # these BOOXEN/YES24/일부 교보 columns under these exact names, so the
+        # key must be entirely absent rather than present-with-None — the
+        # view relies on key absence to leave existing DB values untouched.
+        # Same "only present if the column existed" convention already used
+        # for ky_list_price above.
+        if bs_stock_idx is not None:
+            result["bs_stock"] = bs_stock
+            result["bs_available"] = bs_available
+        if bs_status_idx is not None:
+            result["bs_status"] = bs_status
+        if bs_arrival_idx is not None:
+            result["bs_arrival"] = bs_arrival
+        if bs_returnable_idx is not None:
+            result["bs_returnable"] = bs_returnable
+        if yes24_status_idx is not None:
+            result["yes24_status"] = yes24_status
+        if ky_stock_idx is not None:
+            result["ky_stock"] = ky_stock
+        if ky_available_idx is not None:
+            result["ky_available"] = ky_available
+        if ky_status_idx is not None:
+            result["ky_status"] = ky_status
+        if ky_returnable_idx is not None:
+            result["ky_returnable"] = ky_returnable
+        if ky_publisher_idx is not None:
+            result["ky_publisher"] = ky_publisher
+        # REQ-PO8-017: only include list_price when the '교보 정가' column exists,
+        # so an upload without it never clears an existing KyoboData.list_price.
+        if ky_list_price_idx is not None:
+            result["ky_list_price"] = _float_or_none(_cell(row, ky_list_price_idx))
+
+        results.append(result)
 
     return results

@@ -946,13 +946,23 @@ class UploadDailyReviewView(APIView):
     POST /api/purchase-orders/upload-daily-review/
 
     Multipart: file (.xlsx)
-    Parses the Daily Review Excel file, reads the '선택' column (Korean display name),
-    and confirms purchase orders for rows with a valid selection.
-    Rows with empty '선택' are skipped.
+    Parses the Daily Review Excel file (legacy self-generated format or the
+    external "Daily Order Review Template", auto-detected — SPEC-PURCHASE-ORDER-008),
+    reads the '선택' column (Korean display name), and confirms purchase
+    orders for rows with a valid, recognized selection. Independently of that
+    selection, every row with a non-empty SKU also syncs BooxenData/KyoboData/
+    Yes24Data (Part B — REQ-PO8-014).
+    Rows with empty or unrecognized '선택' are skipped from PO/CS/warehouse
+    confirmation only.
     """
 
     authentication_classes = [JWTAuthentication]
     permission_classes = [IsAuthenticated]
+
+    # @MX:WARN: [AUTO] High branch count: per-row vendor upsert (Booxen/Kyobo/Yes24)
+    # plus CS/warehouse/PO confirmation logic
+    # @MX:REASON: Mirrors UploadVendorFileView's parsing/upsert complexity;
+    # SPEC-PURCHASE-ORDER-008 explicitly scoped out extracting a shared helper
 
     def post(self, request) -> Response:
         uploaded = request.FILES.get("file")
@@ -982,11 +992,18 @@ class UploadDailyReviewView(APIView):
         errors: list[dict] = []
         confirmed_by_distributor: dict[str, list] = {}
 
-        # Warehouse distributor code → location mapping
+        # Warehouse distributor code → location mapping (legacy location-suffixed codes)
         _WAREHOUSE_LOCATION_MAP: dict[str, str] = {
             "warehouse_korea": "korea",
             "warehouse_ca": "ca",
             "warehouse_nj": "nj",
+        }
+        # REQ-PO8-008: new template's generic 'warehouse' code resolves location
+        # from the row's note value (Status column) instead of a suffixed code.
+        _WAREHOUSE_NOTE_LOCATION_MAP: dict[str, str] = {
+            "한국재고": "korea",
+            "Fullerton재고": "ca",
+            "NJ재고": "nj",
         }
 
         try:
@@ -995,6 +1012,60 @@ class UploadDailyReviewView(APIView):
                     distributor_code = item["distributor"]
                     note = item.get("note")
                     note_type = item.get("note_type")
+
+                    # Part B (REQ-PO8-014): vendor-table sync — runs for every row
+                    # with a non-empty SKU, independent of '선택'. Price fields are
+                    # omitted from defaults when the row has no value so a blank
+                    # price never overwrites (and defeats) the price fallback the
+                    # confirmation logic below performs for this same SKU (AC-006).
+                    #
+                    # Bug-1-fix: every other Part B field is only added to
+                    # `defaults` when its key is present in `item` — i.e. when
+                    # parse_daily_review_excel() found the source column in
+                    # this file's header. A legacy-format upload (whose header
+                    # lacks these columns under these names) therefore never
+                    # writes None/False over an existing vendor-table value.
+                    booxen_defaults: dict = {}
+                    if "bs_stock" in item:
+                        booxen_defaults["stock"] = item["bs_stock"]
+                    if "bs_status" in item:
+                        booxen_defaults["status"] = item["bs_status"]
+                    if "bs_arrival" in item:
+                        booxen_defaults["arrival"] = item["bs_arrival"]
+                    if "bs_returnable" in item:
+                        booxen_defaults["returnable"] = item["bs_returnable"]
+                    if "bs_available" in item:
+                        booxen_defaults["available"] = item["bs_available"]
+                    if item.get("bs_price") is not None:
+                        booxen_defaults["price"] = Decimal(str(item["bs_price"]))
+                    BooxenData.objects.update_or_create(sku=sku, defaults=booxen_defaults)
+
+                    yes24_defaults: dict = {}
+                    if "yes24_status" in item:
+                        yes24_defaults["status"] = item["yes24_status"]
+                    if item.get("yes24_price") is not None:
+                        yes24_defaults["price"] = Decimal(str(item["yes24_price"]))
+                    Yes24Data.objects.update_or_create(sku=sku, defaults=yes24_defaults)
+
+                    kyobo_defaults: dict = {}
+                    if "ky_stock" in item:
+                        kyobo_defaults["stock"] = item["ky_stock"]
+                    if "ky_available" in item:
+                        kyobo_defaults["available"] = item["ky_available"]
+                    if "ky_status" in item:
+                        kyobo_defaults["status"] = item["ky_status"]
+                    if "ky_returnable" in item:
+                        kyobo_defaults["returnable"] = item["ky_returnable"]
+                    if "ky_publisher" in item:
+                        kyobo_defaults["publisher"] = item["ky_publisher"]
+                    if item.get("ky_price") is not None:
+                        kyobo_defaults["price"] = Decimal(str(item["ky_price"]))
+                    if "ky_list_price" in item:
+                        raw_list_price = item["ky_list_price"]
+                        kyobo_defaults["list_price"] = (
+                            Decimal(str(raw_list_price)) if raw_list_price is not None else None
+                        )
+                    KyoboData.objects.update_or_create(sku=sku, defaults=kyobo_defaults)
 
                     unordered_lis = list(
                         LineItem.objects.filter(sku=sku, purchase_status="unordered")
@@ -1028,9 +1099,26 @@ class UploadDailyReviewView(APIView):
                         confirmed_count += 1
                         continue
 
-                    if distributor_code in _WAREHOUSE_LOCATION_MAP:
-                        # REQ-PO5-004: Warehouse branch — deduct stock, set in_stock, no PO
-                        loc = _WAREHOUSE_LOCATION_MAP[distributor_code]
+                    if distributor_code is None:
+                        # REQ-PO8-011: empty or unrecognized '선택' (e.g. 합계/total/
+                        # check legend values) — skip PO/CS/warehouse confirmation.
+                        # Vendor sync above already ran regardless.
+                        skipped_count += 1
+                        continue
+
+                    is_warehouse = (
+                        distributor_code in _WAREHOUSE_LOCATION_MAP
+                        or distributor_code == "warehouse"
+                    )
+                    if is_warehouse:
+                        if distributor_code == "warehouse":
+                            # REQ-PO8-008: resolve location from the Status value
+                            loc = _WAREHOUSE_NOTE_LOCATION_MAP.get(note or "")
+                            if loc is None:
+                                skipped_count += 1
+                                continue
+                        else:
+                            loc = _WAREHOUSE_LOCATION_MAP[distributor_code]
 
                         # Atomic stock deduction: floor at 0
                         WarehouseStock.objects.filter(isbn=sku, location=loc).update(
@@ -1047,13 +1135,15 @@ class UploadDailyReviewView(APIView):
                             li.purchase_status = "in_stock"
                             li.confirmed_distributor = distributor_code
                         if note is not None:
-                            # Migrated to LineItemNote (SPEC-ORDER-010)
+                            # REQ-PO8-009: assignee determined by resolved location
+                            # (also fixes legacy warehouse_ca/nj always logging 한국창고)
+                            assignee = "한국창고" if loc == "korea" else "미국창고"
                             for li in unordered_lis:
                                 LineItemNote.objects.create(
                                     line_item=li,
                                     content=note,
                                     author=None,
-                                    assignee="한국창고",
+                                    assignee=assignee,
                                 )
 
                         LineItem.objects.bulk_update(unordered_lis, update_fields)
@@ -1074,6 +1164,13 @@ class UploadDailyReviewView(APIView):
                                 kd = KyoboData.objects.filter(sku=sku).first()
                                 if kd:
                                     unit_price = kd.price
+                        elif distributor_code == "yes24":
+                            # REQ-PO8-010
+                            unit_price = item.get("yes24_price")
+                            if unit_price is None:
+                                yd = Yes24Data.objects.filter(sku=sku).first()
+                                if yd:
+                                    unit_price = yd.price
 
                         po = PurchaseOrder.objects.create(
                             sku=sku,

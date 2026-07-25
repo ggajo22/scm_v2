@@ -1,0 +1,19 @@
+## SPEC-PURCHASE-ORDER-008 Progress
+
+- Started: 2026-07-25
+- Phase 0.9: detected language = Python (backend/pyproject.toml) → moai-lang-python
+- Phase 0.95: Scale-based mode = Standard Mode (single domain: backend/order, ~5 files) → manager-strategy + expert-backend(via manager-tdd) + manager-quality
+- Harness level: standard (file_count=5 > 3, single domain, priority=High not critical)
+- Development mode: tdd (quality.yaml constitution.development_mode)
+- Phase 1 complete: manager-strategy produced tasks.md (T-001~T-010), plan approved by user
+- Phase 1.6 complete: 15 acceptance criteria (AC-001~AC-015) registered as pending tasks
+- Phase 1.8: MX context — excel_utils.py has module-level @MX:ANCHOR (Excel I/O public API); purchase_order_views.py has @MX:WARN at ~256 (UploadVendorFileView complex branch count) — analogous WARN may be warranted on UploadDailyReviewView after Part B upsert wiring lands
+- Development mode routing: tdd -> manager-tdd
+- Phase 2.5 (manager-quality TRUST5): PASS reported, but did not catch legacy-format data-loss bug
+- Phase 2.8a (evaluator-active, cycle 1): FAIL — Security HARD FAIL (OverflowError 500) + Functionality FAIL (legacy uploads wipe vendor tables to None; bs_price regression for legacy 북센 공급가 header)
+- All 3 findings independently reproduced by orchestrator before accepting: confirmed in purchase_order_views.py:1021-1051, excel_utils.py:712-714, excel_utils.py:793
+- Routing back to manager-tdd for fix cycle 2/3 (max 3 per spec-workflow.md)
+- Fix cycle 2 complete: all 4 findings fixed (Bug1 CRITICAL, Bug2/3 HIGH, Bug4 MEDIUM), 73 tests total, orchestrator independently re-verified via direct pytest/ruff runs
+- Phase 2.8a (evaluator-active, cycle 2): PASS across all 4 dimensions, independently re-ran full suite/ruff itself, confirmed zero new violations
+- Phase 2.9 MX tags: @MX:WARN/@MX:REASON added on UploadDailyReviewView.post() per prior implementation report
+- Proceeding to Phase 3: git operations (auto_branch=false -> commit directly to master; auto_commit=true; auto_push=false, do not push)

@@ -13,6 +13,7 @@ Covers:
 """
 
 import io
+from decimal import Decimal
 
 import openpyxl
 import pytest
@@ -102,7 +103,8 @@ def _make_daily_review_excel(rows: list[dict]) -> bytes:
             row.get("korea_stock", 0),
             row.get("ca_stock", 0),
             row.get("nj_stock", 0),
-            "", "", "", "", "", "", "", "", "", "", "", "", "", "",
+            row.get("bs_price", ""),
+            "", "", "", "", "", "", "", "", "", "", "", "", "",
             row.get("selected", ""),
         ])
     buf = io.BytesIO()
@@ -658,3 +660,960 @@ class TestUploadWarehouseEdgeCases:
         # Stock should not be touched
         stock = WarehouseStock.objects.get(isbn=sku, location="ca")
         assert stock.quantity == 10
+
+
+# ===========================================================================
+# SPEC-PURCHASE-ORDER-008
+#
+# Covers:
+#   REQ-PO8-001  Header row auto-detection (old row1 ISBN+선택 / new row3 Lineitem sku+선택)
+#   REQ-PO8-002  Dual SKU column header name support
+#   REQ-PO8-003  Headerless legend column never indexed as data
+#   REQ-PO8-004  bs_price/ky_price/yes24_price parsing from new template columns
+#   REQ-PO8-005  Note/memo source switch (Status vs 메모)
+#   REQ-PO8-006  _DISTRIBUTOR_LABEL_MAP: YES24 -> yes24
+#   REQ-PO8-007  _DISTRIBUTOR_LABEL_MAP: 재고 -> warehouse (generic)
+#   REQ-PO8-008  Warehouse location resolved from Status value (new template)
+#   REQ-PO8-009  LineItemNote assignee determined by resolved location
+#   REQ-PO8-010  YES24 purchase-order confirmation branch
+#   REQ-PO8-011  Unrecognized 선택 values (합계/total/check) skipped from PO logic
+#   REQ-PO8-012  Legacy label map entries preserved
+#   REQ-PO8-013  Old format regression safety
+#   REQ-PO8-014  Vendor table upsert runs for every row with a SKU
+#   REQ-PO8-015  BooxenData field mapping
+#   REQ-PO8-016  KyoboData field mapping (existing fields)
+#   REQ-PO8-017  KyoboData.list_price field + conditional inclusion
+#   REQ-PO8-018  Yes24Data field mapping + list_price protection
+# ===========================================================================
+
+
+def _make_new_template_excel(
+    rows: list[dict],
+    *,
+    include_kyobo_list_price: bool = False,
+    junk_rows: int = 2,
+) -> bytes:
+    """
+    Build a 'Daily Order Review Template' .xlsx matching the real external
+    template structure (SPEC-PURCHASE-ORDER-008): the header is NOT row 1
+    (simulated via leading junk rows), the SKU column is named
+    'Lineitem sku' rather than 'ISBN', and a headerless legend column
+    (containing unrelated reference values, never real row data) sits
+    immediately to the right of '선택'.
+    """
+    wb = openpyxl.Workbook()
+    ws = wb.active
+
+    for _ in range(junk_rows):
+        ws.append(["작업 파일 안내", None, None])
+
+    header = [
+        "", "Shipping Zip", "Date", "Name", "Lineitem sku", "Lineitem name", "Email",
+        "Total", "location", "Status", "in Stock", "Stock Location", "SKU별 필요수량",
+        "BOOXEN 공급가", "YES24 공급가", "YES24 재고상태", "교보 공급가",
+        "BOOXEN 재고수량", "BOOXEN 재고상태", "교보 재고수량", "교보 재고상태",
+        "비교시작", "Min Cost", "BOOXEN 가격비교", "YES24 가격비교", "교보 가격비교",
+        "차이", "기준over", "BOOXEN 입고예정", "BOOXEN 반품", "교보 상품상태",
+        "교보 분야", "교보 출판사", "교보 반품가능여부", "가격차이알림", "후보기준", "선택",
+        "",  # headerless legend column immediately right of 선택 (REQ-PO8-003)
+    ]
+    if include_kyobo_list_price:
+        header.append("교보 정가")
+    ws.append(header)
+
+    legend_values = [
+        "total", "BOOXEN", "교보", "YES24", "주문취소", "재고",
+        "주문보류", "CS필요", "타출판사", "합계", "check",
+    ]
+
+    for i, row in enumerate(rows):
+        data = [""] * len(header)
+
+        def set_col(name: str, value) -> None:
+            data[header.index(name)] = value
+
+        set_col("Lineitem sku", row.get("sku", ""))
+        set_col("Status", row.get("status", ""))
+        set_col("선택", row.get("selected", ""))
+        for key, col_name in (
+            ("bs_price", "BOOXEN 공급가"),
+            ("ky_price", "교보 공급가"),
+            ("yes24_price", "YES24 공급가"),
+            ("bs_stock", "BOOXEN 재고수량"),
+            ("bs_status", "BOOXEN 재고상태"),
+            ("bs_arrival", "BOOXEN 입고예정"),
+            ("bs_returnable", "BOOXEN 반품"),
+            ("yes24_status", "YES24 재고상태"),
+            ("ky_stock", "교보 재고수량"),
+            ("ky_available", "교보 재고상태"),
+            ("ky_status", "교보 상품상태"),
+            ("ky_returnable", "교보 반품가능여부"),
+            ("ky_publisher", "교보 출판사"),
+        ):
+            if key in row:
+                set_col(col_name, row[key])
+        if include_kyobo_list_price and "ky_list_price" in row:
+            set_col("교보 정가", row["ky_list_price"])
+
+        # Legend column: unrelated reference values, never real row data.
+        data[header.index("선택") + 1] = legend_values[i % len(legend_values)]
+        ws.append(data)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# REQ-PO8-001/002/003: parse_daily_review_excel header auto-detection
+# ---------------------------------------------------------------------------
+
+
+class TestParseDailyReviewHeaderAutoDetection:
+    """AC-001/AC-002/AC-003: header auto-detected for both formats; legend ignored."""
+
+    def test_ac001_new_template_header_at_row_3_detected(self):
+        """AC-001: header at row 3 (Lineitem sku + 선택) is recognized; data starts row 4."""
+        from order.excel_utils import parse_daily_review_excel
+
+        file_bytes = _make_new_template_excel([
+            {"sku": "9791124591055", "selected": "BOOXEN", "status": "정상"},
+        ])
+        results = parse_daily_review_excel(file_bytes)
+        assert len(results) == 1
+        assert results[0]["sku"] == "9791124591055"
+        assert results[0]["distributor"] == "booxen"
+
+    def test_ac002_legacy_header_at_row_1_still_works(self):
+        """AC-002: existing fixture (1행 ISBN+선택) still parses without regression."""
+        from order.excel_utils import parse_daily_review_excel
+
+        file_bytes = _make_daily_review_excel([
+            {"isbn": "9788901234567", "selected": "북센"},
+        ])
+        results = parse_daily_review_excel(file_bytes)
+        assert len(results) == 1
+        assert results[0]["sku"] == "9788901234567"
+        assert results[0]["distributor"] == "booxen"
+
+    def test_ac003_legend_column_values_never_leak_into_data(self):
+        """AC-003: the headerless legend column right of 선택 never pollutes any field."""
+        from order.excel_utils import parse_daily_review_excel
+
+        file_bytes = _make_new_template_excel([
+            {"sku": "9791124591055", "selected": "BOOXEN", "status": "한국재고"},
+            {"sku": "9791124591056", "selected": "교보", "status": ""},
+        ])
+        results = parse_daily_review_excel(file_bytes)
+        assert len(results) == 2
+        legend_values = {
+            "total", "BOOXEN", "교보", "YES24", "주문취소", "재고",
+            "주문보류", "CS필요", "타출판사", "합계", "check",
+        }
+        for row in results:
+            # sku must be the real Lineitem sku, never a legend value
+            assert row["sku"] not in legend_values
+            # distributor must be a valid internal code or None, never a raw legend string
+            assert row["distributor"] in (None, "booxen", "kyobo", "yes24", "warehouse")
+
+    def test_header_not_found_raises_value_error_mentioning_both_sku_columns(self):
+        """REQ-PO8-001: error message mentions both ISBN and Lineitem sku when no header matches."""
+        from order.excel_utils import parse_daily_review_excel
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(["엉뚱한 헤더1", "엉뚱한 헤더2"])
+        ws.append(["data1", "data2"])
+        buf = io.BytesIO()
+        wb.save(buf)
+
+        with pytest.raises(ValueError) as exc_info:
+            parse_daily_review_excel(buf.getvalue())
+        assert "ISBN" in str(exc_info.value)
+        assert "Lineitem sku" in str(exc_info.value)
+
+    def test_row_with_selected_text_but_no_sku_column_is_not_mistaken_for_header(self):
+        """A row containing a '선택'-looking cell without a recognized SKU column
+        (e.g. stray legend/instruction text before the real header) must not be
+        mistaken for the header row — scanning continues to the true header."""
+        from order.excel_utils import parse_daily_review_excel
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(["선택", "참고용 안내"])  # false positive: has '선택' text, no SKU column
+        ws.append(["Lineitem sku", "선택"])  # real header
+        ws.append(["9791124591055", "BOOXEN"])
+        buf = io.BytesIO()
+        wb.save(buf)
+
+        results = parse_daily_review_excel(buf.getvalue())
+        assert len(results) == 1
+        assert results[0]["sku"] == "9791124591055"
+        assert results[0]["distributor"] == "booxen"
+
+    def test_row_with_blank_sku_cell_is_skipped(self):
+        from order.excel_utils import parse_daily_review_excel
+
+        file_bytes = _make_new_template_excel([
+            {"sku": "", "selected": "BOOXEN", "status": "정상"},
+            {"sku": "9791124591056", "selected": "BOOXEN", "status": "정상"},
+        ])
+        results = parse_daily_review_excel(file_bytes)
+        assert len(results) == 1
+        assert results[0]["sku"] == "9791124591056"
+
+
+# ---------------------------------------------------------------------------
+# REQ-PO8-004: BOOXEN/교보/YES24 공급가 parsing (new template)
+# ---------------------------------------------------------------------------
+
+
+class TestParseDailyReviewNewTemplatePrices:
+    def test_prices_parsed_from_new_template_columns(self):
+        from order.excel_utils import parse_daily_review_excel
+
+        file_bytes = _make_new_template_excel([
+            {
+                "sku": "9791124591055", "selected": "BOOXEN", "status": "정상",
+                "bs_price": 9000, "ky_price": 9500, "yes24_price": 9800,
+            },
+        ])
+        results = parse_daily_review_excel(file_bytes)
+        assert results[0]["bs_price"] == 9000.0
+        assert results[0]["ky_price"] == 9500.0
+        assert results[0]["yes24_price"] == 9800.0
+
+    def test_missing_price_columns_keep_keys_as_none(self):
+        """REQ-PO8-004: old format (no BOOXEN/YES24 공급가 columns) keeps keys as None."""
+        from order.excel_utils import parse_daily_review_excel
+
+        file_bytes = _make_daily_review_excel([
+            {"isbn": "9788901234567", "selected": "북센"},
+        ])
+        results = parse_daily_review_excel(file_bytes)
+        assert "yes24_price" in results[0]
+        assert results[0]["yes24_price"] is None
+
+
+# ---------------------------------------------------------------------------
+# REQ-PO8-005: note/memo source column switch
+# ---------------------------------------------------------------------------
+
+
+class TestParseDailyReviewNoteSourceSwitch:
+    def test_new_template_uses_status_column_as_note(self):
+        from order.excel_utils import parse_daily_review_excel
+
+        file_bytes = _make_new_template_excel([
+            {"sku": "9791124591055", "selected": "재고", "status": "한국재고"},
+        ])
+        results = parse_daily_review_excel(file_bytes)
+        assert results[0]["note"] == "한국재고"
+
+    def test_legacy_format_uses_note_column(self):
+        from order.excel_utils import parse_daily_review_excel
+
+        file_bytes = _make_daily_review_excel([
+            {"isbn": "9788901234567", "selected": "북센", "note": "레거시 메모"},
+        ])
+        results = parse_daily_review_excel(file_bytes)
+        assert results[0]["note"] == "레거시 메모"
+
+
+# ---------------------------------------------------------------------------
+# REQ-PO8-006/007/012: _DISTRIBUTOR_LABEL_MAP additions + backward compat
+# ---------------------------------------------------------------------------
+
+
+class TestDistributorLabelMapNewCodes:
+    def test_yes24_label_maps_to_yes24_code(self):
+        from order.excel_utils import _DISTRIBUTOR_LABEL_MAP
+
+        assert _DISTRIBUTOR_LABEL_MAP["YES24"] == "yes24"
+
+    def test_generic_warehouse_label_maps_to_warehouse_code(self):
+        from order.excel_utils import _DISTRIBUTOR_LABEL_MAP
+
+        assert _DISTRIBUTOR_LABEL_MAP["재고"] == "warehouse"
+
+    def test_legacy_mappings_preserved(self):
+        """REQ-PO8-012: existing 8 mappings must remain untouched."""
+        from order.excel_utils import _DISTRIBUTOR_LABEL_MAP
+
+        expected = {
+            "북센": "booxen",
+            "교보": "kyobo",
+            "처음교육": "choeumgoyuk",
+            "아가페": "agape",
+            "성서유니온": "sungseoyunion",
+            "재고(한국)": "warehouse_korea",
+            "재고(CA)": "warehouse_ca",
+            "재고(NJ)": "warehouse_nj",
+        }
+        for label, code in expected.items():
+            assert _DISTRIBUTOR_LABEL_MAP[label] == code
+
+
+# ---------------------------------------------------------------------------
+# REQ-PO8-011/014: rows with empty/unrecognized 선택 still returned (Part B)
+# ---------------------------------------------------------------------------
+
+
+class TestParseDailyReviewIncludesAllValidSkuRows:
+    def test_blank_selected_row_still_returned(self):
+        from order.excel_utils import parse_daily_review_excel
+
+        file_bytes = _make_new_template_excel([
+            {"sku": "9791124591055", "selected": "", "bs_price": 9000},
+        ])
+        results = parse_daily_review_excel(file_bytes)
+        assert len(results) == 1
+        assert results[0]["distributor"] is None
+        assert results[0]["note_type"] is None
+
+    def test_unrecognized_selected_row_still_returned(self):
+        """REQ-PO8-011: '합계' (legend value, not a real selection) still returned for Part B."""
+        from order.excel_utils import parse_daily_review_excel
+
+        file_bytes = _make_new_template_excel([
+            {"sku": "9791124591055", "selected": "합계", "bs_price": 9000},
+        ])
+        results = parse_daily_review_excel(file_bytes)
+        assert len(results) == 1
+        assert results[0]["distributor"] is None
+        assert results[0]["note_type"] is None
+
+
+# ---------------------------------------------------------------------------
+# CS note-type labels still recognized through the rewritten header/selection
+# logic (pre-existing branch, exercised here to guard the refactor).
+# ---------------------------------------------------------------------------
+
+
+class TestParseDailyReviewCsNoteTypeStillRecognized:
+    def test_cs_label_recognized_via_new_template(self):
+        from order.excel_utils import parse_daily_review_excel
+
+        file_bytes = _make_new_template_excel([
+            {"sku": "9791100000099", "selected": "주문취소", "status": "고객 요청으로 취소"},
+        ])
+        results = parse_daily_review_excel(file_bytes)
+        assert len(results) == 1
+        assert results[0]["distributor"] is None
+        assert results[0]["note_type"] == "주문취소"
+        assert results[0]["note"] == "고객 요청으로 취소"
+
+
+@pytest.mark.django_db
+class TestUploadCsNoteTypeViaNewTemplate:
+    def test_cs_label_updates_status_and_creates_cs_note(self, auth_client):
+        """Guards the restructured CS branch: still reachable via the new
+        template's Status-sourced note, still sets purchase_status and
+        creates a LineItemNote assigned to CS."""
+        from order.models import LineItemNote
+
+        sku = "9791100000098"
+        order = _make_order(shopify_order_id=90099)
+        li = _make_line_item(order, sku=sku, quantity=1, shopify_line_item_id=1)
+
+        file_bytes = _make_new_template_excel([
+            {"sku": sku, "selected": "주문취소", "status": "고객 요청"},
+        ])
+        file_obj = io.BytesIO(file_bytes)
+        file_obj.name = "daily_review.xlsx"
+        res = auth_client.post(UPLOAD_DAILY_URL, data={"file": file_obj}, format="multipart")
+        assert res.status_code == 201
+
+        li.refresh_from_db()
+        assert li.purchase_status == "order_cancelled"
+
+        note = LineItemNote.objects.get(line_item=li)
+        assert note.content == "고객 요청"
+        assert note.assignee == "CS"
+        assert note.note_type == "주문취소"
+
+
+# ---------------------------------------------------------------------------
+# AC-004 .. AC-014: UploadDailyReviewView integration tests (new template)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestUploadNewTemplateBooxenAndVendorUpsert:
+    def test_ac004_booxen_selection_confirms_po_and_upserts_all_vendor_tables(self, auth_client):
+        """AC-004: real sample SKU — BOOXEN selection creates PO and upserts
+        BooxenData/KyoboData/Yes24Data simultaneously."""
+        from order.models import BooxenData, KyoboData, Yes24Data
+
+        sku = "9791124591055"
+        order = _make_order(shopify_order_id=90001)
+        _make_line_item(order, sku=sku, title="애니가 남긴 것", quantity=2, shopify_line_item_id=1)
+
+        file_bytes = _make_new_template_excel([
+            {
+                "sku": sku, "selected": "BOOXEN", "status": "정상",
+                "bs_price": 9000, "ky_price": 9500, "yes24_price": 9800,
+            },
+        ])
+        file_obj = io.BytesIO(file_bytes)
+        file_obj.name = "daily_review.xlsx"
+        res = auth_client.post(UPLOAD_DAILY_URL, data={"file": file_obj}, format="multipart")
+        assert res.status_code == 201
+
+        po = PurchaseOrder.objects.get(sku=sku)
+        assert po.distributor == "booxen"
+
+        assert BooxenData.objects.filter(sku=sku).exists()
+        assert KyoboData.objects.filter(sku=sku).exists()
+        assert Yes24Data.objects.filter(sku=sku).exists()
+
+
+@pytest.mark.django_db
+class TestUploadYes24Confirmation:
+    def test_ac005_yes24_selection_confirms_po_with_parsed_price(self, auth_client):
+        """AC-005: YES24 선택 시 PO 생성 + unit_price는 파싱된 YES24 공급가."""
+        sku = "9791100000001"
+        order = _make_order(shopify_order_id=90002)
+        _make_line_item(order, sku=sku, quantity=1, shopify_line_item_id=1)
+
+        file_bytes = _make_new_template_excel([
+            {"sku": sku, "selected": "YES24", "status": "정상", "yes24_price": 15000},
+        ])
+        file_obj = io.BytesIO(file_bytes)
+        file_obj.name = "daily_review.xlsx"
+        res = auth_client.post(UPLOAD_DAILY_URL, data={"file": file_obj}, format="multipart")
+        assert res.status_code == 201
+
+        po = PurchaseOrder.objects.get(sku=sku)
+        assert po.distributor == "yes24"
+        assert po.unit_price == Decimal("15000")
+
+    def test_ac006_yes24_price_blank_falls_back_to_yes24data(self, auth_client):
+        """AC-006: YES24 공급가 미기재 시 기존 Yes24Data.price로 폴백 (Part B upsert가
+        이 폴백 값을 훼손하지 않아야 한다)."""
+        from order.models import Yes24Data
+
+        sku = "9791100000002"
+        Yes24Data.objects.create(sku=sku, price=Decimal("12000"))
+        order = _make_order(shopify_order_id=90003)
+        _make_line_item(order, sku=sku, quantity=1, shopify_line_item_id=1)
+
+        file_bytes = _make_new_template_excel([
+            {"sku": sku, "selected": "YES24", "status": "정상"},  # yes24_price blank
+        ])
+        file_obj = io.BytesIO(file_bytes)
+        file_obj.name = "daily_review.xlsx"
+        res = auth_client.post(UPLOAD_DAILY_URL, data={"file": file_obj}, format="multipart")
+        assert res.status_code == 201
+
+        po = PurchaseOrder.objects.get(sku=sku)
+        assert po.unit_price == Decimal("12000")
+
+
+@pytest.mark.django_db
+class TestUploadWarehouseStatusBasedLocation:
+    def test_ac007_status_fullerton_resolves_ca_and_us_warehouse_assignee(self, auth_client):
+        """AC-007: Status='Fullerton재고' -> ca 위치, 미국창고 담당자."""
+        from order.models import LineItemNote
+
+        sku = "9791100000003"
+        order = _make_order(shopify_order_id=90004)
+        li = _make_line_item(order, sku=sku, quantity=2, shopify_line_item_id=1)
+        WarehouseStock.objects.create(isbn=sku, location="ca", quantity=5)
+
+        file_bytes = _make_new_template_excel([
+            {"sku": sku, "selected": "재고", "status": "Fullerton재고"},
+        ])
+        file_obj = io.BytesIO(file_bytes)
+        file_obj.name = "daily_review.xlsx"
+        res = auth_client.post(UPLOAD_DAILY_URL, data={"file": file_obj}, format="multipart")
+        assert res.status_code == 201
+
+        stock = WarehouseStock.objects.get(isbn=sku, location="ca")
+        assert stock.quantity == 3
+
+        li.refresh_from_db()
+        assert li.purchase_status == "in_stock"
+
+        note = LineItemNote.objects.get(line_item=li)
+        assert note.content == "Fullerton재고"
+        assert note.assignee == "미국창고"
+
+    def test_ac008_status_korea_resolves_korea_and_korea_warehouse_assignee(self, auth_client):
+        """AC-008: Status='한국재고' -> korea 위치, 한국창고 담당자."""
+        from order.models import LineItemNote
+
+        sku = "9791100000004"
+        order = _make_order(shopify_order_id=90005)
+        li = _make_line_item(order, sku=sku, quantity=1, shopify_line_item_id=1)
+        WarehouseStock.objects.create(isbn=sku, location="korea", quantity=10)
+
+        file_bytes = _make_new_template_excel([
+            {"sku": sku, "selected": "재고", "status": "한국재고"},
+        ])
+        file_obj = io.BytesIO(file_bytes)
+        file_obj.name = "daily_review.xlsx"
+        res = auth_client.post(UPLOAD_DAILY_URL, data={"file": file_obj}, format="multipart")
+        assert res.status_code == 201
+
+        stock = WarehouseStock.objects.get(isbn=sku, location="korea")
+        assert stock.quantity == 9
+
+        note = LineItemNote.objects.get(line_item=li)
+        assert note.content == "한국재고"
+        assert note.assignee == "한국창고"
+
+    def test_unrecognized_status_value_skips_warehouse_processing(self, auth_client):
+        """REQ-PO8-008: unrecognized Status value under 재고 selection is skipped safely."""
+        sku = "9791100000005"
+        order = _make_order(shopify_order_id=90006)
+        _make_line_item(order, sku=sku, quantity=1, shopify_line_item_id=1)
+        WarehouseStock.objects.create(isbn=sku, location="ca", quantity=10)
+
+        file_bytes = _make_new_template_excel([
+            {"sku": sku, "selected": "재고", "status": "알수없는위치"},
+        ])
+        file_obj = io.BytesIO(file_bytes)
+        file_obj.name = "daily_review.xlsx"
+        res = auth_client.post(UPLOAD_DAILY_URL, data={"file": file_obj}, format="multipart")
+        assert res.status_code == 201
+        assert res.data["skipped_count"] == 1
+
+        stock = WarehouseStock.objects.get(isbn=sku, location="ca")
+        assert stock.quantity == 10  # untouched
+
+    def test_legacy_ca_warehouse_assignee_bug_fixed(self, auth_client):
+        """REQ-PO8-009: legacy warehouse_ca now correctly logs 미국창고 (was 한국창고 bug)."""
+        from order.models import LineItemNote
+
+        sku = "9791100000006"
+        order = _make_order(shopify_order_id=90007)
+        li = _make_line_item(order, sku=sku, quantity=1, shopify_line_item_id=1)
+        WarehouseStock.objects.create(isbn=sku, location="ca", quantity=5)
+
+        file_bytes = _make_daily_review_excel([
+            {"isbn": sku, "selected": "재고(CA)", "note": "CA 창고 확인"},
+        ])
+        file_obj = io.BytesIO(file_bytes)
+        file_obj.name = "daily_review.xlsx"
+        res = auth_client.post(UPLOAD_DAILY_URL, data={"file": file_obj}, format="multipart")
+        assert res.status_code == 201
+
+        note = LineItemNote.objects.get(line_item=li)
+        assert note.assignee == "미국창고"
+
+    def test_legacy_nj_warehouse_assignee_bug_fixed(self, auth_client):
+        """REQ-PO8-009: legacy warehouse_nj now correctly logs 미국창고 (was 한국창고 bug)."""
+        from order.models import LineItemNote
+
+        sku = "9791100000007"
+        order = _make_order(shopify_order_id=90008)
+        li = _make_line_item(order, sku=sku, quantity=1, shopify_line_item_id=1)
+        WarehouseStock.objects.create(isbn=sku, location="nj", quantity=5)
+
+        file_bytes = _make_daily_review_excel([
+            {"isbn": sku, "selected": "재고(NJ)", "note": "NJ 창고 확인"},
+        ])
+        file_obj = io.BytesIO(file_bytes)
+        file_obj.name = "daily_review.xlsx"
+        res = auth_client.post(UPLOAD_DAILY_URL, data={"file": file_obj}, format="multipart")
+        assert res.status_code == 201
+
+        note = LineItemNote.objects.get(line_item=li)
+        assert note.assignee == "미국창고"
+
+    def test_legacy_korea_warehouse_assignee_unchanged(self, auth_client):
+        """REQ-PO8-009: legacy warehouse_korea keeps 한국창고 (no regression)."""
+        from order.models import LineItemNote
+
+        sku = "9791100000008"
+        order = _make_order(shopify_order_id=90009)
+        li = _make_line_item(order, sku=sku, quantity=1, shopify_line_item_id=1)
+        WarehouseStock.objects.create(isbn=sku, location="korea", quantity=5)
+
+        file_bytes = _make_daily_review_excel([
+            {"isbn": sku, "selected": "재고(한국)", "note": "한국 창고 확인"},
+        ])
+        file_obj = io.BytesIO(file_bytes)
+        file_obj.name = "daily_review.xlsx"
+        res = auth_client.post(UPLOAD_DAILY_URL, data={"file": file_obj}, format="multipart")
+        assert res.status_code == 201
+
+        note = LineItemNote.objects.get(line_item=li)
+        assert note.assignee == "한국창고"
+
+
+@pytest.mark.django_db
+class TestUploadUnrecognizedSelectedSkipsButUpsertsVendorData:
+    def test_ac009_summary_row_skips_po_but_upserts_vendor_tables(self, auth_client):
+        """AC-009: 선택='합계' -> PO/CS/창고 미실행, 벤더 upsert는 실행."""
+        from order.models import BooxenData, KyoboData, Yes24Data
+
+        sku = "9791100000009"
+        po_count_before = PurchaseOrder.objects.count()
+
+        file_bytes = _make_new_template_excel([
+            {
+                "sku": sku, "selected": "합계", "status": "",
+                "bs_price": 9000, "ky_price": 9500, "yes24_price": 9800,
+            },
+        ])
+        file_obj = io.BytesIO(file_bytes)
+        file_obj.name = "daily_review.xlsx"
+        res = auth_client.post(UPLOAD_DAILY_URL, data={"file": file_obj}, format="multipart")
+        assert res.status_code == 201
+
+        assert PurchaseOrder.objects.count() == po_count_before
+        assert BooxenData.objects.filter(sku=sku).exists()
+        assert KyoboData.objects.filter(sku=sku).exists()
+        assert Yes24Data.objects.filter(sku=sku).exists()
+
+    def test_ac010_blank_selected_skips_po_but_upserts_vendor_tables(self, auth_client):
+        """AC-010: 선택 값이 빈 문자열이어도 벤더 upsert는 독립적으로 실행."""
+        from order.models import BooxenData, KyoboData, Yes24Data
+
+        sku = "9791100000010"
+        po_count_before = PurchaseOrder.objects.count()
+
+        file_bytes = _make_new_template_excel([
+            {
+                "sku": sku, "selected": "", "status": "",
+                "bs_price": 8000, "ky_price": 8500, "yes24_price": 8800,
+            },
+        ])
+        file_obj = io.BytesIO(file_bytes)
+        file_obj.name = "daily_review.xlsx"
+        res = auth_client.post(UPLOAD_DAILY_URL, data={"file": file_obj}, format="multipart")
+        assert res.status_code == 201
+
+        assert PurchaseOrder.objects.count() == po_count_before
+        assert BooxenData.objects.get(sku=sku).price == Decimal("8000")
+        assert KyoboData.objects.get(sku=sku).price == Decimal("8500")
+        assert Yes24Data.objects.get(sku=sku).price == Decimal("8800")
+
+
+@pytest.mark.django_db
+class TestUploadKyoboFieldMapping:
+    def test_ac011_kyobo_available_and_status_mapped_from_correct_columns(self, auth_client):
+        """AC-011: 교보 재고상태(Y/N)->available, 교보 상품상태(정상/품절)->status,
+        두 컬럼이 서로 뒤바뀌지 않아야 한다."""
+        from order.models import KyoboData
+
+        sku = "9791100000011"
+        file_bytes = _make_new_template_excel([
+            {
+                "sku": sku, "selected": "", "status": "",
+                "ky_available": "Y", "ky_status": "정상",
+            },
+        ])
+        file_obj = io.BytesIO(file_bytes)
+        file_obj.name = "daily_review.xlsx"
+        res = auth_client.post(UPLOAD_DAILY_URL, data={"file": file_obj}, format="multipart")
+        assert res.status_code == 201
+
+        kd = KyoboData.objects.get(sku=sku)
+        assert kd.available is True
+        assert kd.status == "정상"
+
+
+@pytest.mark.django_db
+class TestUploadKyoboListPrice:
+    def test_ac012_list_price_column_absent_leaves_existing_value_unchanged(self, auth_client):
+        """AC-012: 교보 정가 컬럼이 없는 현재 템플릿 업로드는 기존 list_price를 보존."""
+        from order.models import KyoboData
+
+        sku = "9791100000012"
+        KyoboData.objects.create(sku=sku, list_price=Decimal("5000"))
+
+        file_bytes = _make_new_template_excel([
+            {"sku": sku, "selected": "", "status": "", "ky_price": 4500},
+        ])
+        file_obj = io.BytesIO(file_bytes)
+        file_obj.name = "daily_review.xlsx"
+        res = auth_client.post(UPLOAD_DAILY_URL, data={"file": file_obj}, format="multipart")
+        assert res.status_code == 201
+
+        kd = KyoboData.objects.get(sku=sku)
+        assert kd.list_price == Decimal("5000")
+        assert kd.price == Decimal("4500")
+
+    def test_ac013_list_price_column_present_is_saved(self, auth_client):
+        """AC-013: 교보 정가 컬럼이 추가된 워크북에서는 list_price가 저장된다."""
+        from order.models import KyoboData
+
+        sku = "9791100000013"
+        file_bytes = _make_new_template_excel(
+            [{"sku": sku, "selected": "", "status": "", "ky_list_price": 15000}],
+            include_kyobo_list_price=True,
+        )
+        file_obj = io.BytesIO(file_bytes)
+        file_obj.name = "daily_review.xlsx"
+        res = auth_client.post(UPLOAD_DAILY_URL, data={"file": file_obj}, format="multipart")
+        assert res.status_code == 201
+
+        kd = KyoboData.objects.get(sku=sku)
+        assert kd.list_price == Decimal("15000")
+
+
+@pytest.mark.django_db
+class TestUploadYes24ListPriceProtected:
+    def test_ac014_yes24_list_price_untouched_by_daily_review_upload(self, auth_client):
+        """AC-014: Daily Review 업로드는 Yes24Data.price만 갱신하고 list_price는 보존."""
+        from order.models import Yes24Data
+
+        sku = "9791100000014"
+        Yes24Data.objects.create(sku=sku, list_price=Decimal("20000"), price=Decimal("18000"))
+
+        file_bytes = _make_new_template_excel([
+            {"sku": sku, "selected": "", "status": "", "yes24_price": 19000},
+        ])
+        file_obj = io.BytesIO(file_bytes)
+        file_obj.name = "daily_review.xlsx"
+        res = auth_client.post(UPLOAD_DAILY_URL, data={"file": file_obj}, format="multipart")
+        assert res.status_code == 201
+
+        yd = Yes24Data.objects.get(sku=sku)
+        assert yd.price == Decimal("19000")
+        assert yd.list_price == Decimal("20000")
+
+
+@pytest.mark.django_db
+class TestUploadBooxenFieldMapping:
+    def test_booxen_fields_mapped_from_new_template_columns(self, auth_client):
+        """REQ-PO8-015: BooxenData field mapping (stock/status/arrival/returnable/available)."""
+        from order.models import BooxenData
+
+        sku = "9791100000015"
+        file_bytes = _make_new_template_excel([
+            {
+                "sku": sku, "selected": "", "status": "",
+                "bs_stock": 12, "bs_status": "정상",
+                "bs_arrival": "2026-08-01", "bs_returnable": "가능",
+            },
+        ])
+        file_obj = io.BytesIO(file_bytes)
+        file_obj.name = "daily_review.xlsx"
+        res = auth_client.post(UPLOAD_DAILY_URL, data={"file": file_obj}, format="multipart")
+        assert res.status_code == 201
+
+        bd = BooxenData.objects.get(sku=sku)
+        assert bd.stock == 12
+        assert bd.status == "정상"
+        assert bd.arrival == "2026-08-01"
+        assert bd.returnable is True
+        assert bd.available is True
+
+    def test_booxen_returnable_false_when_not_available(self, auth_client):
+        from order.models import BooxenData
+
+        sku = "9791100000016"
+        file_bytes = _make_new_template_excel([
+            {
+                "sku": sku, "selected": "", "status": "",
+                "bs_stock": 0, "bs_returnable": "불가",
+            },
+        ])
+        file_obj = io.BytesIO(file_bytes)
+        file_obj.name = "daily_review.xlsx"
+        res = auth_client.post(UPLOAD_DAILY_URL, data={"file": file_obj}, format="multipart")
+        assert res.status_code == 201
+
+        bd = BooxenData.objects.get(sku=sku)
+        assert bd.returnable is False
+        assert bd.available is False
+
+
+@pytest.mark.django_db
+class TestUploadVendorUpsertIndependentOfLineItemExistence:
+    def test_vendor_upsert_runs_even_without_unordered_line_item(self, auth_client):
+        """REQ-PO8-014: no matching unordered LineItem exists at all — vendor
+        upsert still runs (independent of the confirmation logic)."""
+        from order.models import BooxenData
+
+        sku = "9791100000017"
+        assert not BooxenData.objects.filter(sku=sku).exists()
+
+        file_bytes = _make_new_template_excel([
+            {"sku": sku, "selected": "북센", "status": "", "bs_price": 7000},
+        ])
+        file_obj = io.BytesIO(file_bytes)
+        file_obj.name = "daily_review.xlsx"
+        res = auth_client.post(UPLOAD_DAILY_URL, data={"file": file_obj}, format="multipart")
+        assert res.status_code == 201
+        assert res.data["skipped_count"] == 1  # no unordered LineItem -> PO logic skipped
+
+        assert BooxenData.objects.get(sku=sku).price == Decimal("7000")
+
+
+# ---------------------------------------------------------------------------
+# Bug fixes (evaluator-active FAIL verdict review, follow-up cycle):
+#   Bug 1 [CRITICAL]  Legacy-format upload must not wipe existing vendor data
+#   Bug 2 [HIGH]      OverflowError on crafted numeric input (e.g. "inf")
+#   Bug 3 [HIGH]      bs_price parsing regression for legacy-format files
+#   Bug 4 [MEDIUM]    KyoboData.returnable coverage gap (no code bug)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestUploadLegacyFormatPreservesVendorData:
+    """Bug 1: legacy-format ('ISBN'+'선택' header) uploads must not overwrite
+    existing BooxenData/KyoboData with None/False just because the legacy
+    format's columns don't exist under the new-template's column names."""
+
+    def test_legacy_upload_does_not_wipe_existing_booxen_and_kyobo_data(self, auth_client):
+        """The legacy header has no 'BOOXEN 재고수량/재고상태/입고예정/반품' columns
+        at all (it uses the differently-named '북센 ...' columns, which the
+        parser does not look up), so every BooxenData field must survive
+        untouched. Likewise '교보 상품상태' and '교보 출판사' (-> ky_status /
+        ky_publisher) do not exist in the legacy header at all, so those two
+        KyoboData fields must also survive untouched. ('교보 재고수량' /
+        '교보 재고상태' DO share their column name with the new template, so a
+        blank cell there legitimately overwrites — that is intentional
+        column-exists-but-blank behavior, not part of this bug.)"""
+        from order.models import BooxenData, KyoboData
+
+        sku = "9791100000018"
+        BooxenData.objects.create(
+            sku=sku,
+            stock=50,
+            status="정상",
+            arrival="2026-08-01",
+            returnable=True,
+            available=True,
+            price=Decimal("5000"),
+        )
+        KyoboData.objects.create(
+            sku=sku,
+            status="정상",
+            publisher="테스트출판사",
+            price=Decimal("6000"),
+        )
+
+        # Blank '선택' still triggers the Part B vendor upsert (independent of
+        # PO/CS confirmation) — see REQ-PO8-011/014.
+        file_bytes = _make_daily_review_excel([
+            {"isbn": sku, "selected": ""},
+        ])
+        file_obj = io.BytesIO(file_bytes)
+        file_obj.name = "daily_review.xlsx"
+        res = auth_client.post(UPLOAD_DAILY_URL, data={"file": file_obj}, format="multipart")
+        assert res.status_code == 201
+
+        bd = BooxenData.objects.get(sku=sku)
+        assert bd.stock == 50
+        assert bd.status == "정상"
+        assert bd.arrival == "2026-08-01"
+        assert bd.returnable is True
+        assert bd.available is True
+
+        kd = KyoboData.objects.get(sku=sku)
+        assert kd.status == "정상"
+        assert kd.publisher == "테스트출판사"
+
+
+class TestIntOrNoneOverflow:
+    """Bug 2: `_int_or_none` must gracefully degrade to None instead of
+    raising OverflowError on values like 'inf' that `float()` parses fine
+    but `int()` cannot convert."""
+
+    def test_int_or_none_returns_none_for_infinity_string(self):
+        from order.excel_utils import _int_or_none
+
+        assert _int_or_none("inf") is None
+
+    def test_int_or_none_returns_none_for_negative_infinity_string(self):
+        from order.excel_utils import _int_or_none
+
+        assert _int_or_none("-inf") is None
+
+
+@pytest.mark.django_db
+class TestUploadOverflowInputDoesNotCrash:
+    """Bug 2: an 'inf' cell in a stock column must not produce an unhandled
+    500 — the row should be processed with that field as None."""
+
+    def test_infinite_stock_value_does_not_500_and_field_becomes_none(self, auth_client):
+        from order.models import BooxenData
+
+        sku = "9791100000019"
+        file_bytes = _make_new_template_excel([
+            {"sku": sku, "selected": "", "status": "", "bs_stock": "inf"},
+        ])
+        file_obj = io.BytesIO(file_bytes)
+        file_obj.name = "daily_review.xlsx"
+        res = auth_client.post(UPLOAD_DAILY_URL, data={"file": file_obj}, format="multipart")
+        assert res.status_code == 201
+
+        bd = BooxenData.objects.get(sku=sku)
+        assert bd.stock is None
+
+
+class TestParseLegacyBsPriceAlias:
+    """Bug 3: legacy-format files use the Korean header '북센 공급가' for the
+    Booxen supply price column, not 'BOOXEN 공급가' (new-template only)."""
+
+    def test_legacy_bs_price_column_parsed(self):
+        from order.excel_utils import parse_daily_review_excel
+
+        file_bytes = _make_daily_review_excel([
+            {"isbn": "9791100000020", "selected": "북센", "bs_price": 7500},
+        ])
+        results = parse_daily_review_excel(file_bytes)
+        assert results[0]["bs_price"] == 7500.0
+
+
+@pytest.mark.django_db
+class TestUploadLegacyBsPriceFlowsToPurchaseOrder:
+    """Bug 3: a real legacy '북센 공급가' value must flow through to
+    PurchaseOrder.unit_price when 선택='북센' (not silently dropped to None)."""
+
+    def test_legacy_bs_price_used_as_unit_price(self, auth_client):
+        sku = "9791100000021"
+        order = _make_order(shopify_order_id=90099)
+        _make_line_item(order, sku=sku, quantity=1, shopify_line_item_id=1)
+
+        file_bytes = _make_daily_review_excel([
+            {"isbn": sku, "selected": "북센", "bs_price": 7500},
+        ])
+        file_obj = io.BytesIO(file_bytes)
+        file_obj.name = "daily_review.xlsx"
+        res = auth_client.post(UPLOAD_DAILY_URL, data={"file": file_obj}, format="multipart")
+        assert res.status_code == 201
+
+        po = PurchaseOrder.objects.get(sku=sku)
+        assert po.unit_price == Decimal("7500")
+
+
+@pytest.mark.django_db
+class TestUploadKyoboReturnableMapping:
+    """Bug 4 (coverage gap, not a code bug): KyoboData.returnable must be
+    correctly mapped from 교보 반품가능여부's Y/N values in a new-template
+    upload."""
+
+    def test_kyobo_returnable_true_for_y(self, auth_client):
+        from order.models import KyoboData
+
+        sku = "9791100000022"
+        file_bytes = _make_new_template_excel([
+            {"sku": sku, "selected": "", "status": "", "ky_returnable": "Y"},
+        ])
+        file_obj = io.BytesIO(file_bytes)
+        file_obj.name = "daily_review.xlsx"
+        res = auth_client.post(UPLOAD_DAILY_URL, data={"file": file_obj}, format="multipart")
+        assert res.status_code == 201
+
+        assert KyoboData.objects.get(sku=sku).returnable is True
+
+    def test_kyobo_returnable_false_for_n(self, auth_client):
+        from order.models import KyoboData
+
+        sku = "9791100000023"
+        file_bytes = _make_new_template_excel([
+            {"sku": sku, "selected": "", "status": "", "ky_returnable": "N"},
+        ])
+        file_obj = io.BytesIO(file_bytes)
+        file_obj.name = "daily_review.xlsx"
+        res = auth_client.post(UPLOAD_DAILY_URL, data={"file": file_obj}, format="multipart")
+        assert res.status_code == 201
+
+        assert KyoboData.objects.get(sku=sku).returnable is False

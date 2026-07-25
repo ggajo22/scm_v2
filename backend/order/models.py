@@ -302,6 +302,9 @@ class KyoboData(models.Model):
     publisher = models.CharField(max_length=255, null=True, blank=True)
     ordered_qty = models.IntegerField(null=True, blank=True)
     total_price = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    # SPEC-PURCHASE-ORDER-008 REQ-PO8-017: filled only via Daily Review upload
+    # ('교보 정가' column), when present. Never touched by UploadVendorFileView.
+    list_price = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
