@@ -41,7 +41,6 @@ from order.models import (
     Order,
     PurchaseOrder,
     Refund,
-    ShopifySkuSetMapping,
     VendorComparison,
     Yes24Data,
 )
@@ -370,6 +369,76 @@ class TestUnorderedItemsView:
         assert result is not None
         assert result["quantity"] == 5
 
+    def test_response_never_includes_bundle_fields(self, auth_client):
+        """AC-008-1 (SPEC-SHOPIFY-SKU-SET-002): is_bundle_member/bundle_sku keys
+        are completely absent from the response — bundle expansion now happens
+        at Shopify-sync time, so UnorderedItemsView performs no display-time
+        expansion and returns the DB row as-is."""
+        order = _make_order(shopify_order_id=91020)
+        _make_line_item(order, shopify_line_item_id=1, sku="9788926025451", quantity=2)
+
+        res = auth_client.get(UNORDERED_URL)
+        assert res.status_code == 200
+        assert len(res.data["results"]) == 1
+        result = res.data["results"][0]
+        assert "is_bundle_member" not in result
+        assert "bundle_sku" not in result
+
+    def test_pre_expanded_bundle_member_rows_returned_as_is(self, auth_client):
+        """AC-007-1 (SPEC-SHOPIFY-SKU-SET-002): LineItem rows already expanded
+        at sync time (sku is a real ISBN, sharing shopify_line_item_id) are
+        returned directly with no additional expansion logic."""
+        order = _make_order(shopify_order_id=91021)
+        _make_line_item(order, shopify_line_item_id=1, sku="9788926025451", quantity=2)
+        _make_line_item(order, shopify_line_item_id=1, sku="9788926025468", quantity=2)
+
+        res = auth_client.get(UNORDERED_URL)
+        assert res.status_code == 200
+        assert res.data["count"] == 2
+        skus = {r["sku"] for r in res.data["results"]}
+        assert skus == {"9788926025451", "9788926025468"}
+        for r in res.data["results"]:
+            assert r["quantity"] == 2
+
+    def test_pre_expanded_bundle_member_rows_with_partial_refund(self, auth_client):
+        """AC-006-1 (SPEC-SHOPIFY-SKU-SET-002): Two LineItem rows sharing one
+        shopify_line_item_id (simulating sync-time bundle expansion), each
+        quantity=4, with a single Refund(quantity=1) keyed by that shared
+        shopify_line_item_id. REQ-SKUSET2-006's claim is that each row
+        independently re-evaluates the same OuterRef subquery and subtracts
+        the SAME total refunded quantity from its own full quantity — this
+        is the direct regression test for that claim (previously untested:
+        existing refund tests were single-row, existing multi-row-shared-id
+        tests had no refund attached)."""
+        order = _make_order(shopify_order_id=91022)
+        _make_line_item(order, shopify_line_item_id=703, sku="9788926025451", quantity=4)
+        _make_line_item(order, shopify_line_item_id=703, sku="9788926025468", quantity=4)
+        _make_refund(order, shopify_line_item_id=703, quantity=1, shopify_refund_id=901)
+
+        res = auth_client.get(UNORDERED_URL)
+        assert res.status_code == 200
+        assert res.data["count"] == 2
+        quantities = {r["sku"]: r["quantity"] for r in res.data["results"]}
+        assert quantities["9788926025451"] == 3
+        assert quantities["9788926025468"] == 3
+
+    def test_pre_expanded_bundle_member_rows_fully_refunded_excluded(self, auth_client):
+        """AC-006-2 (SPEC-SHOPIFY-SKU-SET-002): Same 2-row bundle setup as
+        above, but Refund.quantity equals the full undivided quantity (4).
+        Both member rows independently net to 0 and are excluded from the
+        unordered list — closing the same coverage gap as AC-006-1 for the
+        full-refund edge case."""
+        order = _make_order(shopify_order_id=91023)
+        _make_line_item(order, shopify_line_item_id=704, sku="9788926025451", quantity=4)
+        _make_line_item(order, shopify_line_item_id=704, sku="9788926025468", quantity=4)
+        _make_refund(order, shopify_line_item_id=704, quantity=4, shopify_refund_id=902)
+
+        res = auth_client.get(UNORDERED_URL)
+        assert res.status_code == 200
+        skus = [r["sku"] for r in res.data["results"]]
+        assert "9788926025451" not in skus
+        assert "9788926025468" not in skus
+
 
 # ---------------------------------------------------------------------------
 # M3: POST /api/purchase-orders/generate-order-file/
@@ -493,23 +562,22 @@ class TestGenerateOrderFileView:
         assert "9788901299992" in res.data["unknown_skus"]
 
     # -----------------------------------------------------------------
-    # SPEC-PURCHASE-ORDER-007: Bundle SKU (ShopifySkuSetMapping) support
+    # SPEC-SHOPIFY-SKU-SET-002: bundle SKUs are expanded at Shopify-sync time
+    # (REQ-SKUSET2-003), not at generate-order-file time. LineItem.sku is
+    # already the real ISBN for every row by the time this view runs, so these
+    # tests set up already-expanded LineItems (simulating post-sync state) and
+    # verify the plain, reverted sku__in query (REQ-SKUSET2-009) — with no
+    # ShopifySkuSetMapping lookup at all — handles them correctly.
     # -----------------------------------------------------------------
 
-    def test_bundle_member_sku_resolves_to_full_bundle_quantity(self, auth_client):
-        """A single requested member ISBN resolves via the bundle_sku LineItem and
-        keeps the FULL bundle quantity (not divided) in the generated Excel row."""
-        ShopifySkuSetMapping.objects.create(
-            bundle_sku="GITANMATH-F SET", member_isbn="9788926025451", sort_order=0
-        )
-        ShopifySkuSetMapping.objects.create(
-            bundle_sku="GITANMATH-F SET", member_isbn="9788926025468", sort_order=1
-        )
+    def test_pre_expanded_bundle_member_sku_resolves_directly(self, auth_client):
+        """A member-ISBN LineItem row (already split at sync time) is matched
+        directly by sku__in, keeping its own (full, undivided) quantity."""
         order = _make_order(shopify_order_id=92020)
         _make_line_item(
             order,
             shopify_line_item_id=700,
-            sku="GITANMATH-F SET",
+            sku="9788926025451",
             title="기탄수학 F 세트",
             quantity=4,
         )
@@ -522,24 +590,20 @@ class TestGenerateOrderFileView:
         rows = list(ws.iter_rows(values_only=True))
         data_row = next((r for r in rows if r[0] == "9788926025451"), None)
         assert data_row is not None
-        assert data_row[1] == 4  # full bundle quantity, not divided by member count
+        assert data_row[1] == 4
 
-    def test_two_bundle_members_each_get_own_row_with_full_quantity(self, auth_client):
-        """Selecting 2 of a bundle's member ISBNs produces 2 separate Excel rows,
-        each carrying the SAME full bundle quantity (not merged, not divided)."""
-        ShopifySkuSetMapping.objects.create(
-            bundle_sku="GITANMATH-F SET", member_isbn="9788926025451", sort_order=0
-        )
-        ShopifySkuSetMapping.objects.create(
-            bundle_sku="GITANMATH-F SET", member_isbn="9788926025468", sort_order=1
-        )
+    def test_two_pre_expanded_bundle_member_rows_each_own_row(self, auth_client):
+        """Two already-split member-ISBN rows sharing the same
+        shopify_line_item_id (simulating one bundle line item post-sync) each
+        resolve to their own Excel row with their own (undivided) quantity."""
         order = _make_order(shopify_order_id=92021)
         _make_line_item(
-            order,
-            shopify_line_item_id=701,
-            sku="GITANMATH-F SET",
-            title="기탄수학 F 세트",
-            quantity=4,
+            order, shopify_line_item_id=701, sku="9788926025451",
+            title="기탄수학 F 세트", quantity=4,
+        )
+        _make_line_item(
+            order, shopify_line_item_id=701, sku="9788926025468",
+            title="기탄수학 F 세트", quantity=4,
         )
         payload = {
             "distributor": "booxen",
@@ -558,17 +622,14 @@ class TestGenerateOrderFileView:
         assert row_a[1] == 4
         assert row_b[1] == 4
 
-    def test_bundle_member_mixed_with_ordinary_sku(self, auth_client):
-        """One bundle-member ISBN + one ordinary (non-bundle) SKU in the same
-        request both resolve correctly in a single generated Excel."""
-        ShopifySkuSetMapping.objects.create(
-            bundle_sku="GITANMATH-F SET", member_isbn="9788926025451", sort_order=0
-        )
-        bundle_order = _make_order(shopify_order_id=92022)
+    def test_pre_expanded_bundle_member_mixed_with_ordinary_sku(self, auth_client):
+        """One already-expanded member ISBN + one ordinary (non-bundle) SKU in
+        the same request both resolve correctly via the plain direct query."""
+        order = _make_order(shopify_order_id=92022)
         _make_line_item(
-            bundle_order,
+            order,
             shopify_line_item_id=702,
-            sku="GITANMATH-F SET",
+            sku="9788926025451",
             title="기탄수학 F 세트",
             quantity=4,
         )
@@ -589,6 +650,78 @@ class TestGenerateOrderFileView:
         assert plain_row is not None
         assert bundle_row[1] == 4
         assert plain_row[1] == 3
+
+    def test_pre_expanded_bundle_member_rows_partial_refund_in_excel(self, auth_client):
+        """AC-006-1 equivalent for GenerateOrderFileView (REQ-SKUSET2-006):
+        this view is one of the 6 OuterRef-subquery call sites the SPEC
+        claims stays correct with zero code changes. Two already-split
+        member-ISBN rows share one shopify_line_item_id, each quantity=4,
+        with a single Refund(quantity=1) keyed by that shared id. Both rows
+        independently net to 3 in the generated Excel — previously untested
+        (the existing two-row bundle test here had no refund attached)."""
+        order = _make_order(shopify_order_id=92023)
+        _make_line_item(
+            order, shopify_line_item_id=705, sku="9788926025451",
+            title="기탄수학 F 세트", quantity=4,
+        )
+        _make_line_item(
+            order, shopify_line_item_id=705, sku="9788926025468",
+            title="기탄수학 F 세트", quantity=4,
+        )
+        _make_refund(order, shopify_line_item_id=705, quantity=1, shopify_refund_id=903)
+        payload = {
+            "distributor": "booxen",
+            "skus": ["9788926025451", "9788926025468"],
+        }
+        res = auth_client.post(GENERATE_URL, data=payload, format="json")
+        assert res.status_code == 200
+        assert EXCEL_CONTENT_TYPE in res["Content-Type"]
+        wb = openpyxl.load_workbook(io.BytesIO(res.content))
+        ws = wb.active
+        rows = list(ws.iter_rows(values_only=True))
+        row_a = next((r for r in rows if r[0] == "9788926025451"), None)
+        row_b = next((r for r in rows if r[0] == "9788926025468"), None)
+        assert row_a is not None
+        assert row_b is not None
+        assert row_a[1] == 3
+        assert row_b[1] == 3
+
+    def test_pre_expanded_bundle_member_rows_fully_refunded_excel_unknown(self, auth_client):
+        """AC-006-2 equivalent for GenerateOrderFileView: full refund
+        (quantity=4) on the shared shopify_line_item_id makes both member
+        rows net to 0, so both are reported in unknown_skus rather than
+        appearing in the Excel — closing the same coverage gap for the
+        full-refund edge case."""
+        order = _make_order(shopify_order_id=92024)
+        _make_line_item(
+            order, shopify_line_item_id=706, sku="9788926025451",
+            title="기탄수학 F 세트", quantity=4,
+        )
+        _make_line_item(
+            order, shopify_line_item_id=706, sku="9788926025468",
+            title="기탄수학 F 세트", quantity=4,
+        )
+        _make_refund(order, shopify_line_item_id=706, quantity=4, shopify_refund_id=904)
+        payload = {
+            "distributor": "booxen",
+            "skus": ["9788926025451", "9788926025468"],
+        }
+        res = auth_client.post(GENERATE_URL, data=payload, format="json")
+        assert res.status_code == 200
+        assert "unknown_skus" in res.data
+        assert "9788926025451" in res.data["unknown_skus"]
+        assert "9788926025468" in res.data["unknown_skus"]
+
+    def test_generate_order_file_view_never_references_sku_set_mapping(self):
+        """AC-009-2: GenerateOrderFileView.post() source no longer references
+        ShopifySkuSetMapping at all (reverse-mapping patch from 6d2dfc4 fully
+        removed, per REQ-SKUSET2-009)."""
+        import inspect
+
+        from order.purchase_order_views import GenerateOrderFileView
+
+        source = inspect.getsource(GenerateOrderFileView.post)
+        assert "ShopifySkuSetMapping" not in source
 
 
 # ---------------------------------------------------------------------------

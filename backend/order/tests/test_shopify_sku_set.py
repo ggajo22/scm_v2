@@ -53,23 +53,35 @@ def bundle_mapping(db):
 
 
 @pytest.fixture
-def order_with_bundle_lineitem(db):
-    """Create Order + LineItem with bundle SKU."""
+def order_with_expanded_bundle_lineitems(db):
+    """Create Order + 2 LineItem rows already expanded into member ISBNs,
+    simulating the post-Shopify-sync state (SPEC-SHOPIFY-SKU-SET-002 moved
+    bundle expansion from display time to sync time — see
+    shopify_orders._sync_single_order). Both rows share the same
+    shopify_line_item_id, matching the real ingestion output shape."""
     order = Order.objects.create(
         shopify_order_id=99001,
         store_type="gimssine",
         order_number=1001,
         name="#1001",
     )
-    li = LineItem.objects.create(
+    li_a = LineItem.objects.create(
         order=order,
         shopify_line_item_id=88001,
-        sku="GITANMATH-F SET",
+        sku="9788926025451",
         title="기탄수학 F 세트",
         quantity=2,
         purchase_status="unordered",
     )
-    return order, li
+    li_b = LineItem.objects.create(
+        order=order,
+        shopify_line_item_id=88001,
+        sku="9788926025468",
+        title="기탄수학 F 세트",
+        quantity=2,
+        purchase_status="unordered",
+    )
+    return order, [li_a, li_b]
 
 
 # ---------------------------------------------------------------------------
@@ -282,25 +294,30 @@ class TestShopifySkuSetDetailDelete:
 
 
 # ---------------------------------------------------------------------------
-# AC-SKU-SET-007: UnorderedItemsView bundle expansion
+# SPEC-SHOPIFY-SKU-SET-002 REQ-SKUSET2-007/008/013: UnorderedItemsView no
+# longer performs display-time bundle expansion — it returns whatever rows
+# are already in the DB (which sync-time expansion put there). These tests
+# replace the obsolete AC-SKU-SET-007 display-time-expansion assertions.
 # ---------------------------------------------------------------------------
 
 
-class TestUnorderedItemsBundleExpansion:
-    def test_bundle_sku_expanded(self, auth_client, order_with_bundle_lineitem, bundle_mapping):
+class TestUnorderedItemsSyncTimeExpansion:
+    def test_already_expanded_rows_returned_as_is(self, auth_client, order_with_expanded_bundle_lineitems):
+        """Rows already split into member ISBNs at sync time are returned
+        directly — no additional view-level expansion occurs, and no
+        is_bundle_member/bundle_sku fields are added."""
         resp = auth_client.get(UNORDERED_URL)
         assert resp.status_code == 200
         results = resp.data["results"]
-        # "GITANMATH-F SET" should be expanded to 2 member ISBNs
-        bundle_results = [r for r in results if r.get("bundle_sku") == "GITANMATH-F SET"]
-        assert len(bundle_results) == 2
-        skus = {r["sku"] for r in bundle_results}
+        assert len(results) == 2
+        skus = {r["sku"] for r in results}
         assert skus == {"9788926025451", "9788926025468"}
-        for r in bundle_results:
-            assert r["is_bundle_member"] is True
-            assert r["quantity"] == 2  # Original quantity preserved
+        for r in results:
+            assert r["quantity"] == 2  # original quantity preserved, undivided
+            assert "is_bundle_member" not in r
+            assert "bundle_sku" not in r
 
-    def test_non_bundle_sku_not_expanded(self, auth_client, db):
+    def test_non_bundle_sku_unaffected(self, auth_client, db):
         order = Order.objects.create(
             shopify_order_id=99002,
             store_type="gimssine",
@@ -320,11 +337,14 @@ class TestUnorderedItemsBundleExpansion:
         results = resp.data["results"]
         normal = [r for r in results if r["sku"] == "NORMAL-ISBN"]
         assert len(normal) == 1
-        assert normal[0]["is_bundle_member"] is False
-        assert normal[0]["bundle_sku"] is None
+        assert "is_bundle_member" not in normal[0]
+        assert "bundle_sku" not in normal[0]
 
-    def test_bundle_count_reflects_expansion(self, auth_client, order_with_bundle_lineitem, bundle_mapping):
+    def test_count_reflects_db_row_count_no_additional_expansion(
+        self, auth_client, order_with_expanded_bundle_lineitems
+    ):
         resp = auth_client.get(UNORDERED_URL)
         assert resp.status_code == 200
-        # count should be 2 (expanded, not 1)
+        # 2 DB rows already exist (expanded at sync time) — count must be 2,
+        # not re-expanded or re-aggregated by the view.
         assert resp.data["count"] == 2

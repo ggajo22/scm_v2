@@ -1,7 +1,11 @@
+from decimal import Decimal
 from unittest.mock import patch
 
 import pytest
 from django.utils import timezone
+
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
 
 from order.shopify_orders import (
     _decimal_or_none,
@@ -9,7 +13,7 @@ from order.shopify_orders import (
     _sync_single_order,
     fetch_all_open_orders,
 )
-from order.models import LineItem, Order, PurchaseOrder
+from order.models import LineItem, Order, PurchaseOrder, ShopifySkuSetMapping
 
 
 def _make_order_data(shopify_id, line_items=None):
@@ -200,6 +204,228 @@ def test_fetch_all_orders_single_page():
         result = fetch_all_open_orders("shop.myshopify.com", "token123")
     assert result == orders_page1
     assert mock_get.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# SPEC-SHOPIFY-SKU-SET-002: sync-time bundle expansion (REQ-SKUSET2-003/004/005)
+# ---------------------------------------------------------------------------
+
+_BUNDLE_SKU = "GITANMATH-F SET"
+
+
+def _make_bundle_mapping(bundle_sku=_BUNDLE_SKU, member_isbns=("ISBN-A", "ISBN-B")):
+    """Create a ShopifySkuSetMapping row per member ISBN, in sort_order."""
+    for i, isbn in enumerate(member_isbns):
+        ShopifySkuSetMapping.objects.create(bundle_sku=bundle_sku, member_isbn=isbn, sort_order=i)
+
+
+@pytest.mark.django_db
+def test_sync_bundle_sku_expands_to_member_isbn_rows():
+    """AC-003-1: a bundle SKU line item expands into one LineItem row per
+    member ISBN, all sharing the same shopify_line_item_id, each with the
+    FULL (undivided) quantity and the rest of the fields copied verbatim."""
+    _make_bundle_mapping()
+    order = Order.objects.create(
+        shopify_order_id=910001,
+        store_type="gimssine",
+        order_number=41001,
+        name="#41001",
+        shopify_created_at=timezone.now(),
+    )
+    li = _make_shopify_line_item(9101, sku=_BUNDLE_SKU)
+    li["quantity"] = 2
+    order_data = _make_order_data(910001, [li])
+
+    _sync_single_order(order_data, "gimssine")
+
+    rows = LineItem.objects.filter(order=order, shopify_line_item_id=9101).order_by("sku")
+    assert rows.count() == 2
+    assert list(rows.values_list("sku", flat=True)) == ["ISBN-A", "ISBN-B"]
+    for row in rows:
+        assert row.quantity == 2  # full bundle quantity, not divided
+        assert row.title == "Test Book"
+        assert row.vendor == "Test Publisher"
+        assert row.price == Decimal("5000.00")
+
+
+@pytest.mark.django_db
+def test_sync_regular_sku_unaffected_by_unrelated_bundle_mapping():
+    """AC-003-2: a SKU with no bundle mapping is synced as a single row
+    exactly as before, even when unrelated bundle mappings exist."""
+    _make_bundle_mapping(bundle_sku="OTHER-SET", member_isbns=("OTHER-ISBN",))
+    order = Order.objects.create(
+        shopify_order_id=910002,
+        store_type="gimssine",
+        order_number=41002,
+        name="#41002",
+        shopify_created_at=timezone.now(),
+    )
+    li = _make_shopify_line_item(9102, sku="REGULAR-SKU")
+    order_data = _make_order_data(910002, [li])
+
+    _sync_single_order(order_data, "gimssine")
+
+    assert LineItem.objects.filter(order=order, shopify_line_item_id=9102).count() == 1
+    li_row = LineItem.objects.get(order=order, shopify_line_item_id=9102)
+    assert li_row.sku == "REGULAR-SKU"
+
+
+@pytest.mark.django_db
+def test_sync_bundle_map_loaded_exactly_once_per_order():
+    """AC-003-3: ShopifySkuSetMapping is queried exactly once per
+    _sync_single_order call, no matter how many bundle SKU line items
+    the order contains."""
+    _make_bundle_mapping(bundle_sku="SET-1", member_isbns=("ISBN-1",))
+    _make_bundle_mapping(bundle_sku="SET-2", member_isbns=("ISBN-2",))
+    _make_bundle_mapping(bundle_sku="SET-3", member_isbns=("ISBN-3",))
+    Order.objects.create(
+        shopify_order_id=910003,
+        store_type="gimssine",
+        order_number=41003,
+        name="#41003",
+        shopify_created_at=timezone.now(),
+    )
+    line_items = [
+        _make_shopify_line_item(9103, sku="SET-1"),
+        _make_shopify_line_item(9104, sku="SET-2"),
+        _make_shopify_line_item(9105, sku="SET-3"),
+    ]
+    order_data = _make_order_data(910003, line_items)
+
+    with CaptureQueriesContext(connection) as ctx:
+        _sync_single_order(order_data, "gimssine")
+
+    mapping_queries = [
+        q for q in ctx.captured_queries if "order_shopify_sku_set_mapping" in q["sql"]
+    ]
+    assert len(mapping_queries) == 1
+
+
+@pytest.mark.django_db
+def test_sync_removes_all_bundle_member_rows_when_unordered_and_line_item_disappears():
+    """AC-004-1: when a previously-expanded bundle line item is no longer
+    reported by Shopify, all N expanded member rows are deleted (still
+    filtered purely by shopify_line_item_id — REQ-SKUSET2-004)."""
+    _make_bundle_mapping()
+    Order.objects.create(
+        shopify_order_id=910004,
+        store_type="gimssine",
+        order_number=41004,
+        name="#41004",
+        shopify_created_at=timezone.now(),
+    )
+    li = _make_shopify_line_item(9106, sku=_BUNDLE_SKU)
+    order_data = _make_order_data(910004, [li])
+    _sync_single_order(order_data, "gimssine")
+    rows_qs = LineItem.objects.filter(order__shopify_order_id=910004, shopify_line_item_id=9106)
+    assert rows_qs.count() == 2
+
+    order_data_empty = _make_order_data(910004, [])
+    _sync_single_order(order_data_empty, "gimssine")
+
+    assert rows_qs.count() == 0
+
+
+@pytest.mark.django_db
+def test_sync_keeps_purchase_ordered_bundle_member_rows_when_line_item_disappears():
+    """AC-004-2: expanded member rows already linked to a PurchaseOrder
+    survive even when Shopify stops reporting the shared line item;
+    unordered siblings are still removed."""
+    _make_bundle_mapping()
+    Order.objects.create(
+        shopify_order_id=910005,
+        store_type="gimssine",
+        order_number=41005,
+        name="#41005",
+        shopify_created_at=timezone.now(),
+    )
+    li = _make_shopify_line_item(9107, sku=_BUNDLE_SKU)
+    order_data = _make_order_data(910005, [li])
+    _sync_single_order(order_data, "gimssine")
+    li_a = LineItem.objects.get(
+        order__shopify_order_id=910005, shopify_line_item_id=9107, sku="ISBN-A"
+    )
+    po = PurchaseOrder.objects.create(
+        sku="ISBN-A", title="Test", distributor="booxen", quantity=2, status="pending"
+    )
+    po.line_items.add(li_a)
+
+    order_data_empty = _make_order_data(910005, [])
+    _sync_single_order(order_data_empty, "gimssine")
+
+    assert LineItem.objects.filter(pk=li_a.pk).exists()
+    assert not LineItem.objects.filter(
+        order__shopify_order_id=910005, shopify_line_item_id=9107, sku="ISBN-B"
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_sync_bundle_member_rows_share_correct_location():
+    """AC-005-1: all N expanded member rows receive the same, correct
+    location value derived from line_item_location_map (REQ-SKUSET2-005)."""
+    _make_bundle_mapping()
+    Order.objects.create(
+        shopify_order_id=910006,
+        store_type="gimssine",
+        order_number=41006,
+        name="#41006",
+        shopify_created_at=timezone.now(),
+    )
+    li = _make_shopify_line_item(9108, sku=_BUNDLE_SKU)
+    order_data = _make_order_data(910006, [li])
+
+    _sync_single_order(order_data, "gimssine", line_item_location_map={9108: "NJ"})
+
+    rows = LineItem.objects.filter(order__shopify_order_id=910006, shopify_line_item_id=9108)
+    assert rows.count() == 2
+    for row in rows:
+        assert row.location == "NJ"
+
+
+@pytest.mark.django_db
+def test_sync_bundle_sku_zero_quantity_expands_with_zero_quantity():
+    """Edge case (acceptance.md 엣지 케이스 목록): a bundle line item with
+    quantity=0 expands into member rows that each also carry quantity=0."""
+    _make_bundle_mapping()
+    Order.objects.create(
+        shopify_order_id=910007,
+        store_type="gimssine",
+        order_number=41007,
+        name="#41007",
+        shopify_created_at=timezone.now(),
+    )
+    li = _make_shopify_line_item(9109, sku=_BUNDLE_SKU)
+    li["quantity"] = 0
+    order_data = _make_order_data(910007, [li])
+
+    _sync_single_order(order_data, "gimssine")
+
+    rows = LineItem.objects.filter(order__shopify_order_id=910007, shopify_line_item_id=9109)
+    assert rows.count() == 2
+    for row in rows:
+        assert row.quantity == 0
+
+
+@pytest.mark.django_db
+def test_sync_null_sku_line_item_not_looked_up_as_bundle():
+    """Edge case (acceptance.md 엣지 케이스 목록): a line item with sku=None is
+    never matched against the (string-keyed) bundle map and is synced as a
+    single row exactly as before."""
+    Order.objects.create(
+        shopify_order_id=910008,
+        store_type="gimssine",
+        order_number=41008,
+        name="#41008",
+        shopify_created_at=timezone.now(),
+    )
+    li = _make_shopify_line_item(9110, sku=None)
+    order_data = _make_order_data(910008, [li])
+
+    _sync_single_order(order_data, "gimssine")
+
+    rows_qs = LineItem.objects.filter(order__shopify_order_id=910008, shopify_line_item_id=9110)
+    assert rows_qs.count() == 1
+    assert rows_qs.get().sku is None
 
 
 def test_fetch_all_orders_two_pages():

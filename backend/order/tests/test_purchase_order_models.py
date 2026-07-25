@@ -347,3 +347,47 @@ class TestLineItemPurchaseStatus:
         )
         with pytest.raises(ValidationError):
             li.full_clean()
+
+
+# ---------------------------------------------------------------------------
+# LineItem.unique_together tests (SPEC-SHOPIFY-SKU-SET-002 REQ-SKUSET2-001)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestLineItemUniqueTogetherWithSku:
+    def test_same_shopify_line_item_id_different_sku_both_saved(self):
+        """AC-001-1: Two LineItem rows sharing (order, shopify_line_item_id) but with
+        different sku values must both save successfully (bundle expansion support)."""
+        order = _make_order(shopify_order_id=40001)
+        LineItem.objects.create(
+            order=order,
+            shopify_line_item_id=500,
+            sku="ISBN-A",
+            quantity=2,
+        )
+        LineItem.objects.create(
+            order=order,
+            shopify_line_item_id=500,
+            sku="ISBN-B",
+            quantity=2,
+        )
+        assert LineItem.objects.filter(order=order, shopify_line_item_id=500).count() == 2
+
+    def test_exact_duplicate_order_line_item_sku_rejected(self):
+        """AC-001-2: A fully identical (order, shopify_line_item_id, sku) combination
+        is still rejected with IntegrityError."""
+        order = _make_order(shopify_order_id=40002)
+        LineItem.objects.create(
+            order=order,
+            shopify_line_item_id=501,
+            sku="ISBN-A",
+            quantity=2,
+        )
+        with pytest.raises(IntegrityError):
+            LineItem.objects.create(
+                order=order,
+                shopify_line_item_id=501,
+                sku="ISBN-A",
+                quantity=2,
+            )

@@ -144,7 +144,9 @@ class LineItem(models.Model):
 
     class Meta:
         db_table = "orders_line_item"
-        unique_together = [("order", "shopify_line_item_id")]
+        # SPEC-SHOPIFY-SKU-SET-002 REQ-SKUSET2-001: widened to (order, shopify_line_item_id, sku)
+        # so one Shopify line item can expand into N rows (one per bundle member ISBN).
+        unique_together = [("order", "shopify_line_item_id", "sku")]
 
 
 class LineItemNote(models.Model):
@@ -426,7 +428,8 @@ class DistributorVendorRule(models.Model):
 
 class ShopifySkuSetMapping(models.Model):
     # @MX:ANCHOR: [AUTO] ShopifySkuSetMapping — bundle SKU to member ISBN mapping table
-    # @MX:REASON: Fan-in >= 3 expected: ShopifySkuSetListCreateView, ShopifySkuSetDetailView, UnorderedItemsView bundle expansion
+    # @MX:REASON: Fan-in >= 3: ShopifySkuSetListCreateView, ShopifySkuSetDetailView,
+    # shopify_orders._sync_single_order (SPEC-SHOPIFY-SKU-SET-002 sync-time expansion)
 
     bundle_sku = models.CharField(max_length=200, db_index=True)
     member_isbn = models.CharField(max_length=20)

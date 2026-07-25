@@ -88,6 +88,7 @@ def _sync_single_order(order_data, store_type, location_code="", line_item_locat
         Refund,
         ShippingAddress,
         ShippingLine,
+        ShopifySkuSetMapping,
     )
 
     customer_obj = None
@@ -156,28 +157,52 @@ def _sync_single_order(order_data, store_type, location_code="", line_item_locat
             ]},
         )
 
+    # SPEC-SHOPIFY-SKU-SET-002 REQ-SKUSET2-003: load the full bundle_sku -> member
+    # ISBN mapping once per order sync (never per line item) to avoid N+1 queries.
+    bundle_map: dict[str, list[str]] = {}
+    bundle_mapping_rows = ShopifySkuSetMapping.objects.order_by("sort_order").values(
+        "bundle_sku", "member_isbn"
+    )
+    for mapping in bundle_mapping_rows:
+        bundle_map.setdefault(mapping["bundle_sku"], []).append(mapping["member_isbn"])
+
     incoming_shopify_ids = set()
     for li in order_data.get("line_items", []):
         incoming_shopify_ids.add(li["id"])
         # purchase_status intentionally excluded from defaults to preserve manual processing state
-        LineItem.objects.update_or_create(
-            order=order_obj,
-            shopify_line_item_id=li["id"],
-            defaults={
-                "product_id": li.get("product_id"),
-                "variant_id": li.get("variant_id"),
-                "title": li.get("title"),
-                "variant_title": li.get("variant_title"),
-                "sku": li.get("sku"),
-                "quantity": li.get("quantity"),
-                "price": _decimal_or_none(li.get("price")),
-                "total_discount": _decimal_or_none(li.get("total_discount")),
-                "fulfillment_status": li.get("fulfillment_status"),
-                "vendor": li.get("vendor"),
-                "grams": li.get("grams"),
-                "location": line_item_location_map.get(li["id"], "") if line_item_location_map else "",
-            },
-        )
+        common_defaults = {
+            "product_id": li.get("product_id"),
+            "variant_id": li.get("variant_id"),
+            "title": li.get("title"),
+            "variant_title": li.get("variant_title"),
+            "quantity": li.get("quantity"),
+            "price": _decimal_or_none(li.get("price")),
+            "total_discount": _decimal_or_none(li.get("total_discount")),
+            "fulfillment_status": li.get("fulfillment_status"),
+            "vendor": li.get("vendor"),
+            "grams": li.get("grams"),
+            "location": line_item_location_map.get(li["id"], "") if line_item_location_map else "",
+        }
+        member_isbns = bundle_map.get(li.get("sku"))
+        if member_isbns:
+            # Bundle SKU: expand into one LineItem row per member ISBN, all
+            # sharing shopify_line_item_id, each carrying the FULL (undivided)
+            # quantity — required for refund math (REQ-SKUSET2-006) to stay
+            # correct with zero changes to the 6 Refund OuterRef subquery sites.
+            for member_isbn in member_isbns:
+                LineItem.objects.update_or_create(
+                    order=order_obj,
+                    shopify_line_item_id=li["id"],
+                    sku=member_isbn,
+                    defaults=common_defaults,
+                )
+        else:
+            # No bundle mapping: single-row update_or_create, 100% unchanged.
+            LineItem.objects.update_or_create(
+                order=order_obj,
+                shopify_line_item_id=li["id"],
+                defaults={**common_defaults, "sku": li.get("sku")},
+            )
     # Remove line items that Shopify no longer reports, but only if not purchase-ordered
     order_obj.line_items.filter(purchase_orders__isnull=True).exclude(
         shopify_line_item_id__in=incoming_shopify_ids

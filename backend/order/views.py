@@ -198,7 +198,18 @@ class OrderResyncView(APIView):
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
 
         try:
-            sync_single_order_from_shopify(order.shopify_order_id, order.store_type)
+            # SPEC-SHOPIFY-SKU-SET-002 REQ-SKUSET2-003: a bundle-mapped line item
+            # now expands into N per-member-ISBN LineItem.update_or_create() calls
+            # inside _sync_single_order(). Without an outer transaction, a crash
+            # or network failure mid-loop during a resync (unlike initial sync,
+            # which already runs sync_store() inside transaction.atomic() via
+            # OrderSyncView._sync_store_safe) could persist only SOME member ISBN
+            # rows for a bundle, breaking the "N rows always share a consistent
+            # member set" invariant the stale-deletion and refund-subquery logic
+            # both implicitly rely on. Wrapping mirrors the existing sync_store()
+            # atomic pattern above.
+            with transaction.atomic():
+                sync_single_order_from_shopify(order.shopify_order_id, order.store_type)
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
                 return Response(

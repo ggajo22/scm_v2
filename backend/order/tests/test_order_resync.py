@@ -9,7 +9,8 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from order.models import Order, Refund
+from order.models import LineItem, Order, Refund, ShopifySkuSetMapping
+from order.shopify_orders import _sync_single_order
 
 User = get_user_model()
 RESYNC_URL = "/api/orders/{pk}/sync/"
@@ -231,3 +232,61 @@ def test_resync_refund_case_c_no_duplication(auth_client, gimssine_order):
     assert res.status_code == 200
     assert Refund.objects.filter(order=gimssine_order).count() == 1
     assert res.data.get("has_refund") is True
+
+
+def _bundle_shopify_line_item(li_id=5001, sku="GITANMATH-F SET"):
+    return {
+        "id": li_id,
+        "product_id": 1,
+        "variant_id": 1,
+        "title": "기탄수학 F 세트",
+        "variant_title": None,
+        "sku": sku,
+        "quantity": 2,
+        "price": "10000.00",
+        "total_discount": "0.00",
+        "fulfillment_status": None,
+        "vendor": "Test Publisher",
+        "grams": 0,
+    }
+
+
+# REQ-SKUSET2-010 / REQ-SKUSET2-015 (recommended, SPEC-SHOPIFY-SKU-SET-002):
+# accepted, intentionally-unresolved edge case — resync after a mapping
+# change re-expands using the CURRENT mapping and does NOT clean up member
+# rows that dropped out of the mapping.
+@pytest.mark.django_db
+def test_resync_after_mapping_change_reexpands_with_current_mapping_orphans_removed_member(
+    auth_client, gimssine_order
+):
+    """AC-010-1: after ShopifySkuSetMapping changes (ISBN-B removed, ISBN-C
+    added), resyncing an already-expanded order updates ISBN-A in place,
+    creates ISBN-C as new, and leaves the now-orphaned ISBN-B row untouched
+    (not auto-deleted — this is the accepted, documented edge case)."""
+    bundle_sku = "GITANMATH-F SET"
+    ShopifySkuSetMapping.objects.create(bundle_sku=bundle_sku, member_isbn="ISBN-A", sort_order=0)
+    ShopifySkuSetMapping.objects.create(bundle_sku=bundle_sku, member_isbn="ISBN-B", sort_order=1)
+
+    initial_order_data = _base_shopify_order(gimssine_order)
+    initial_order_data["line_items"] = [_bundle_shopify_line_item()]
+    _sync_single_order(initial_order_data, gimssine_order.store_type)
+
+    assert LineItem.objects.filter(order=gimssine_order, shopify_line_item_id=5001).count() == 2
+    isbn_b_row = LineItem.objects.get(order=gimssine_order, shopify_line_item_id=5001, sku="ISBN-B")
+
+    # Mapping changes: ISBN-B is removed, ISBN-C is added.
+    ShopifySkuSetMapping.objects.filter(bundle_sku=bundle_sku, member_isbn="ISBN-B").delete()
+    ShopifySkuSetMapping.objects.create(bundle_sku=bundle_sku, member_isbn="ISBN-C", sort_order=1)
+
+    resync_order_data = _base_shopify_order(gimssine_order)
+    resync_order_data["line_items"] = [_bundle_shopify_line_item()]
+    with patch("order.shopify_orders._get_with_headers") as mock_fetch:
+        mock_fetch.return_value = ({"order": resync_order_data}, {})
+        url = RESYNC_URL.format(pk=gimssine_order.pk)
+        res = auth_client.post(url)
+
+    assert res.status_code == 200
+    rows = LineItem.objects.filter(order=gimssine_order, shopify_line_item_id=5001)
+    skus = set(rows.values_list("sku", flat=True))
+    assert skus == {"ISBN-A", "ISBN-B", "ISBN-C"}  # ISBN-B: accepted orphan, still present
+    isbn_b_row.refresh_from_db()  # does not raise — row still exists unchanged

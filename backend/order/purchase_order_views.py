@@ -47,7 +47,6 @@ from .models import (
     LineItemNote,
     PurchaseOrder,
     Refund,
-    ShopifySkuSetMapping,
     VendorComparison,
     WarehouseStock,
     Yes24Data,
@@ -128,28 +127,11 @@ class UnorderedItemsView(APIView):
                 }
             )
 
-        # @MX:NOTE: [AUTO] Bundle expansion: if sku matches ShopifySkuSetMapping, expand to member ISBNs
-        # @MX:SPEC: SPEC-SHOPIFY-SKU-SET-001 REQ-SKU-SET-003
-        from collections import defaultdict as _defaultdict
-        bundle_map: dict[str, list[str]] = _defaultdict(list)
-        for mapping in ShopifySkuSetMapping.objects.order_by("bundle_sku", "sort_order").values("bundle_sku", "member_isbn"):
-            bundle_map[mapping["bundle_sku"]].append(mapping["member_isbn"])
-
-        expanded = []
-        for item in results:
-            sku = item["sku"]
-            if sku in bundle_map:
-                for member_isbn in bundle_map[sku]:
-                    expanded.append({
-                        **item,
-                        "sku": member_isbn,
-                        "is_bundle_member": True,
-                        "bundle_sku": sku,
-                    })
-            else:
-                expanded.append({**item, "is_bundle_member": False, "bundle_sku": None})
-
-        return Response({"count": len(expanded), "results": expanded})
+        # SPEC-SHOPIFY-SKU-SET-002 REQ-SKUSET2-007: bundle expansion now happens
+        # at Shopify-sync time (see shopify_orders._sync_single_order), so
+        # LineItem.sku is already the real ISBN here — no display-time
+        # expansion needed.
+        return Response({"count": len(results), "results": results})
 
 
 # ---------------------------------------------------------------------------
@@ -193,16 +175,11 @@ class GenerateOrderFileView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # @MX:NOTE: [AUTO] Bundle-aware SKU resolution: requested SKUs may be bundle
-        # member ISBNs (ShopifySkuSetMapping) whose underlying LineItem.sku is the
-        # bundle_sku, never the member ISBN itself (Shopify sync stores the raw value).
-        # @MX:SPEC: SPEC-SHOPIFY-SKU-SET-001 REQ-SKU-SET-003
-        member_to_bundle: dict[str, str] = dict(
-            ShopifySkuSetMapping.objects.values_list("member_isbn", "bundle_sku")
-        )
-
-        # Aggregate net quantities (after refunds) for requested SKUs from unordered LineItems
-        requested_underlying = {member_to_bundle.get(sku, sku) for sku in skus}
+        # SPEC-SHOPIFY-SKU-SET-002 REQ-SKUSET2-009: bundle SKUs are already
+        # expanded into real-ISBN LineItem rows at Shopify-sync time, so a
+        # requested SKU matches LineItem.sku directly — no bundle-mapping
+        # reverse lookup needed (reverts the commit 6d2dfc4 reactive patch).
+        requested = set(skus)
         refund_sum_sq = (
             Refund.objects.filter(
                 order_id=OuterRef("order_id"),
@@ -213,7 +190,7 @@ class GenerateOrderFileView(APIView):
             .values("total")[:1]
         )
         li_qs = (
-            LineItem.objects.filter(sku__in=requested_underlying)
+            LineItem.objects.filter(sku__in=requested)
             .exclude(purchase_orders__isnull=False)
             .annotate(
                 refunded_qty=Coalesce(
@@ -223,29 +200,15 @@ class GenerateOrderFileView(APIView):
             )
             .values("sku", "title", "quantity", "refunded_qty")
         )
-        underlying_found_map: dict[str, dict] = {}
+        found_map: dict[str, dict] = {}
         for row in li_qs:
             net = max((row["quantity"] or 0) - row["refunded_qty"], 0)
             if net == 0:
                 continue
             sku = row["sku"]
-            if sku not in underlying_found_map:
-                underlying_found_map[sku] = {"title": row["title"] or "", "total_quantity": 0}
-            underlying_found_map[sku]["total_quantity"] += net
-
-        # Map back to originally requested SKUs (bundle members keep the requested
-        # member ISBN in the output, carrying the full underlying bundle quantity).
-        found_map: dict[str, dict] = {}
-        for requested_sku in skus:
-            underlying_sku = member_to_bundle.get(requested_sku, requested_sku)
-            underlying = underlying_found_map.get(underlying_sku)
-            if underlying is None:
-                continue
-            found_map[requested_sku] = {
-                "sku": requested_sku,
-                "title": underlying["title"],
-                "total_quantity": underlying["total_quantity"],
-            }
+            if sku not in found_map:
+                found_map[sku] = {"sku": sku, "title": row["title"] or "", "total_quantity": 0}
+            found_map[sku]["total_quantity"] += net
         unknown_skus = [s for s in skus if s not in found_map]
 
         if unknown_skus:
