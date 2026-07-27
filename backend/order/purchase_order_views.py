@@ -15,13 +15,14 @@ Endpoints:
 # @MX:REASON: Central fan-in point for purchase order lifecycle (unordered → generate → upload → confirm)
 """
 
+from collections import defaultdict
 from datetime import date
 from django.utils import timezone
 from decimal import Decimal, InvalidOperation
 from types import SimpleNamespace
 
 from django.db import IntegrityError, transaction
-from django.db.models import Case, Count, Exists, F, IntegerField, OuterRef, Subquery, Sum, Value, When
+from django.db.models import Case, Count, Exists, F, IntegerField, OuterRef, Q, Subquery, Sum, Value, When
 from django.db.models.functions import Coalesce
 from django.http import HttpResponse
 from rest_framework import serializers, status
@@ -941,6 +942,59 @@ class DailyReviewExcelView(APIView):
         return response
 
 
+# @MX:ANCHOR: [AUTO] Grouped vendor-table upsert shared by Booxen/Kyobo/Yes24Data
+# @MX:REASON: Fan-in == 3 (called once per vendor table from UploadDailyReviewView.post());
+# SPEC-PURCHASE-ORDER-009 REQ-PO9-001/002 batching entry point — changing its
+# grouping logic affects the Bug-1-fix (legacy field preservation) invariant
+# for all three vendor tables at once.
+def _batch_upsert_vendor_data(model, sku_to_fields: dict) -> None:
+    """
+    Batch-upsert vendor rows keyed by SKU.
+
+    Replaces a per-SKU `Model.objects.update_or_create(sku=sku, defaults=...)`
+    loop with grouped `bulk_create(update_conflicts=True, ...)` calls
+    (SPEC-PURCHASE-ORDER-009 REQ-PO9-001).
+
+    `sku_to_fields` maps sku -> a dict of only the fields that should be
+    written for that row (same convention `update_or_create`'s `defaults`
+    used) — a field is omitted entirely when its source column did not exist
+    in the uploaded file, so it is never overwritten (SPEC-PURCHASE-ORDER-008
+    Bug-1-fix). Because `bulk_create(update_conflicts=True)` requires every
+    object in one call to share the same `update_fields`, rows are grouped by
+    their field-presence signature and one batch call is issued per group
+    (REQ-PO9-002) — in practice this is a small, fixed number of groups
+    (legacy vs new-template columns present, price-included vs price-omitted),
+    never one group per row.
+
+    Note: `unique_fields` is intentionally NOT passed to `bulk_create()` —
+    this project's DB backend is MySQL, whose native `INSERT ... ON DUPLICATE
+    KEY UPDATE` targets whichever unique constraint conflicts without needing
+    it specified, and Django's MySQL backend reports
+    `supports_update_conflicts_with_target = False`; passing `unique_fields`
+    there raises `NotSupportedError` at runtime.
+    """
+    if not sku_to_fields:
+        return
+
+    groups: dict[frozenset, list[str]] = defaultdict(list)
+    for sku, fields in sku_to_fields.items():
+        groups[frozenset(fields.keys())].append(sku)
+
+    for signature, skus in groups.items():
+        objs = [model(sku=sku, **sku_to_fields[sku]) for sku in skus]
+        if not signature:
+            # Nothing to update for this group — only ensure the row exists
+            # (mirrors update_or_create(defaults={}) leaving an existing
+            # row's fields untouched).
+            model.objects.bulk_create(objs, ignore_conflicts=True)
+        else:
+            model.objects.bulk_create(
+                objs,
+                update_conflicts=True,
+                update_fields=list(signature),
+            )
+
+
 class UploadDailyReviewView(APIView):
     """
     POST /api/purchase-orders/upload-daily-review/
@@ -1008,11 +1062,21 @@ class UploadDailyReviewView(APIView):
 
         try:
             with transaction.atomic():
-                for sku, item in sku_map.items():
-                    distributor_code = item["distributor"]
-                    note = item.get("note")
-                    note_type = item.get("note_type")
+                # ---------------------------------------------------------
+                # Pass 1 (Python only, no DB writes): build the vendor-table
+                # field dicts for every SKU (SPEC-PURCHASE-ORDER-009
+                # REQ-PO9-001/002). Field-presence semantics are byte-for-byte
+                # identical to the original per-SKU update_or_create() calls —
+                # only *when* the DB write happens has changed.
+                # ---------------------------------------------------------
+                booxen_field_map: dict[str, dict] = {}
+                yes24_field_map: dict[str, dict] = {}
+                kyobo_field_map: dict[str, dict] = {}
+                booxen_price_needed: set[str] = set()
+                kyobo_price_needed: set[str] = set()
+                yes24_price_needed: set[str] = set()
 
+                for sku, item in sku_map.items():
                     # Part B (REQ-PO8-014): vendor-table sync — runs for every row
                     # with a non-empty SKU, independent of '선택'. Price fields are
                     # omitted from defaults when the row has no value so a blank
@@ -1038,14 +1102,18 @@ class UploadDailyReviewView(APIView):
                         booxen_defaults["available"] = item["bs_available"]
                     if item.get("bs_price") is not None:
                         booxen_defaults["price"] = Decimal(str(item["bs_price"]))
-                    BooxenData.objects.update_or_create(sku=sku, defaults=booxen_defaults)
+                    else:
+                        booxen_price_needed.add(sku)
+                    booxen_field_map[sku] = booxen_defaults
 
                     yes24_defaults: dict = {}
                     if "yes24_status" in item:
                         yes24_defaults["status"] = item["yes24_status"]
                     if item.get("yes24_price") is not None:
                         yes24_defaults["price"] = Decimal(str(item["yes24_price"]))
-                    Yes24Data.objects.update_or_create(sku=sku, defaults=yes24_defaults)
+                    else:
+                        yes24_price_needed.add(sku)
+                    yes24_field_map[sku] = yes24_defaults
 
                     kyobo_defaults: dict = {}
                     if "ky_stock" in item:
@@ -1060,18 +1128,86 @@ class UploadDailyReviewView(APIView):
                         kyobo_defaults["publisher"] = item["ky_publisher"]
                     if item.get("ky_price") is not None:
                         kyobo_defaults["price"] = Decimal(str(item["ky_price"]))
+                    else:
+                        kyobo_price_needed.add(sku)
                     if "ky_list_price" in item:
                         raw_list_price = item["ky_list_price"]
                         kyobo_defaults["list_price"] = (
                             Decimal(str(raw_list_price)) if raw_list_price is not None else None
                         )
-                    KyoboData.objects.update_or_create(sku=sku, defaults=kyobo_defaults)
+                    kyobo_field_map[sku] = kyobo_defaults
 
-                    unordered_lis = list(
-                        LineItem.objects.filter(sku=sku, purchase_status="unordered")
-                        .exclude(purchase_orders__isnull=False)
-                        .select_for_update()
-                    )
+                # REQ-PO9-001/002: one grouped bulk upsert per vendor table
+                # instead of one update_or_create() per SKU per table.
+                _batch_upsert_vendor_data(BooxenData, booxen_field_map)
+                _batch_upsert_vendor_data(Yes24Data, yes24_field_map)
+                _batch_upsert_vendor_data(KyoboData, kyobo_field_map)
+
+                # Vendor price fallback (used below when the Excel row itself
+                # has no price): fetched in bulk once per vendor table,
+                # instead of a per-SKU .filter(sku=sku).first() inside the
+                # loop. Reading after the batch upsert above reproduces the
+                # original per-SKU ordering (that SKU's own vendor sync,
+                # which never touches "price" when the Excel row has none,
+                # already ran before this same SKU's fallback read).
+                booxen_price_by_sku = (
+                    {b.sku: b.price for b in BooxenData.objects.filter(sku__in=booxen_price_needed)}
+                    if booxen_price_needed
+                    else {}
+                )
+                kyobo_price_by_sku = (
+                    {k.sku: k.price for k in KyoboData.objects.filter(sku__in=kyobo_price_needed)}
+                    if kyobo_price_needed
+                    else {}
+                )
+                yes24_price_by_sku = (
+                    {y.sku: y.price for y in Yes24Data.objects.filter(sku__in=yes24_price_needed)}
+                    if yes24_price_needed
+                    else {}
+                )
+
+                # REQ-PO9-004: a single filter(sku__in=...) query for every
+                # SKU's unordered LineItem set, grouped by SKU in Python,
+                # instead of one filter(sku=sku) query per SKU.
+                all_skus = list(sku_map.keys())
+                lineitems_by_sku: dict[str, list] = defaultdict(list)
+                for li in (
+                    LineItem.objects.filter(sku__in=all_skus, purchase_status="unordered")
+                    .exclude(purchase_orders__isnull=False)
+                    .select_for_update()
+                ):
+                    lineitems_by_sku[li.sku].append(li)
+
+                # REQ-PO9-005: LineItemNote instances collected here and
+                # inserted with a single bulk_create() after the loop,
+                # instead of one create() call per LineItem.
+                pending_notes: list = []
+                # Deferred LineItem field updates, grouped by which fields
+                # each branch touches — bulk_update() requires the same
+                # field list for every object in one call, so one
+                # bulk_update() per branch replaces one per SKU.
+                cs_status_updates: list = []
+                warehouse_li_updates: list = []
+                nonwarehouse_li_updates: list = []
+                # REQ-PO9-006: (sku, location, total_qty) entries for the
+                # warehouse floor-at-0 deduction, applied as a single
+                # batched Case/When update after the loop — see the
+                # investigation note below the loop for why this is safe.
+                warehouse_stock_entries: list[tuple[str, str, int]] = []
+                # REQ-PO9-007: PurchaseOrder instances for the non-warehouse
+                # branch, collected here and inserted with a single
+                # bulk_create() after the loop instead of one create() call
+                # per SKU — see the investigation note below the loop for
+                # the M2M-linking strategy.
+                po_creates: list = []
+                po_lineitems_by_sku: dict[str, list] = {}
+
+                for sku, item in sku_map.items():
+                    distributor_code = item["distributor"]
+                    note = item.get("note")
+                    note_type = item.get("note_type")
+
+                    unordered_lis = lineitems_by_sku.get(sku, [])
 
                     if not unordered_lis:
                         skipped_count += 1
@@ -1079,22 +1215,23 @@ class UploadDailyReviewView(APIView):
 
                     title = unordered_lis[0].title or sku
                     total_qty = sum(li.quantity or 0 for li in unordered_lis)
-                    li_ids = [li.pk for li in unordered_lis]
 
                     if note_type and not distributor_code:
                         # CS case: update purchase_status and create note
                         new_status = _NOTE_TYPE_STATUS_MAP[note_type]
                         for li in unordered_lis:
                             li.purchase_status = new_status
-                        LineItem.objects.bulk_update(unordered_lis, ["purchase_status"])
+                        cs_status_updates.extend(unordered_lis)
                         if note is not None:
                             for li in unordered_lis:
-                                LineItemNote.objects.create(
-                                    line_item=li,
-                                    content=note,
-                                    author=None,
-                                    note_type=note_type,
-                                    assignee="CS",
+                                pending_notes.append(
+                                    LineItemNote(
+                                        line_item=li,
+                                        content=note,
+                                        author=None,
+                                        note_type=note_type,
+                                        assignee="CS",
+                                    )
                                 )
                         confirmed_count += 1
                         continue
@@ -1120,80 +1257,182 @@ class UploadDailyReviewView(APIView):
                         else:
                             loc = _WAREHOUSE_LOCATION_MAP[distributor_code]
 
-                        # Atomic stock deduction: floor at 0
-                        WarehouseStock.objects.filter(isbn=sku, location=loc).update(
-                            quantity=Case(
-                                When(quantity__gte=total_qty, then=F("quantity") - total_qty),
-                                default=Value(0),
-                                output_field=IntegerField(),
-                            )
-                        )
+                        # Deferred atomic stock deduction (floor at 0) — see
+                        # REQ-PO9-006 investigation note below the loop.
+                        warehouse_stock_entries.append((sku, loc, total_qty))
 
                         # REQ-PO5-005: Set purchase_status = "in_stock"
-                        update_fields = ["purchase_status", "confirmed_distributor"]
                         for li in unordered_lis:
                             li.purchase_status = "in_stock"
                             li.confirmed_distributor = distributor_code
+                        warehouse_li_updates.extend(unordered_lis)
                         if note is not None:
                             # REQ-PO8-009: assignee determined by resolved location
                             # (also fixes legacy warehouse_ca/nj always logging 한국창고)
                             assignee = "한국창고" if loc == "korea" else "미국창고"
                             for li in unordered_lis:
-                                LineItemNote.objects.create(
-                                    line_item=li,
-                                    content=note,
-                                    author=None,
-                                    assignee=assignee,
+                                pending_notes.append(
+                                    LineItemNote(
+                                        line_item=li,
+                                        content=note,
+                                        author=None,
+                                        assignee=assignee,
+                                    )
                                 )
 
-                        LineItem.objects.bulk_update(unordered_lis, update_fields)
-
                     else:
-                        # Non-warehouse: existing flow — create PurchaseOrder
-                        # Prefer prices from the Excel file; fall back to DB
+                        # Non-warehouse: create PurchaseOrder. Prefer prices
+                        # from the Excel file; fall back to DB.
+                        # REQ-PO9-007: the PurchaseOrder itself is collected
+                        # here and bulk-created after the loop; the M2M
+                        # `line_items` link is deferred and batched too —
+                        # see the investigation note below the loop.
                         unit_price = None
                         if distributor_code == "booxen":
                             unit_price = item.get("bs_price")
                             if unit_price is None:
-                                bd = BooxenData.objects.filter(sku=sku).first()
-                                if bd:
-                                    unit_price = bd.price
+                                unit_price = booxen_price_by_sku.get(sku)
                         elif distributor_code == "kyobo":
                             unit_price = item.get("ky_price")
                             if unit_price is None:
-                                kd = KyoboData.objects.filter(sku=sku).first()
-                                if kd:
-                                    unit_price = kd.price
+                                unit_price = kyobo_price_by_sku.get(sku)
                         elif distributor_code == "yes24":
                             # REQ-PO8-010
                             unit_price = item.get("yes24_price")
                             if unit_price is None:
-                                yd = Yes24Data.objects.filter(sku=sku).first()
-                                if yd:
-                                    unit_price = yd.price
+                                unit_price = yes24_price_by_sku.get(sku)
 
-                        po = PurchaseOrder.objects.create(
-                            sku=sku,
-                            title=title,
-                            distributor=distributor_code,
-                            quantity=total_qty,
-                            unit_price=unit_price,
-                            status="pending",
+                        po_creates.append(
+                            PurchaseOrder(
+                                sku=sku,
+                                title=title,
+                                distributor=distributor_code,
+                                quantity=total_qty,
+                                unit_price=unit_price,
+                                status="pending",
+                            )
                         )
-                        po.line_items.add(*unordered_lis)
+                        po_lineitems_by_sku[sku] = unordered_lis
 
-                        update_fields = ["confirmed_distributor", "confirmed_price"]
                         for li in unordered_lis:
                             li.confirmed_distributor = distributor_code
                             li.confirmed_price = unit_price
-
-                        LineItem.objects.bulk_update(unordered_lis, update_fields)
+                        nonwarehouse_li_updates.extend(unordered_lis)
 
                     # REQ-PO5-007: Track confirmed by distributor
                     confirmed_by_distributor.setdefault(distributor_code, []).append(
                         {"sku": sku, "title": title, "quantity": total_qty}
                     )
                     confirmed_count += 1
+
+                # REQ-PO9-006 investigation: the floor-at-0 deduction for a
+                # given WarehouseStock row depends only on that row's own
+                # current `quantity` (via Case/When quantity__gte=total_qty)
+                # — never on any other row's value. Within one upload,
+                # sku_map has already deduplicated by SKU (last row wins),
+                # and WarehouseStock.Meta.unique_together is (isbn,
+                # location) with isbn == sku here, so every (sku, location)
+                # pair collected into warehouse_stock_entries during this
+                # call is unique — no SKU/location combination can be
+                # deducted twice in the same upload. Batching into a single
+                # Case/When update is therefore safe.
+                if warehouse_stock_entries:
+                    stock_filter = Q()
+                    case_whens = []
+                    for entry_sku, loc, total_qty in warehouse_stock_entries:
+                        stock_filter |= Q(isbn=entry_sku, location=loc)
+                        case_whens.append(
+                            When(
+                                isbn=entry_sku,
+                                location=loc,
+                                quantity__gte=total_qty,
+                                then=F("quantity") - total_qty,
+                            )
+                        )
+                    WarehouseStock.objects.filter(stock_filter).update(
+                        quantity=Case(
+                            *case_whens,
+                            default=Value(0),
+                            output_field=IntegerField(),
+                        )
+                    )
+
+                # REQ-PO9-005: single bulk_create() for every LineItemNote
+                # collected across the CS and warehouse branches.
+                if pending_notes:
+                    LineItemNote.objects.bulk_create(pending_notes)
+
+                # One bulk_update() per distinct field set touched, instead
+                # of one per SKU.
+                if cs_status_updates:
+                    LineItem.objects.bulk_update(cs_status_updates, ["purchase_status"])
+                if warehouse_li_updates:
+                    LineItem.objects.bulk_update(
+                        warehouse_li_updates, ["purchase_status", "confirmed_distributor"]
+                    )
+                if nonwarehouse_li_updates:
+                    LineItem.objects.bulk_update(
+                        nonwarehouse_li_updates, ["confirmed_distributor", "confirmed_price"]
+                    )
+
+                # REQ-PO9-007: batch-create every non-warehouse-branch
+                # PurchaseOrder in a single bulk_create(), then batch-link
+                # the M2M `line_items` relation through the through-table's
+                # own bulk_create() instead of one `.add()` call per PO.
+                #
+                # Empirically verified (throwaway test against this
+                # project's real MySQL backend, Django 5.1.6): objects
+                # passed to PurchaseOrder.objects.bulk_create() do NOT come
+                # back with `.pk` populated for multi-row batches — Django's
+                # MySQL backend does not report
+                # `can_return_rows_from_bulk_insert`, so there is no
+                # reliable way to zip the input list against the created
+                # rows by position. Falling back to a safe re-query
+                # strategy instead of an ID-matching heuristic:
+                #
+                # 1. Capture `t_before` immediately before the bulk_create()
+                #    call.
+                # 2. Re-query PurchaseOrder rows by
+                #    `sku__in=<this batch's SKUs>` AND
+                #    `created_at__gte=t_before`, which — combined with the
+                #    fact that `sku_map` (top of this method) has already
+                #    deduplicated the uploaded rows by SKU, so this branch
+                #    creates at most one PurchaseOrder per SKU per upload
+                #    call — reliably yields exactly one row per SKU in the
+                #    overwhelmingly common case.
+                # 3. If a SKU somehow yields more than one match in that
+                #    narrow window (e.g. a genuinely concurrent request
+                #    creating a PurchaseOrder for the same SKU), keep the
+                #    highest-pk (most recently inserted) row for that SKU,
+                #    since it is the one this call just inserted.
+                #
+                # This trades one extra SELECT for the batch (still O(1),
+                # not O(N)) in exchange for correctness without a fragile
+                # heuristic.
+                if po_creates:
+                    t_before_bulk_create = timezone.now()
+                    PurchaseOrder.objects.bulk_create(po_creates)
+
+                    po_skus = list(po_lineitems_by_sku.keys())
+                    po_by_sku: dict[str, PurchaseOrder] = {}
+                    for po in PurchaseOrder.objects.filter(
+                        sku__in=po_skus, created_at__gte=t_before_bulk_create
+                    ):
+                        existing = po_by_sku.get(po.sku)
+                        if existing is None or po.pk > existing.pk:
+                            po_by_sku[po.sku] = po
+
+                    through_model = PurchaseOrder.line_items.through
+                    through_rows = [
+                        through_model(
+                            purchaseorder_id=po_by_sku[sku].pk,
+                            lineitem_id=li.pk,
+                        )
+                        for sku, unordered_lis in po_lineitems_by_sku.items()
+                        for li in unordered_lis
+                    ]
+                    if through_rows:
+                        through_model.objects.bulk_create(through_rows)
 
         except Exception as exc:
             return Response(

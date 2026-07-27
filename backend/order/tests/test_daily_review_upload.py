@@ -1617,3 +1617,210 @@ class TestUploadKyoboReturnableMapping:
         assert res.status_code == 201
 
         assert KyoboData.objects.get(sku=sku).returnable is False
+
+
+# ===========================================================================
+# SPEC-PURCHASE-ORDER-009
+#
+# Covers:
+#   REQ-PO9-010  Query-count ceiling regression test (300~500 row fixture)
+#   AC-001       Query count stays under a fixed ceiling, independent of
+#                uploaded SKU row count
+# ===========================================================================
+
+_ACTIONABLE_CS_SELECTS = ["주문취소", "주문보류", "CS필요"]
+_ACTIONABLE_WAREHOUSE_STATUSES = ["한국재고", "Fullerton재고", "NJ재고"]
+_ACTIONABLE_WAREHOUSE_LOCATIONS = ["korea", "ca", "nj"]
+_PO_BRANCH_SELECTS = ["BOOXEN", "교보", "YES24"]
+_FILLER_SELECTS = ["", "합계"]
+_N_FILLER = 6
+
+
+def _make_bulk_daily_review_fixture(total_rows: int, sku_seed: str) -> tuple[bytes, list[str]]:
+    """
+    Build a synthetic "Daily Order Review Template" upload with `total_rows`
+    rows, for the REQ-PO9-010 query-count ceiling test.
+
+    Composition (SPEC-PURCHASE-ORDER-009 fix cycle 2): a fixed, constant
+    3 CS rows / 3 warehouse rows are routed to their respective branches,
+    a fixed small ``_N_FILLER`` (6) rows have no matching LineItem and only
+    exercise the vendor-table-sync + immediate-skip path, and the
+    **remainder (`total_rows - 9 - _N_FILLER`) all route through the
+    non-warehouse PurchaseOrder-creation branch** (booxen/kyobo/yes24,
+    cycled).
+
+    This mirrors the real production file's measured composition — 439 of
+    447 rows (~98%) went through the non-warehouse PO-creation branch — so
+    unlike the original fixture (which hardcoded the PO-branch count at a
+    fixed 3 regardless of `total_rows`, leaving REQ-PO9-007's PO batching
+    completely unmeasured by this test), the dominant branch's row count
+    here actually scales with `total_rows`. `sku_seed` keeps SKUs (and
+    therefore WarehouseStock rows, which are unique per isbn+location)
+    distinct across multiple calls within the same test.
+
+    Returns (file_bytes, actionable_skus) where actionable_skus is ordered
+    [cs_sku_0..2, warehouse_sku_0..2, po_sku_0..N] (po_sku count scales with
+    total_rows).
+    """
+    assert total_rows > 9 + _N_FILLER
+
+    actionable_skus: list[str] = []
+    rows: list[dict] = []
+
+    for i, selected in enumerate(_ACTIONABLE_CS_SELECTS):
+        sku = f"PERF{sku_seed}CS{i}"
+        actionable_skus.append(sku)
+        rows.append({"sku": sku, "selected": selected, "status": "", "bs_price": 1000})
+
+    for i, wh_status in enumerate(_ACTIONABLE_WAREHOUSE_STATUSES):
+        sku = f"PERF{sku_seed}WH{i}"
+        actionable_skus.append(sku)
+        rows.append({"sku": sku, "selected": "재고", "status": wh_status})
+
+    n_po = total_rows - len(actionable_skus) - _N_FILLER
+    for i in range(n_po):
+        selected = _PO_BRANCH_SELECTS[i % len(_PO_BRANCH_SELECTS)]
+        sku = f"PERF{sku_seed}PO{i}"
+        actionable_skus.append(sku)
+        row = {"sku": sku, "selected": selected, "status": ""}
+        # Vary field presence across rows (REQ-PO9-002): at scale, this must
+        # stay a small, fixed number of bulk_create() groups, never one
+        # group per row.
+        if i % 3 == 0:
+            row["bs_price"] = 1200 + i
+        if i % 4 == 0:
+            row["ky_price"] = 3400 + i
+        if i % 5 == 0:
+            row["bs_stock"] = 10
+        if selected == "BOOXEN" and "bs_price" not in row:
+            row["bs_price"] = 5000
+        rows.append(row)
+
+    for i in range(_N_FILLER):
+        selected = _FILLER_SELECTS[i % len(_FILLER_SELECTS)]
+        rows.append({"sku": f"PERF{sku_seed}F{i}", "selected": selected, "status": ""})
+
+    file_bytes = _make_new_template_excel(rows)
+    return file_bytes, actionable_skus
+
+
+@pytest.mark.django_db
+class TestUploadDailyReviewQueryCountCeiling:
+    """REQ-PO9-010/AC-001: total Django query count during
+    UploadDailyReviewView.post() stays under a fixed, small ceiling and does
+    not scale with the number of uploaded SKU rows (SPEC-PURCHASE-ORDER-009)."""
+
+    def _seed_actionable_line_items(self, actionable_skus: list[str], order_id: int) -> None:
+        order = _make_order(shopify_order_id=order_id, name=f"#{order_id}")
+        for idx, sku in enumerate(actionable_skus):
+            _make_line_item(order, sku=sku, quantity=2, shopify_line_item_id=idx + 1)
+        # actionable_skus layout: [cs x3, warehouse x3, po x(total_rows-9-_N_FILLER)]
+        # — see _make_bulk_daily_review_fixture.
+        warehouse_skus = actionable_skus[3:6]
+        for sku, location in zip(warehouse_skus, _ACTIONABLE_WAREHOUSE_LOCATIONS):
+            WarehouseStock.objects.create(isbn=sku, location=location, quantity=100)
+
+    def _upload_and_capture(self, auth_client, total_rows: int, sku_seed: str, order_id: int):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        file_bytes, actionable_skus = _make_bulk_daily_review_fixture(total_rows, sku_seed)
+        self._seed_actionable_line_items(actionable_skus, order_id)
+
+        file_obj = io.BytesIO(file_bytes)
+        file_obj.name = "daily_review.xlsx"
+        with CaptureQueriesContext(connection) as ctx:
+            res = auth_client.post(UPLOAD_DAILY_URL, data={"file": file_obj}, format="multipart")
+        assert res.status_code == 201
+        # confirmed_count == every actionable row (CS + warehouse + PO);
+        # the fixed _N_FILLER rows have no matching LineItem and are skipped.
+        assert res.data["confirmed_count"] == len(actionable_skus)
+        return res, len(ctx.captured_queries)
+
+    def test_query_count_stays_under_ceiling_at_300_rows(self, auth_client):
+        _, query_count = self._upload_and_capture(
+            auth_client, 300, sku_seed="A300", order_id=97001
+        )
+        # Ceiling raised from the original 30 (SPEC-PURCHASE-ORDER-009 fix
+        # cycle 1) to account for the now-batched PurchaseOrder creation
+        # (REQ-PO9-007 fix cycle 2): one bulk_create() for the POs, one
+        # SELECT to re-resolve their PKs (bulk_create() does not populate
+        # `.pk` on this project's MySQL backend — see the REQ-PO9-007
+        # investigation note in purchase_order_views.py), and one
+        # bulk_create() for the M2M through-table rows. These are 3 fixed
+        # additional queries, not per-row, so the ceiling is still a small
+        # constant — just a slightly higher one than before this branch was
+        # batched.
+        assert query_count < 35, f"expected under 35 queries, got {query_count}"
+
+    def test_query_count_does_not_scale_with_row_count(self, auth_client):
+        """AC-001: 300 vs 500 rows must not produce proportionally more
+        queries — only a small constant delta (incidental variation), never
+        linear growth with SKU count. With this fixture, the PO-creation
+        branch (previously fixed at 3 rows regardless of total_rows) now
+        scales with total_rows, so this assertion is meaningful against the
+        REQ-PO9-007 PurchaseOrder batching added in fix cycle 2."""
+        _, count_300 = self._upload_and_capture(
+            auth_client, 300, sku_seed="B300", order_id=97101
+        )
+        _, count_500 = self._upload_and_capture(
+            auth_client, 500, sku_seed="B500", order_id=97201
+        )
+        assert count_500 < 35, f"expected under 35 queries at 500 rows, got {count_500}"
+        assert count_500 - count_300 <= 3, (
+            "query count scaled with row count instead of staying constant: "
+            f"300 rows -> {count_300} queries, 500 rows -> {count_500} queries"
+        )
+
+
+@pytest.mark.django_db
+class TestUploadPurchaseOrderLineItemsM2MCorrectness:
+    """AC-008: batched PurchaseOrder creation (REQ-PO9-007) must link each PO
+    to exactly the LineItems that belong to its own SKU — never mixed up
+    across SKUs by the created_at-window re-query correlation strategy."""
+
+    def test_batched_po_creation_links_correct_line_items_per_sku(self, auth_client):
+        order = _make_order(shopify_order_id=98001, name="#98001")
+
+        # Varying LineItem counts per SKU (1, 2, or 3) across all three
+        # non-warehouse distributors, so a cross-SKU mix-up in the
+        # created_at/highest-pk correlation would be detectable via a
+        # wrong line_items count or membership for at least one SKU.
+        distributors = ["BOOXEN", "교보", "YES24"]
+        skus_and_counts: list[tuple[str, int]] = []
+        rows = []
+        li_counter = 0
+        for i in range(120):
+            sku = f"9791{i:09d}"
+            li_count = (i % 3) + 1  # 1, 2, or 3 LineItems
+            skus_and_counts.append((sku, li_count))
+            for _ in range(li_count):
+                li_counter += 1
+                _make_line_item(order, sku=sku, quantity=1, shopify_line_item_id=li_counter)
+            distributor = distributors[i % 3]
+            row = {"sku": sku, "selected": distributor, "status": "정상"}
+            if distributor == "BOOXEN":
+                row["bs_price"] = 9000
+            elif distributor == "교보":
+                row["ky_price"] = 9500
+            else:
+                row["yes24_price"] = 9800
+            rows.append(row)
+
+        file_bytes = _make_new_template_excel(rows)
+        file_obj = io.BytesIO(file_bytes)
+        file_obj.name = "daily_review.xlsx"
+        res = auth_client.post(UPLOAD_DAILY_URL, data={"file": file_obj}, format="multipart")
+        assert res.status_code == 201
+        assert res.data["confirmed_count"] == 120
+
+        for sku, expected_count in skus_and_counts:
+            po = PurchaseOrder.objects.get(sku=sku)
+            linked_skus = {li.sku for li in po.line_items.all()}
+            assert linked_skus == {sku}, (
+                f"PurchaseOrder for {sku} linked to wrong SKU(s): {linked_skus}"
+            )
+            assert po.line_items.count() == expected_count, (
+                f"PurchaseOrder for {sku} expected {expected_count} line items, "
+                f"got {po.line_items.count()}"
+            )
