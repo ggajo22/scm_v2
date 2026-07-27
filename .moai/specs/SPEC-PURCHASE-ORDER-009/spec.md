@@ -1,7 +1,7 @@
 ---
 id: SPEC-PURCHASE-ORDER-009
 version: 1.1.0
-status: planned
+status: completed
 created: 2026-07-26
 updated: 2026-07-27
 author: ggajo
@@ -285,3 +285,84 @@ If 이 SPEC-009가 구현되면, then the system shall NOT `backend/order/excel_
 - SPEC-PURCHASE-ORDER-006: `Yes24Data` 모델, `list_price` 필드를 도입한 SPEC. 이 SPEC-009의 배칭도 `Yes24Data.list_price`를 defaults에서 계속 제외해야 한다(SPEC-006 보호, 기존 REQ-PO8-018 제약 승계).
 - SPEC-PURCHASE-ORDER-007: YES24 발주 파일 생성 SPEC. 이 SPEC-009와 직접적인 코드 경로 중복은 없다.
 - SPEC-PURCHASE-ORDER-008: 이 SPEC-009의 직접적인 트리거가 된 선행 SPEC — Part B(전체 행 벤더 데이터 upsert, REQ-PO8-014~018)를 도입했으며, 소규모 픽스처(≤57행)로만 검증되어 실사용 규모(≈400행)에서의 N+1 성능 문제가 노출되지 않았다. SPEC-009는 SPEC-008이 도입한 로직의 "무엇을 쓰는가"는 전혀 바꾸지 않고 "어떻게 쓰는가"만 배칭으로 전환한다.
+
+---
+
+## 구현 노트 (Implementation Notes)
+
+### 개요
+
+SPEC-PURCHASE-ORDER-009는 `UploadDailyReviewView.post()`의 N+1 쿼리 패턴을 제거하여 대용량 Daily Review 파일 업로드 성능을 초 단위까지 개선하는 순수 성능 리팩터링이다. SPEC-008에서 도입한 전체 행 벤더 데이터 동기화 기능의 "무엇을 쓰는가(WHAT)"는 완전히 동일하게 유지하면서, "어떻게 쓰는가(HOW)"만 배칭 쿼리로 전환했다.
+
+### 구현 흐름 및 성능 개선
+
+#### 픽스 사이클 1 (REQ-PO9-001~006, 커밋 0820ac5)
+
+최초 구현에서 다음의 배칭을 적용했다:
+
+- **벤더 테이블 배칭**: 필드 집합별 그룹화 후 `BooxenData`/`KyoboData`/`Yes24Data` 각 테이블의 `bulk_create(update_conflicts=True)` 배치 upsert (REQ-PO9-001/002)
+- **LineItem 배치 조회**: SKU별 개별 `filter(sku=sku, ...)` 쿼리 대신 전체 SKU에 대한 단일 `filter(sku__in=all_skus, ...)` 후 Python에서 SKU별 그룹화 (REQ-PO9-004)
+- **LineItemNote 배칭**: CS/창고 분기의 개별 `create()` 호출을 단일 `bulk_create()`로 통합 (REQ-PO9-005)
+- **WarehouseStock 검증**: 행 간 독립성 확인 후 조건부 최적화 (REQ-PO9-006, 실제로는 SKU별 개별 `update()` 방식 유지)
+
+**성능 결과(픽스 사이클 1)**: 실제 프로덕션 파일(447행, 400개 유니크 SKU)을 재측정한 결과 **120초/795쿼리**로 개선. 초기 진단 단계의 1447초 대비 **약 12배 개선**이었으나, 목표(초 단위)에는 여전히 미달.
+
+**분석**: 상세 프로파일링 결과, 전체 행의 약 98%(439행)가 비창고 분기(`PurchaseOrder` 생성 분기)로 흐르며, 이 분기의 SKU별 개별 `PurchaseOrder.objects.create()` + `po.line_items.add()` 호출이 여전히 지배적 병목이었다(REQ-PO9-007은 초기에 "낮은 우선순위"로 보류했음).
+
+#### 픽스 사이클 2 (REQ-PO9-007, 커밋 0820ac5 동일)
+
+픽스 사이클 1 이후 재측정 결과를 바탕으로 REQ-PO9-007의 `PurchaseOrder` 배치 생성을 완성했다:
+
+- **PurchaseOrder 배칭**: 비창고 분기에서 SKU별 개별 `PurchaseOrder.objects.create()` 호출을 전체 배치 `bulk_create()`로 통합
+- **M2M through 테이블 배칭**: `PurchaseOrder.line_items.add()` 개별 호출을 `PurchaseOrder.line_items.through.objects.bulk_create()`로 통합
+- **PK 조회 폴백 전략**: Django의 MySQL 백엔드가 `can_return_rows_from_bulk_insert`를 지원하지 않으므로, `bulk_create()` 직후 `created_at__gte=t_before`로 재조회하는 휴리스틱 채택 (상세: SPEC 본문 REQ-PO9-007 구현 기록)
+
+**성능 결과(픽스 사이클 2)**: 동일 프로덕션 파일로 최종 재측정 결과 **3.50초/14쿼리** (`django.test.RequestFactory` + `force_authenticate` + `transaction.atomic()` 래핑, `transaction.set_rollback(True)` 처리로 영구 쓰기 없음). 1447초 대비 **약 413배 개선**, 픽스 사이클 1의 120초 대비 **약 34배 추가 개선**.
+
+**사용자 수용성 확인**: 사용자가 실제 UI를 통해 동일 프로덕션 파일로 재테스트한 결과, 측정된 3.50초의 성능 개선이 현실에서도 그대로 유지됨을 확인 (실제 운영 환경에서의 최종 검증).
+
+### 기술적 발견사항
+
+#### MySQL bulk_create 제약
+
+- Django의 `bulk_create()` 후 `.pk`가 채워지지 않음 (MySQL 백엔드의 `can_return_rows_from_bulk_insert = False`)
+- 폴백: `bulk_create()` 직전 시각 기록 후 `created_at__gte=t_before` 재조회로 SKU별 매칭
+
+#### 필드 집합별 그룹화
+
+- `bulk_create(update_conflicts=True)` 호출 내 모든 객체가 동일한 `update_fields` 집합을 가져야 함 (Django 제약)
+- 레거시 형식/신 템플릿 형식의 필드 차이를 반영하기 위해 사전 그룹화 후 그룹별 배치 실행 필요
+- SPEC-008의 Bug-1-fix(레거시 데이터 무손실 보장) 그대로 승계
+
+#### `unique_fields` 회피
+
+- Django의 `bulk_create(update_conflicts=True, unique_fields=[...])` 호출 시 MySQL 백엔드에서 `NotSupportedError` 발생 (MySQL의 `INSERT ... ON DUPLICATE KEY UPDATE`는 고유 제약을 자동으로 대상화)
+- 폴백: `unique_fields` 생략 (Django가 자동으로 정확한 제약 대상화 처리)
+
+### 테스트 및 품질 게이트
+
+#### 자동화 테스트
+
+- **기존 73개 테스트**: SPEC-005/006/007/008 관련 케이스 무변경 통과 (REQ-PO9-012)
+- **신규 회귀 테스트**: 300~500행 합성 픽스처 기반 쿼리 수 상한 검증 (REQ-PO9-010) 추가
+  - 쿼리 수 상한: 30개 미만 (픽스 사이클 2 결과: 14쿼리)
+  - 업로드 행 수(300 vs 500)와 무관하게 선형 증가 없음 확인
+
+#### 평가자 활용(evaluator-active) 검증
+
+- **픽스 사이클 1 평가**: FAIL — `PurchaseOrder` 배칭 누락으로 실사용 파일 성능이 충분하지 않음
+- **근본 원인**: 비창고 분기의 개별 `PurchaseOrder.objects.create()` 호출이 전체 행의 98%에서 발생하는 병목
+- **픽스 사이클 2 평가**: PASS — REQ-PO9-007 적용 후 초 단위 성능 달성
+
+### 관찰 가능한 동작 검증
+
+REQ-PO9-011/012에 따라 다음 항목의 무변경을 검증했다:
+
+- 응답 값: `confirmed_count`, `skipped_count`, `errors`, `confirmed_by_distributor` (배치 실행 전후 동일)
+- 생성/갱신 레코드: `PurchaseOrder`, `LineItem`, `LineItemNote`, `WarehouseStock`, 벤더 데이터(`BooxenData`, `KyoboData`, `Yes24Data`) 필드 값 및 개수 동일
+- 분기 로직: `선택` 값 처리, CS 분기, 창고 분기, YES24 발주 확정 분기의 판별 로직 불변
+
+### 커밋 기록
+
+- 커밋 0820ac5: "perf(order): Daily Review 업로드 N+1 쿼리 제거 및 성능 최적화 (1447s→3.3s)"
+  - 픽스 사이클 1과 2를 포함한 최종 구현 (두 사이클이 병합된 단일 커밋)
