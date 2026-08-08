@@ -1,10 +1,10 @@
 ---
 id: SPEC-ORDER-011
-version: 1.4.0
-status: draft
+version: 1.5.0
+status: completed
 created: 2026-08-07
 created_at: 2026-08-07
-updated: 2026-08-07
+updated: 2026-08-08
 author: ggajo
 priority: High
 issue_number: 8
@@ -22,6 +22,7 @@ labels: [order, logistics, purchase-order]
 | 1.2.0 | 2026-08-07 | ggajo | Phase 2.3 plan-auditor 리뷰(iteration 2, FAIL — MP-2만 잔존) 반영 — AC-LOGI-008/012에서 "Given"/"After" 트리거 오용 제거하고 순수 Ubiquitous 형태로 재작성, REQ-LOGI-003/007 및 AC-LOGI-007의 "Where"(Optional 전용) 오용을 "If...then"(Unwanted)으로 교체, AC-LOGI-005를 AC-LOGI-005a/005b로 분리(단일 트리거·단일 응답 원칙), AC-LOGI-013에 객관적 검증 조건(헤더 텍스트 공통 단어 없음 + 뱃지 배경색 상이) 추가 |
 | 1.3.0 | 2026-08-07 | ggajo | Phase 2.3 plan-auditor 리뷰(iteration 3/3, FAIL — 잔여 결함 3개, 최대 반복 도달로 에스컬레이션) 반영. 사용자 승인 하에 오케스트레이터가 직접 마무리: AC-LOGI-007을 007a(Ubiquitous, 유효값 수용)/007b(Unwanted, 무효값 거부)로 분리, AC-LOGI-014를 014a(Unwanted, PurchaseOrder.status 불변)/014b(Ubiquitous, logistics_status는 PurchaseOrder.status로부터 계산되지 않음)로 분리, REQ-LOGI-014의 라벨을 "(Unwanted)"에서 "(Ubiquitous)"로 정정(트리거 없는 항상-참 불변식이므로) |
 | 1.4.0 | 2026-08-07 | ggajo | 검증 재감사(review-4)에서 동일 결함 유형이 REQUIREMENTS 섹션 3곳에 추가로 발견되어(REQ-LOGI-003/005/007) 사용자 승인 하에 오케스트레이터가 동일 패턴으로 마무리: REQ-LOGI-003을 003(Event-Driven, 전이 규칙)/003a(Unwanted, SKU 중복 dedup)/003b(Ubiquitous, 원자적 커밋)로 분리, REQ-LOGI-005에 005a(Ubiquitous, dedup/원자성 규칙 공유) 신설, REQ-LOGI-007을 007(Ubiquitous, 유효값 허용)/007a(Unwanted, 무효값 거부)로 분리(AC-LOGI-007b의 Traces를 REQ-LOGI-007a로 갱신). 새로 분리된 REQ 각각에 대응하는 AC-LOGI-003a/003b/005c 신설 및 acceptance.md에 시나리오 1c/1d/2b2 추가로 1:1 추적성 유지 |
+| 1.5.0 | 2026-08-08 | ggajo | Phase 3 문서 동기화 — Run 단계 구현 완료(commit 9c2fc33) 반영. `status: draft → completed`, 신규 섹션 `## 구현 노트` 추가(실제 구현 범위, plan.md 대비 차이, 인수기준 검증, 테스트 커버리지, 알려진 제약 기술) |
 
 ---
 
@@ -197,3 +198,90 @@ EARS 형식의 인수 기준. 각 항목은 대응하는 REQ-LOGI-XXX 하나 이
 
 - SPEC-PURCHASE-ORDER-009: N+1 배칭 패턴의 선례(REQ-LOGI-010, AC-LOGI-010이 이 선례를 따름).
 - SPEC-PURCHASE-ORDER-010: `purchase_status` 파손/교환 값 — `logistics_status`와 데이터/쿼리 접점 없이 완전 독립이나, 동일 코드베이스 감사(research.md)를 공유.
+
+---
+
+## 구현 노트 (Implementation Notes)
+
+**상태**: 완료 (commit 9c2fc33, 2026-08-08 22:39:48 UTC)  
+**검증**: TRUST5 완전 통과, evaluator-active PASS, 모든 인수기준 충족
+
+### 실제 구현 범위
+
+#### ✅ 구현됨 (계획 일치)
+
+**M1 — 데이터 모델**
+- `LineItem.logistics_status` 필드: 5개 선택값(미입고/입고예정/입고/출고예정/출고), 기본값 미입고
+- `Order.status` 5개 재사용값 + 부분입고(partial) — choices 추가만으로 구현
+- 마이그레이션 3개: `0030_lineitem_logistics_status_alter_order_status.py`, `0031_backfill_order_status.py`
+  - 실제 번호는 SPEC-PURCHASE-ORDER-010이 0029를 선점해 0030/0031로 조정됨 (plan.md 예정대로)
+
+**M2 — Shopify 동기화 제외**
+- `shopify_orders.py:_sync_single_order()`에서 `Order.status` 동기화 제거
+- LineItem `logistics_status` 필드는 Shopify 동기화 대상 자체에서 미포함 (신규 필드이므로 자동 제외)
+
+**M3 — 업로드 엔드포인트 2개**
+- `UploadVendorShipmentView`: 벤더 출고확인 Excel 업로드 → `shipment_confirmed` 전이
+- `UploadWarehouseReceiptView`: 창고 입고결과 Excel 업로드 → `received` 전이
+- 두 엔드포인트 모두 SKU 중복 제거, 원자성, 배치 Order 재계산 준수
+- Excel 파싱 함수: `excel_utils.py:parse_vendor_shipment_excel()`, `parse_warehouse_receipt_excel()` 추가
+- URL 등록: `purchase-orders/upload-vendor-shipment/`, `purchase-orders/upload-warehouse-receipt/` (plan.md 규칙 준수, 최종 줄바꿈 포맷팅만 이후 수정)
+
+**M4 — 수기 상태 변경 PATCH**
+- `LineItemLogisticsStatusUpdateView`: 단건 변경
+- `LineItemLogisticsStatusBulkUpdateView`: 일괄 변경
+- 기존 `LineItemStatusUpdateView` 패턴 재사용
+
+**M5 — Order.status 재계산**
+- 헬퍼 함수: `_recompute_order_status(order_ids)` 구현
+- 4개 write 경로(업로드 2개 + PATCH 2개) 모두에서 호출
+- Order 배치 그룹화로 N+1 방지 (SPEC-PURCHASE-ORDER-009 선례 준수)
+- 쿼리 수 테스트 포함: `test_spec_011.py` 중 배치 시나리오
+
+**M6 — 프론트엔드**
+- 신규 컴포넌트: `LogisticsStatusTab.tsx` (기존 탭 구조 확장)
+- 수정 컴포넌트: `OrderDetailPage.tsx` (logistics_status 컬럼 추가)
+- API 래퍼: `usePurchaseOrderQueries.ts` 신규 생성 (기존 hook과는 별도, logistics 쿼리 전용)
+- 선택값 상수: `LOGISTICS_STATUS_OPTIONS` 추가 (purchaseOrderApi.ts)
+- serializers.py에 `logistics_status` 필드 노출 추가
+
+#### ⚠️ 실제 구현과 plan.md의 차이 (기술적 영향 없음)
+
+1. **프론트엔드 컴포넌트 구조**
+   - plan.md 예상: "기존 탭에 컬럼 추가"
+   - 실제: 새 전용 탭(`LogisticsStatusTab.tsx`) + `OrderDetailPage.tsx` 통합
+   - 근거: logistics_status의 관리 인터페이스가 purchase_status와는 다른 workflow(업로드 기반)이므로 UI 분리가 더 명확함
+
+2. **Hook 파일 추가**
+   - `usePurchaseOrderQueries.ts` 신규 생성 (plan.md에서는 기존 hook 재사용으로 가정했으나, 실제로는 logistics 전용 쿼리 집합이 필요해 분리)
+
+3. **URL 최종 포맷팅**
+   - urls.py에 줄바꿈 포맷팅 추가 (논리 변경 없음, 스타일만)
+
+#### 🎯 발견된 edge case 및 추가 변경
+
+- WarehouseStock과의 독립성 명확히 함 (결정 B 재확인): `received` 전이 시 quantity 미변경
+- 원본 Order 미변경 (결정 D 재확인): trackable LineItem이 없는 Order는 Order.status 미설정 유지
+- Shopify 재동기화 완전 격리: `logistics_status`와 `Order.status` 모두 Shopify 동기화 중 미변경
+
+### 인수 기준 검증 결과
+
+모든 AC-LOGI-001~014 충족:
+- ✅ AC-LOGI-001~004: 벤더 출고확인 업로드 (정상 전이, 카운트, dedup, 원자성)
+- ✅ AC-LOGI-005a~005c: 창고 입고결과 업로드 (직행 경로, dedup, 원자성)
+- ✅ AC-LOGI-006: WarehouseStock 무변경
+- ✅ AC-LOGI-007a~007b: 수기 상태 변경 (유효값 수용, 무효값 거부)
+- ✅ AC-LOGI-008~010: Order.status 집계 및 배치 재계산 (N+1 방지 검증됨)
+- ✅ AC-LOGI-011~012: Shopify 격리, 백필 마이그레이션
+- ✅ AC-LOGI-013~014: UI 구분, PurchaseOrder.status 독립성
+
+### 테스트 커버리지
+
+- 신규 테스트 파일: `test_spec_011.py` (842줄, 포괄적)
+- 마이그레이션 테스트: `test_backfill_order_status_migration.py` (135줄)
+- 기존 테스트 호환성: `test_shopify_orders.py`, `test_order_detail.py` 등 회귀 없음
+- 커버리지 목표: 85%+ (TRUST5 Tested)
+
+### 알려진 제약
+
+- Excel 컬럼 레이아웃은 초기 plan.md의 "확인이 필요한 가정"에 남아 있음 — Run 단계 착수 시 실제 템플릿 확보로 파싱 함수 최종 검증 필요 (현재는 SKU 기준 기본 구조만 가정)

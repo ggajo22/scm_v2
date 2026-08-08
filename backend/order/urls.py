@@ -64,11 +64,27 @@ urlpatterns = [
     # SPEC-PURCHASE-ORDER-004: bulk-status must precede <int:pk>/status/ to avoid URL conflict
     path("purchase-orders/line-items/bulk-status/", LineItemBulkStatusUpdateView.as_view(), name="po-line-item-bulk-status"),
     path("purchase-orders/line-items/<int:pk>/status/", LineItemStatusUpdateView.as_view(), name="po-line-item-status"),
-    # SPEC-ORDER-011: same ordering rule — bulk-logistics-status must precede <int:pk>/logistics-status/
-    path("purchase-orders/line-items/bulk-logistics-status/", LineItemLogisticsStatusBulkUpdateView.as_view(), name="po-line-item-bulk-logistics-status"),
-    path("purchase-orders/line-items/<int:pk>/logistics-status/", LineItemLogisticsStatusUpdateView.as_view(), name="po-line-item-logistics-status"),
-    path("purchase-orders/upload-vendor-shipment/", UploadVendorShipmentView.as_view(), name="po-upload-vendor-shipment"),
-    path("purchase-orders/upload-warehouse-receipt/", UploadWarehouseReceiptView.as_view(), name="po-upload-warehouse-receipt"),
+    # SPEC-ORDER-011: bulk-logistics-status must precede <int:pk>/logistics-status/
+    path(
+        "purchase-orders/line-items/bulk-logistics-status/",
+        LineItemLogisticsStatusBulkUpdateView.as_view(),
+        name="po-line-item-bulk-logistics-status",
+    ),
+    path(
+        "purchase-orders/line-items/<int:pk>/logistics-status/",
+        LineItemLogisticsStatusUpdateView.as_view(),
+        name="po-line-item-logistics-status",
+    ),
+    path(
+        "purchase-orders/upload-vendor-shipment/",
+        UploadVendorShipmentView.as_view(),
+        name="po-upload-vendor-shipment",
+    ),
+    path(
+        "purchase-orders/upload-warehouse-receipt/",
+        UploadWarehouseReceiptView.as_view(),
+        name="po-upload-warehouse-receipt",
+    ),
     path("purchase-orders/vendor-rules/", DistributorVendorRuleListCreateView.as_view(), name="po-rules"),
     path("purchase-orders/vendor-rules/<int:pk>/", DistributorVendorRuleDeleteView.as_view(), name="po-rule-delete"),
     path("purchase-orders/", PurchaseOrderListView.as_view(), name="po-list"),

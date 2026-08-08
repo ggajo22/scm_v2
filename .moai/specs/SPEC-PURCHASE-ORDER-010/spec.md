@@ -1,10 +1,10 @@
 ---
 id: SPEC-PURCHASE-ORDER-010
-version: 1.2.0
-status: draft
+version: 1.3.0
+status: completed
 created: 2026-08-07
 created_at: 2026-08-07
-updated: 2026-08-07
+updated: 2026-08-08
 author: ggajo
 priority: High
 issue_number: 9
@@ -20,6 +20,7 @@ labels: [purchase-order, reorder-queue, backend]
 | 1.0.0 | 2026-08-07 | ggajo | 최초 작성 — Decision Point 1~3 리비전(5개 쿼리 사이트 정정, 양쪽 write 경로 대칭 자동 리셋) 반영한 최종 승인본 |
 | 1.1.0 | 2026-08-07 | ggajo | Phase 2.3 plan-auditor 리뷰(iteration 1, FAIL) 반영 — 프론트매터 `labels`/`created_at` 추가, `status` 유효값 수정, EARS 형식 `## ACCEPTANCE CRITERIA` 섹션 신설(REQ 1:1 추적, 기존 Given/When/Then은 "테스트 시나리오" 섹션으로 재배치), REQ-DMG-001/005/006/007에서 구현 세부사항(파일:라인·마이그레이션 파일명·필드 리스트)을 제거해 "설계 결정" 섹션으로 이관, REQ-DMG-005를 읽기측 공통 패턴(005)과 ConfirmOrderView 전용 예외(005B)로 분리, 기존 AC-6(고아 상태)를 신규 REQ-DMG-008에 연결, 누락됐던 REQ-DMG-001/002/007 인수 기준 보강, REQ-CON-022 출처를 SPEC-ORDER-007로 명시 |
 | 1.2.0 | 2026-08-07 | ggajo | Phase 2.3 plan-auditor 리뷰(iteration 2, FAIL — MP-2만 잔존) 반영 — AC-DMG-005/005B/006/006B의 "Given...when...shall" 하이브리드 구문을 순수 Event-Driven EARS로 재작성(Given절을 트리거절에 접힘), AC-DMG-006의 복합 절을 분리해 배치 범위 보장을 신규 AC-DMG-006C(Unwanted)로 독립, AC-DMG-007의 "After...shall" 비표준 구문을 Event-Driven("When the migration is applied...")으로 교체, AC-DMG-004 결번 사유 및 알파벳 접미사(005B/006B/006C) 표기 규칙을 ACCEPTANCE CRITERIA 섹션 상단에 명문화. `priority: High` 표기는 SPEC-PURCHASE-ORDER-009/SPEC-ORDER-001/007 등 기존 승인 SPEC 전체가 동일하게 대문자 표기를 쓰고 있음을 직접 확인 후 프로젝트 일관성을 위해 변경하지 않음(하단 비고 참조) |
+| 1.3.0 | 2026-08-08 | ggajo | Phase 3 문서 동기화 — Run 단계 구현 완료(commit 908d610) 반영. `status: draft → completed`, 신규 섹션 `## 구현 노트` 추가(실제 구현 범위, evaluator-active 발견 divergence, 인수기준 검증, 테스트 커버리지, 독립성 확인) |
 
 ---
 
@@ -105,6 +106,102 @@ Daily Review 업로드의 발주 생성 확정 분기와 수기 발주확정 화
 ### 하위 호환
 
 **REQ-DMG-008** (Unwanted): If a `damaged_exchange` SKU is included in a client-supplied SKU list for order-file generation, then the system shall NOT require any additional code change to include it in the generated file, since eligibility for that flow is determined solely by the client-supplied list, not by a server-side `purchase_status` filter.
+
+---
+
+## 구현 노트 (Implementation Notes)
+
+**상태**: 완료 (commit 908d610, 2026-08-08 17:36:13 UTC)  
+**검증**: TRUST5 완전 통과, evaluator-active PASS (Phase 2.8a 재점검 후), 모든 인수기준 충족
+
+### 실제 구현 범위
+
+#### ✅ 구현됨 (계획 일치)
+
+**T1 — 데이터 모델**
+- `LineItem.PURCHASE_STATUS_CHOICES`에 `("damaged_exchange", "파손/교환")` 추가
+- `LineItemNote.NOTE_TYPE_CHOICES`에 `("파손/교환", "파손/교환")` 추가
+- 마이그레이션: `0029_lineitem_damaged_exchange_status.py` (AlterField 2개)
+  - 실제 번호는 SPEC-ORDER-011이 0030/0031을 사용해 원래 계획대로 0029로 유지됨
+
+**T2 — Daily Review 자동 매핑**
+- `_NOTE_TYPE_STATUS_MAP`에 파손/교환 매핑 추가
+- Daily Review 업로드의 `선택` 컬럼에서 "파손/교환" 라벨 인식
+- 기존 단건/일괄 PATCH API가 자동으로 새 값 수용
+
+**T3 — 읽기측 5곳 쿼리 예외 처리**
+- 4개 공통 패턴 (UnorderedItemsView, RunComparisonView, DailyReviewExcelView, UploadDailyReviewView)
+- 필터 변경: `purchase_status="unordered"` AND 기존발주미연결 → `또는 damaged_exchange` 추가
+- `.distinct()` 검증: M2M OR 조건 중복 행 가능성 확인 후 필요시 적용
+
+**T4 — ConfirmOrderView 전용 예외 처리**
+- 5번째 쿼리: ConfirmOrderView의 별도 패턴 (purchase_status 필터 없음)
+- 기존발주미연결만 → `또는 damaged_exchange` 추가 (REQ-DMG-005B)
+
+**T5 — ConfirmOrderView 쓰기측 자동 리셋**
+- 신규 발주 생성 시 배치의 damaged_exchange LineItem → `unordered`로 자동 리셋
+- 명시적 override 우선순위: 요청이 purchase_status를 지정하면 그 값이 자동 리셋 덮어씀
+- 배치 범위 격리: 현재 확정 요청에 포함된 SKU만 영향 (다른 SKU의 damaged_exchange는 미변경)
+
+**T6 — UploadDailyReviewView 쓰기측 자동 리셋**
+- 신규 발주 확정 분기에서만 적용 (창고/CS 분기는 제외)
+- 동일한 배치 그룹화, 범위 격리 원칙 준수
+
+**T7 — GenerateOrderFileView 예외 처리 (evaluator-active 발견)**
+- **발견**: 원래 plan.md에는 없었으나, evaluator-active Phase 2.8a에서 realistic fixture로 재현
+  - damaged_exchange는 "파손/교환의 전제 = 이미 발주했던 것"이므로 원래 발주에 연결된 상태
+  - 기존 필터(`purchase_orders__isnull=False` 배제)가 그 SKU 전체를 거부해 파일 생성 실패
+  - REQ-DMG-008/AC-DMG-008의 "코드 변경 불필요" 가정이 틀렸음을 실제 테스트로 확인
+- **수정**: 동일 지점에 `_reorder_candidate_filter()` 패턴의 예외 처리 추가
+  - 필터: `Q(purchase_orders__isnull=False) & ~Q(purchase_status="damaged_exchange")` → 배제
+  - 즉, `purchase_orders__isnull=False이면서 damaged_exchange가 아닌 것`만 배제 (damaged_exchange는 허용)
+- **테스트 추가**:
+  - `test_linked_damaged_exchange_sku_included_in_generated_file` (realistic fixture)
+  - `test_non_damaged_exchange_linked_sku_still_rejected_as_unknown` (예외 한정성 확인)
+
+**T8 — SPEC-ORDER-011 독립성 재확인**
+- 코드 리뷰: `logistics_status` 필드가 현재 코드베이스에 전혀 존재하지 않음 (SPEC-ORDER-011 미구현 당시)
+- 데이터/쿼리 접점 없음: `purchase_status` ↔ `logistics_status` 완전 독립
+
+**T9 — 프론트엔드**
+- `PURCHASE_STATUS_OPTIONS` (purchaseOrderApi.ts)에 파손/교환 항목 추가
+- 기존 드롭다운/선택 옵션이 자동 반영
+
+#### ⚠️ Divergence: Plan vs Reality
+
+1. **GenerateOrderFileView 수정**
+   - 원래 plan.md (결정 G/H): "선택 기반 라우팅이므로 코드 변경 불필요"
+   - 실제: UploadDailyReviewView와 달리 이 뷰는 클라이언트 전달 SKU 리스트 기반이며, 그 리스트에 damaged_exchange SKU가 있으면 기존 배제 필터가 동작해 파일 생성 실패
+   - 원인: plan.md 작성 시 이 뷰를 충분히 분석하지 않았음 (UploadDailyReviewView의 역 시나리오)
+   - 영향: REQ-DMG-008/AC-DMG-008의 가정이 부분적으로 틀렸으나, 구현은 단순 Q-object 추가로 해결됨
+
+### 인수 기준 검증 결과
+
+모든 AC-DMG-001~008 충족:
+- ✅ AC-DMG-001~003: damaged_exchange 값 추가, 자동 매핑, 메모 생성
+- ✅ AC-DMG-005/005B: 읽기측 5곳 예외 처리 (공통 패턴 + ConfirmOrderView 전용)
+- ✅ AC-DMG-006/006B/006C: 쓰기측 자동 리셋, override 우선순위, 배치 범위 격리
+- ✅ AC-DMG-007: 마이그레이션 적용 (선택값 추가, 데이터 무변경)
+- ✅ AC-DMG-008: GenerateOrderFileView 예외 처리 (evaluator 발견 후 수정)
+
+### 테스트 커버리지
+
+- `test_daily_review_upload.py`: 261줄 (Daily Review 자동 매핑 포괄)
+- `test_purchase_order_models.py`: 127줄 (모델, 마이그레이션)
+- `test_purchase_orders.py`: 441줄 (쿼리 5곳, GenerateOrderFileView)
+- 커버리지 목표: 85%+ (TRUST5 Tested)
+- 기존 테스트 회귀: 모두 통과
+
+### SPEC-ORDER-011과의 독립성
+
+- ✅ 데이터: `damaged_exchange` ↔ `logistics_status` 필드 완전 분리
+- ✅ 쿼리: 두 SPEC의 쿼리 사이트가 별도 (purchase_status 기반 vs logistics_status 기반)
+- ✅ 마이그레이션: 0029 (PURCHASE-ORDER-010) vs 0030/0031 (ORDER-011) 번호 분리
+- ✅ 코드 리뷰: 상호 참조 없음
+
+### 알려진 제약
+
+- plan.md 작성 당시 GenerateOrderFileView의 동작 미분석 — evaluator-active의 realistic fixture로 발견·수정된 영역
 
 ---
 
