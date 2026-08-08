@@ -268,6 +268,54 @@ class TestDailyReviewExcelHeaders:
 
 
 # ---------------------------------------------------------------------------
+# SPEC-PURCHASE-ORDER-010 (T3): read-side reorder-candidate widening —
+# DailyReviewExcelView (GET /api/purchase-orders/daily-review-excel/)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestDailyReviewExcelViewDamagedExchange:
+    """AC-DMG-005 (scenario 1): damaged_exchange LineItems re-enter the Daily
+    Review download regardless of existing PurchaseOrder linkage."""
+
+    def test_damaged_exchange_linked_line_item_reexposed(self, auth_client):
+        sku = "9791100000299"
+        order = _make_order(shopify_order_id=87001)
+        li = _make_line_item(order, sku=sku, quantity=1, shopify_line_item_id=1)
+        po = PurchaseOrder.objects.create(
+            sku=sku, title="Book", distributor="booxen", quantity=1
+        )
+        po.line_items.add(li)
+        li.purchase_status = "damaged_exchange"
+        li.save(update_fields=["purchase_status"])
+
+        res = auth_client.get(DAILY_REVIEW_EXCEL_URL)
+        assert res.status_code == 200
+        wb = openpyxl.load_workbook(io.BytesIO(res.content))
+        ws = wb.active
+        headers = [cell.value for cell in ws[1]]
+        sku_col = headers.index("ISBN")
+        skus_in_file = [row[sku_col] for row in ws.iter_rows(min_row=2, values_only=True)]
+        assert sku in skus_in_file
+
+    def test_cs_required_linked_status_still_excluded(self, auth_client):
+        sku = "9791100000298"
+        order = _make_order(shopify_order_id=87002)
+        li = _make_line_item(order, sku=sku, quantity=1, shopify_line_item_id=1)
+        li.purchase_status = "cs_required"
+        li.save(update_fields=["purchase_status"])
+
+        res = auth_client.get(DAILY_REVIEW_EXCEL_URL)
+        assert res.status_code == 200
+        wb = openpyxl.load_workbook(io.BytesIO(res.content))
+        ws = wb.active
+        headers = [cell.value for cell in ws[1]]
+        sku_col = headers.index("ISBN")
+        skus_in_file = [row[sku_col] for row in ws.iter_rows(min_row=2, values_only=True)]
+        assert sku not in skus_in_file
+
+
+# ---------------------------------------------------------------------------
 # REQ-PO5-008: VALID_DISTRIBUTORS includes warehouse codes
 # ---------------------------------------------------------------------------
 
@@ -1031,6 +1079,219 @@ class TestUploadCsNoteTypeViaNewTemplate:
         assert note.content == "고객 요청"
         assert note.assignee == "CS"
         assert note.note_type == "주문취소"
+
+
+# ---------------------------------------------------------------------------
+# SPEC-PURCHASE-ORDER-010 (T2): _NOTE_TYPE_STATUS_MAP damaged_exchange entry
+# ---------------------------------------------------------------------------
+
+
+class TestParseDailyReviewDamagedExchangeRecognized:
+    def test_damaged_exchange_label_recognized_as_note_type(self):
+        """REQ-DMG-003: '파손/교환' in the 선택 column is recognized as a
+        CS-type note_type (not a distributor), same mechanism as the
+        existing four CS-type labels."""
+        from order.excel_utils import parse_daily_review_excel
+
+        file_bytes = _make_daily_review_excel([
+            {"isbn": "9791100000199", "selected": "파손/교환", "note": "박스 파손 확인"},
+        ])
+        results = parse_daily_review_excel(file_bytes)
+        assert len(results) == 1
+        assert results[0]["distributor"] is None
+        assert results[0]["note_type"] == "파손/교환"
+        assert results[0]["note"] == "박스 파손 확인"
+
+
+@pytest.mark.django_db
+class TestUploadDamagedExchangeNoteTypeAutoApplies:
+    """AC-DMG-003: Daily Review upload's CS branch auto-applies
+    damaged_exchange via the existing map-lookup code path — no production
+    code change needed in the branch itself, only the map entry (T2)."""
+
+    def test_damaged_exchange_selection_sets_status_and_creates_note(self, auth_client):
+        sku = "9791100000198"
+        order = _make_order(shopify_order_id=90098)
+        li = _make_line_item(order, sku=sku, quantity=1, shopify_line_item_id=1)
+
+        file_bytes = _make_daily_review_excel([
+            {"isbn": sku, "selected": "파손/교환", "note": "박스 파손, 교환 요청"},
+        ])
+        file_obj = io.BytesIO(file_bytes)
+        file_obj.name = "daily_review.xlsx"
+        res = auth_client.post(UPLOAD_DAILY_URL, data={"file": file_obj}, format="multipart")
+        assert res.status_code == 201
+
+        li.refresh_from_db()
+        assert li.purchase_status == "damaged_exchange"
+
+        from order.models import LineItemNote
+
+        note = LineItemNote.objects.get(line_item=li)
+        assert note.content == "박스 파손, 교환 요청"
+        assert note.assignee == "CS"
+        assert note.note_type == "파손/교환"
+
+    def test_damaged_exchange_selection_does_not_create_purchase_order(self, auth_client):
+        """CS-type selections never create a PurchaseOrder (same as the
+        other four CS labels)."""
+        sku = "9791100000197"
+        order = _make_order(shopify_order_id=90097)
+        _make_line_item(order, sku=sku, quantity=1, shopify_line_item_id=1)
+        po_count_before = PurchaseOrder.objects.count()
+
+        file_bytes = _make_daily_review_excel([
+            {"isbn": sku, "selected": "파손/교환"},
+        ])
+        file_obj = io.BytesIO(file_bytes)
+        file_obj.name = "daily_review.xlsx"
+        auth_client.post(UPLOAD_DAILY_URL, data={"file": file_obj}, format="multipart")
+
+        assert PurchaseOrder.objects.count() == po_count_before
+
+
+# ---------------------------------------------------------------------------
+# SPEC-PURCHASE-ORDER-010 (T3+T6): UploadDailyReviewView SKU-batch read-side
+# widening + non-warehouse write-side auto-reset
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestUploadDailyReviewDamagedExchangeReorder:
+    """AC-DMG-005 (read-side) + AC-DMG-006/006C (write-side auto-reset,
+    batch-scope isolation)."""
+
+    def test_linked_damaged_exchange_sku_is_matched_not_skipped(self, auth_client):
+        """T3: the SKU-batch query (UploadDailyReviewView.post()) must pick up
+        an already-linked damaged_exchange LineItem instead of treating it as
+        already-ordered (which would previously fall into skipped_count)."""
+        sku = "9791100000296"
+        order = _make_order(shopify_order_id=88001)
+        li = _make_line_item(order, sku=sku, quantity=1, shopify_line_item_id=1)
+        old_po = PurchaseOrder.objects.create(
+            sku=sku, title="Book", distributor="booxen", quantity=1
+        )
+        old_po.line_items.add(li)
+        li.purchase_status = "damaged_exchange"
+        li.save(update_fields=["purchase_status"])
+
+        file_bytes = _make_daily_review_excel([
+            {"isbn": sku, "selected": "북센"},
+        ])
+        file_obj = io.BytesIO(file_bytes)
+        file_obj.name = "daily_review.xlsx"
+        res = auth_client.post(UPLOAD_DAILY_URL, data={"file": file_obj}, format="multipart")
+        assert res.status_code == 201
+        assert res.data["confirmed_count"] == 1
+        assert res.data["skipped_count"] == 0
+
+    def test_new_po_confirmation_resets_damaged_exchange_to_unordered(self, auth_client):
+        """AC-DMG-006 (scenario 3): when the batch's new PurchaseOrder is
+        created and linked, the damaged_exchange LineItem's purchase_status
+        is auto-reset to unordered as part of the same write."""
+        sku = "9791100000295"
+        order = _make_order(shopify_order_id=88002)
+        li = _make_line_item(order, sku=sku, quantity=1, shopify_line_item_id=1)
+        old_po = PurchaseOrder.objects.create(
+            sku=sku, title="Book", distributor="booxen", quantity=1
+        )
+        old_po.line_items.add(li)
+        li.purchase_status = "damaged_exchange"
+        li.save(update_fields=["purchase_status"])
+
+        file_bytes = _make_daily_review_excel([
+            {"isbn": sku, "selected": "북센"},
+        ])
+        file_obj = io.BytesIO(file_bytes)
+        file_obj.name = "daily_review.xlsx"
+        res = auth_client.post(UPLOAD_DAILY_URL, data={"file": file_obj}, format="multipart")
+        assert res.status_code == 201
+
+        li.refresh_from_db()
+        assert li.purchase_status == "unordered"
+
+        # Re-query the reorder-candidate list: no longer a candidate.
+        res2 = auth_client.get(DAILY_REVIEW_EXCEL_URL)
+        wb = openpyxl.load_workbook(io.BytesIO(res2.content))
+        ws = wb.active
+        headers = [cell.value for cell in ws[1]]
+        sku_col = headers.index("ISBN")
+        skus_in_file = [row[sku_col] for row in ws.iter_rows(min_row=2, values_only=True)]
+        assert sku not in skus_in_file
+
+    def test_reset_scoped_to_current_batch_only(self, auth_client):
+        """AC-DMG-006C (scenario 3b): a damaged_exchange LineItem for a SKU
+        NOT included in this upload's file is left untouched."""
+        other_sku = "9791100000294"
+        other_order = _make_order(shopify_order_id=88003, name="#8801")
+        other_li = _make_line_item(other_order, sku=other_sku, quantity=1, shopify_line_item_id=1)
+        other_po = PurchaseOrder.objects.create(
+            sku=other_sku, title="Other Book", distributor="booxen", quantity=1
+        )
+        other_po.line_items.add(other_li)
+        other_li.purchase_status = "damaged_exchange"
+        other_li.save(update_fields=["purchase_status"])
+
+        batch_sku = "9791100000293"
+        batch_order = _make_order(shopify_order_id=88004, name="#8802")
+        _make_line_item(batch_order, sku=batch_sku, quantity=1, shopify_line_item_id=1)
+
+        file_bytes = _make_daily_review_excel([
+            {"isbn": batch_sku, "selected": "북센"},
+        ])
+        file_obj = io.BytesIO(file_bytes)
+        file_obj.name = "daily_review.xlsx"
+        res = auth_client.post(UPLOAD_DAILY_URL, data={"file": file_obj}, format="multipart")
+        assert res.status_code == 201
+
+        other_li.refresh_from_db()
+        assert other_li.purchase_status == "damaged_exchange"
+
+    def test_cs_branch_overwrites_damaged_exchange_regression(self, auth_client):
+        """T6 regression: CS branch (~1219-1237) already unconditionally
+        overwrites purchase_status, so a damaged_exchange LineItem selected
+        with a different CS label ends up with that label's status, not a
+        no-op stuck-at-damaged_exchange state."""
+        sku = "9791100000292"
+        order = _make_order(shopify_order_id=88005)
+        li = _make_line_item(order, sku=sku, quantity=1, shopify_line_item_id=1)
+        li.purchase_status = "damaged_exchange"
+        li.save(update_fields=["purchase_status"])
+
+        file_bytes = _make_daily_review_excel([
+            {"isbn": sku, "selected": "주문보류"},
+        ])
+        file_obj = io.BytesIO(file_bytes)
+        file_obj.name = "daily_review.xlsx"
+        res = auth_client.post(UPLOAD_DAILY_URL, data={"file": file_obj}, format="multipart")
+        assert res.status_code == 201
+
+        li.refresh_from_db()
+        assert li.purchase_status == "on_hold"
+
+    def test_warehouse_branch_overwrites_damaged_exchange_regression(self, auth_client):
+        """T6 regression: warehouse branch (~1250-1281) already unconditionally
+        sets purchase_status="in_stock", so a damaged_exchange LineItem
+        selected into the warehouse branch ends up "in_stock", unaffected by
+        the new auto-reset logic (which only applies to the non-warehouse
+        branch)."""
+        sku = "9791100000291"
+        order = _make_order(shopify_order_id=88006)
+        li = _make_line_item(order, sku=sku, quantity=1, shopify_line_item_id=1)
+        li.purchase_status = "damaged_exchange"
+        li.save(update_fields=["purchase_status"])
+        WarehouseStock.objects.create(isbn=sku, location="ca", quantity=10)
+
+        file_bytes = _make_daily_review_excel([
+            {"isbn": sku, "selected": "재고(CA)"},
+        ])
+        file_obj = io.BytesIO(file_bytes)
+        file_obj.name = "daily_review.xlsx"
+        res = auth_client.post(UPLOAD_DAILY_URL, data={"file": file_obj}, format="multipart")
+        assert res.status_code == 201
+
+        li.refresh_from_db()
+        assert li.purchase_status == "in_stock"
 
 
 # ---------------------------------------------------------------------------

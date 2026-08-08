@@ -63,6 +63,33 @@ EXCEL_CONTENT_TYPE = (
 )
 
 
+# @MX:NOTE: [AUTO] Shared reorder-candidate eligibility filter (SPEC-PURCHASE-ORDER-010).
+# Fan-in == 4 (UnorderedItemsView, RunComparisonView, DailyReviewExcelView,
+# UploadDailyReviewView's SKU-batch query) would normally qualify for @MX:ANCHOR,
+# but this file is already at its configured anchor_per_file limit (3, see
+# .moai/config/sections/mx.yaml) with 4 pre-existing ANCHOR tags — demoted to
+# NOTE rather than pushing the file further over budget or demoting unrelated
+# pre-existing tags out of scope for this SPEC.
+def _reorder_candidate_filter(queryset):
+    """
+    REQ-DMG-005: widen a LineItem queryset so it includes:
+      - LineItems with purchase_status="unordered" that are NOT linked to any
+        existing PurchaseOrder (original behavior), OR
+      - LineItems with purchase_status="damaged_exchange", regardless of
+        existing PurchaseOrder linkage.
+
+    Implemented as a single `.exclude()` call so the multi-valued
+    `purchase_orders` relation is evaluated as a NOT EXISTS subquery rather
+    than a JOIN — this avoids duplicate rows for LineItems linked to 2+
+    PurchaseOrders without needing `.distinct()` (verified empirically via
+    TestUnorderedItemsViewDamagedExchange.test_damaged_exchange_linked_to_two_purchase_orders_no_duplicate_rows).
+    """
+    return (
+        queryset.filter(Q(purchase_status="unordered") | Q(purchase_status="damaged_exchange"))
+        .exclude(purchase_status="unordered", purchase_orders__isnull=False)
+    )
+
+
 # ---------------------------------------------------------------------------
 # M2: Unordered line items
 # ---------------------------------------------------------------------------
@@ -92,8 +119,7 @@ class UnorderedItemsView(APIView):
         )
 
         line_items = (
-            LineItem.objects.filter(sku__isnull=False, purchase_status="unordered")
-            .exclude(purchase_orders__isnull=False)
+            _reorder_candidate_filter(LineItem.objects.filter(sku__isnull=False))
             .annotate(
                 refunded_qty=Coalesce(
                     Subquery(refund_sum_sq, output_field=IntegerField()),
@@ -190,9 +216,22 @@ class GenerateOrderFileView(APIView):
             .annotate(total=Sum("quantity"))
             .values("total")[:1]
         )
+        # REQ-DMG-008 (corrected, evaluator-active Phase 2.8a FAIL fix):
+        # damaged_exchange SKUs are realistically still linked to their
+        # ORIGINAL PurchaseOrder (they were already ordered once, then came
+        # back damaged) — the original assumption that this view needed no
+        # code change was wrong. Admit damaged_exchange LineItems regardless
+        # of linkage, same exception as _reorder_candidate_filter(). Kept as
+        # an inline .exclude() (not a call to _reorder_candidate_filter())
+        # because this view's base filter is `sku__in=requested`, not
+        # `purchase_status__in=[...]` — it never restricted eligibility by
+        # purchase_status at all, only by linkage.
         li_qs = (
             LineItem.objects.filter(sku__in=requested)
-            .exclude(purchase_orders__isnull=False)
+            .exclude(
+                Q(purchase_orders__isnull=False)
+                & ~Q(purchase_status="damaged_exchange")
+            )
             .annotate(
                 refunded_qty=Coalesce(
                     Subquery(refund_sum_sq, output_field=IntegerField()),
@@ -372,8 +411,7 @@ class RunComparisonView(APIView):
         )
 
         line_items = (
-            LineItem.objects.filter(sku__isnull=False, purchase_status="unordered")
-            .exclude(purchase_orders__isnull=False)
+            _reorder_candidate_filter(LineItem.objects.filter(sku__isnull=False))
             .annotate(
                 refunded_qty=Coalesce(
                     Subquery(refund_sum_sq, output_field=IntegerField()),
@@ -709,10 +747,19 @@ class ConfirmOrderView(APIView):
                                 f"Valid choices: {valid_ps}"
                             )
 
-                    # Find unordered LineItems for this SKU with a lock
+                    # Find unordered LineItems for this SKU with a lock.
+                    # REQ-DMG-005B: also admit LineItems whose purchase_status
+                    # is "damaged_exchange", regardless of existing
+                    # PurchaseOrder linkage — expressed as a single .exclude()
+                    # call (NOT EXISTS subquery) so the M2M join never
+                    # duplicates rows, matching _reorder_candidate_filter's
+                    # approach for the other 4 sites.
                     unordered_lis = list(
                         LineItem.objects.filter(sku=sku)
-                        .exclude(purchase_orders__isnull=False)
+                        .exclude(
+                            Q(purchase_orders__isnull=False)
+                            & ~Q(purchase_status="damaged_exchange")
+                        )
                         .select_for_update()
                     )
 
@@ -726,8 +773,14 @@ class ConfirmOrderView(APIView):
                         raise ValueError(f"No unordered LineItems found for SKU '{sku}'.")
 
                     # Double-link guard: the select_for_update + exclude already handles this,
-                    # but verify by checking if any returned LI is somehow already linked
-                    already_linked = [li for li in unordered_lis if li.purchase_orders.exists()]
+                    # but verify by checking if any returned LI is somehow already linked.
+                    # REQ-DMG-005B: a damaged_exchange LineItem is expected to
+                    # legitimately be linked already — only flag non-damaged_exchange
+                    # linked LineItems as a conflict.
+                    already_linked = [
+                        li for li in unordered_lis
+                        if li.purchase_status != "damaged_exchange" and li.purchase_orders.exists()
+                    ]
                     if already_linked:
                         raise ConflictError(f"Some LineItems for SKU '{sku}' are already linked.")
 
@@ -758,11 +811,23 @@ class ConfirmOrderView(APIView):
                         li.confirmed_distributor = dist
                         li.confirmed_price = unit_price
 
+                    # REQ-DMG-006: auto-reset damaged_exchange -> unordered for this
+                    # confirmation batch, applied before the explicit purchase_status
+                    # override below so a client-supplied value always wins (REQ-CON-022).
+                    damaged_exchange_reset = False
+                    for li in unordered_lis:
+                        if li.purchase_status == "damaged_exchange":
+                            li.purchase_status = "unordered"
+                            damaged_exchange_reset = True
+                    if damaged_exchange_reset:
+                        update_fields.append("purchase_status")
+
                     # REQ-CON-022/023: update purchase_status only when explicitly provided
                     if purchase_status is not None:
                         for li in unordered_lis:
                             li.purchase_status = purchase_status
-                        update_fields.append("purchase_status")
+                        if "purchase_status" not in update_fields:
+                            update_fields.append("purchase_status")
 
                     # REQ-CON-032/033/034: handle note field — migrated to LineItemNote (SPEC-ORDER-010)
                     if note_key_present:
@@ -836,8 +901,7 @@ class DailyReviewExcelView(APIView):
         )
 
         line_items = (
-            LineItem.objects.filter(sku__isnull=False, purchase_status="unordered")
-            .exclude(purchase_orders__isnull=False)
+            _reorder_candidate_filter(LineItem.objects.filter(sku__isnull=False))
             .annotate(
                 refunded_qty=Coalesce(
                     Subquery(refund_sum_sq, output_field=IntegerField()),
@@ -1172,8 +1236,7 @@ class UploadDailyReviewView(APIView):
                 all_skus = list(sku_map.keys())
                 lineitems_by_sku: dict[str, list] = defaultdict(list)
                 for li in (
-                    LineItem.objects.filter(sku__in=all_skus, purchase_status="unordered")
-                    .exclude(purchase_orders__isnull=False)
+                    _reorder_candidate_filter(LineItem.objects.filter(sku__in=all_skus))
                     .select_for_update()
                 ):
                     lineitems_by_sku[li.sku].append(li)
@@ -1317,6 +1380,11 @@ class UploadDailyReviewView(APIView):
                         for li in unordered_lis:
                             li.confirmed_distributor = distributor_code
                             li.confirmed_price = unit_price
+                            # REQ-DMG-006: auto-reset damaged_exchange -> unordered
+                            # for this upload's own confirmation batch — new PO
+                            # is being created/linked for this SKU right now.
+                            if li.purchase_status == "damaged_exchange":
+                                li.purchase_status = "unordered"
                         nonwarehouse_li_updates.extend(unordered_lis)
 
                     # REQ-PO5-007: Track confirmed by distributor
@@ -1371,8 +1439,12 @@ class UploadDailyReviewView(APIView):
                         warehouse_li_updates, ["purchase_status", "confirmed_distributor"]
                     )
                 if nonwarehouse_li_updates:
+                    # REQ-DMG-006: "purchase_status" is included unconditionally
+                    # (bulk_update requires one shared field list per call) — a
+                    # no-op for LineItems that were never damaged_exchange.
                     LineItem.objects.bulk_update(
-                        nonwarehouse_li_updates, ["confirmed_distributor", "confirmed_price"]
+                        nonwarehouse_li_updates,
+                        ["confirmed_distributor", "confirmed_price", "purchase_status"],
                     )
 
                 # REQ-PO9-007: batch-create every non-warehouse-branch

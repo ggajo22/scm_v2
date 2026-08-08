@@ -7,6 +7,7 @@ from order.models import (
     DistributorVendorRule,
     KyoboData,
     LineItem,
+    LineItemNote,
     Order,
     PurchaseOrder,
     VendorComparison,
@@ -391,3 +392,129 @@ class TestLineItemUniqueTogetherWithSku:
                 sku="ISBN-A",
                 quantity=2,
             )
+
+
+# ---------------------------------------------------------------------------
+# SPEC-PURCHASE-ORDER-010: damaged_exchange purchase_status + note_type (T1)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestDamagedExchangePurchaseStatus:
+    def test_damaged_exchange_is_valid_purchase_status_choice(self):
+        """REQ-DMG-001/AC-DMG-001: damaged_exchange is accepted and persists
+        as a stored purchase_status value, distinct from unordered."""
+        order = _make_order(shopify_order_id=95001)
+        li = LineItem.objects.create(
+            order=order,
+            shopify_line_item_id=1,
+            sku="SKU-DMG-001",
+            quantity=1,
+            purchase_status="damaged_exchange",
+        )
+        li.refresh_from_db()
+        assert li.purchase_status == "damaged_exchange"
+        assert li.purchase_status != "unordered"
+
+    def test_damaged_exchange_passes_full_clean(self):
+        """REQ-DMG-001: damaged_exchange is a declared choice, so full_clean()
+        does not raise ValidationError."""
+        order = _make_order(shopify_order_id=95002)
+        li = LineItem(
+            order=order,
+            shopify_line_item_id=1,
+            sku="SKU-DMG-002",
+            quantity=1,
+            purchase_status="damaged_exchange",
+        )
+        li.full_clean()
+
+    def test_damaged_exchange_persists_until_explicitly_modified(self):
+        """AC-DMG-001: the value persists unchanged until an admin action or
+        REQ-DMG-006's automatic reset modifies it."""
+        order = _make_order(shopify_order_id=95003)
+        li = LineItem.objects.create(
+            order=order,
+            shopify_line_item_id=1,
+            sku="SKU-DMG-003",
+            quantity=1,
+            purchase_status="damaged_exchange",
+        )
+        li.title = "unrelated field update"
+        li.save(update_fields=["title"])
+        li.refresh_from_db()
+        assert li.purchase_status == "damaged_exchange"
+
+    def test_all_seven_choices_accepted(self):
+        """REQ-DMG-001: damaged_exchange extends (not replaces) the existing
+        six purchase_status choices."""
+        valid_choices = [
+            "unordered",
+            "on_hold",
+            "order_cancelled",
+            "other_publisher",
+            "cs_required",
+            "in_stock",
+            "damaged_exchange",
+        ]
+        order = _make_order(shopify_order_id=95004)
+        for i, choice in enumerate(valid_choices):
+            li = LineItem.objects.create(
+                order=order,
+                shopify_line_item_id=200 + i,
+                sku=f"SKU-DMG-CHOICE-{i}",
+                quantity=1,
+                purchase_status=choice,
+            )
+            li.refresh_from_db()
+            assert li.purchase_status == choice
+
+
+@pytest.mark.django_db
+class TestDamagedExchangeNoteType:
+    def test_damaged_exchange_note_type_choice_accepted(self):
+        """REQ-DMG-004: LineItemNote.NOTE_TYPE_CHOICES includes 파손/교환,
+        categorized consistently with the other note types."""
+        order = _make_order(shopify_order_id=95010)
+        li = _make_line_item(order, shopify_line_item_id=1)
+        note = LineItemNote.objects.create(
+            line_item=li,
+            content="파손 확인됨, 교환 필요",
+            note_type="파손/교환",
+        )
+        note.full_clean()
+        note.refresh_from_db()
+        assert note.note_type == "파손/교환"
+
+
+class TestMigration0029DamagedExchange:
+    """REQ-DMG-007: migration 0029 bundles both choices changes in one file,
+    mirroring 0012's convention of bundling related field changes."""
+
+    @pytest.mark.django_db
+    def test_migration_bundles_two_alter_field_ops_depends_on_0028(self):
+        from django.db import connection
+        from django.db.migrations.loader import MigrationLoader
+
+        loader = MigrationLoader(connection)
+        migration = loader.disk_migrations[("order", "0029_lineitem_damaged_exchange_status")]
+        assert migration.dependencies == [("order", "0028_kyobodata_list_price")]
+        assert len(migration.operations) == 2
+        op_names = {op.name for op in migration.operations}
+        assert op_names == {"purchase_status", "note_type"}
+
+    @pytest.mark.django_db
+    def test_migration_does_not_alter_existing_records(self):
+        """AC-DMG-007: applying the migration (already applied to build the
+        test DB) leaves pre-existing LineItem/LineItemNote values unchanged —
+        this is a pure choices-list widening with no data migration."""
+        order = _make_order(shopify_order_id=95020)
+        li = _make_line_item(order, shopify_line_item_id=1)
+        assert li.purchase_status == "unordered"
+        note = LineItemNote.objects.create(
+            line_item=li, content="pre-existing note", note_type="CS필요"
+        )
+        li.refresh_from_db()
+        note.refresh_from_db()
+        assert li.purchase_status == "unordered"
+        assert note.note_type == "CS필요"

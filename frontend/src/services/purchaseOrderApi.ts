@@ -20,6 +20,8 @@ export const PURCHASE_STATUS_OPTIONS = [
   { value: 'other_publisher', label: '타출판사' },
   { value: 'cs_required', label: 'CS필요' },
   { value: 'in_stock', label: '재고' },
+  // SPEC-PURCHASE-ORDER-010 REQ-DMG-001
+  { value: 'damaged_exchange', label: '파손/교환' },
 ] as const
 
 export type PurchaseStatusValue = (typeof PURCHASE_STATUS_OPTIONS)[number]['value']

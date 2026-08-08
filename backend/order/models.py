@@ -117,6 +117,10 @@ class LineItem(models.Model):
         ("other_publisher", "타출판사"),
         ("cs_required", "CS필요"),
         ("in_stock", "재고"),
+        # SPEC-PURCHASE-ORDER-010 REQ-DMG-001: re-enters the reorder queue
+        # regardless of existing PurchaseOrder linkage (see purchase_order_views.py
+        # read-side eligibility widening and write-side auto-reset).
+        ("damaged_exchange", "파손/교환"),
     ]
 
     order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name="line_items")
@@ -168,6 +172,8 @@ class LineItemNote(models.Model):
         ("CS요청", "CS요청"),
         ("발주요청", "발주요청"),
         ("발주제외", "발주제외"),
+        # SPEC-PURCHASE-ORDER-010 REQ-DMG-004
+        ("파손/교환", "파손/교환"),
     ]
 
     line_item = models.ForeignKey(

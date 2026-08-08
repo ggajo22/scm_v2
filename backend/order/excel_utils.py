@@ -616,6 +616,9 @@ _NOTE_TYPE_STATUS_MAP: dict[str, str] = {
     "주문보류": "on_hold",
     "CS필요": "cs_required",
     "타출판사": "other_publisher",
+    # SPEC-PURCHASE-ORDER-010 REQ-DMG-003: re-enters the reorder queue via
+    # ConfirmOrderView/UploadDailyReviewView's widened read-side eligibility.
+    "파손/교환": "damaged_exchange",
 }
 
 _DAILY_REVIEW_HEADERS = [

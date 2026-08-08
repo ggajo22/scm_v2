@@ -51,6 +51,7 @@ UNORDERED_URL = "/api/purchase-orders/unordered/"
 GENERATE_URL = "/api/purchase-orders/generate-order-file/"
 UPLOAD_URL = "/api/purchase-orders/upload-vendor-file/"
 COMPARISON_URL = "/api/purchase-orders/comparison/"
+RUN_COMPARISON_URL = "/api/purchase-orders/run-comparison/"
 CONFIRM_URL = "/api/purchase-orders/confirm/"
 RULES_URL = "/api/purchase-orders/vendor-rules/"
 PO_LIST_URL = "/api/purchase-orders/"
@@ -441,6 +442,85 @@ class TestUnorderedItemsView:
 
 
 # ---------------------------------------------------------------------------
+# SPEC-PURCHASE-ORDER-010 (T3): read-side reorder-candidate widening —
+# UnorderedItemsView
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestUnorderedItemsViewDamagedExchange:
+    """AC-DMG-005 (scenario 1): damaged_exchange LineItems re-enter the
+    reorder-candidate list regardless of existing PurchaseOrder linkage."""
+
+    def test_damaged_exchange_linked_line_item_reexposed(self, auth_client):
+        order = _make_order(shopify_order_id=91030)
+        li = _make_line_item(order, shopify_line_item_id=1, sku="SKU-DMG-UNORD-1", quantity=2)
+        po = PurchaseOrder.objects.create(
+            sku="SKU-DMG-UNORD-1", title="Book", distributor="booxen", quantity=2
+        )
+        po.line_items.add(li)
+        li.purchase_status = "damaged_exchange"
+        li.save(update_fields=["purchase_status"])
+
+        res = auth_client.get(UNORDERED_URL)
+        assert res.status_code == 200
+        skus = [r["sku"] for r in res.data["results"]]
+        assert "SKU-DMG-UNORD-1" in skus
+
+    def test_damaged_exchange_unlinked_line_item_still_exposed(self, auth_client):
+        """Sanity check: an unlinked damaged_exchange LineItem is exposed too
+        (not just the already-linked edge case)."""
+        order = _make_order(shopify_order_id=91031)
+        _make_line_item(
+            order, shopify_line_item_id=1, sku="SKU-DMG-UNORD-2",
+            quantity=1,
+        )
+        li = LineItem.objects.get(sku="SKU-DMG-UNORD-2")
+        li.purchase_status = "damaged_exchange"
+        li.save(update_fields=["purchase_status"])
+
+        res = auth_client.get(UNORDERED_URL)
+        assert res.status_code == 200
+        skus = [r["sku"] for r in res.data["results"]]
+        assert "SKU-DMG-UNORD-2" in skus
+
+    def test_other_non_unordered_non_damaged_statuses_still_excluded(self, auth_client):
+        """Regression: statuses other than unordered/damaged_exchange remain
+        excluded from the reorder-candidate list (e.g. cs_required, unlinked)."""
+        order = _make_order(shopify_order_id=91032)
+        li = _make_line_item(order, shopify_line_item_id=1, sku="SKU-DMG-UNORD-3", quantity=1)
+        li.purchase_status = "cs_required"
+        li.save(update_fields=["purchase_status"])
+
+        res = auth_client.get(UNORDERED_URL)
+        assert res.status_code == 200
+        skus = [r["sku"] for r in res.data["results"]]
+        assert "SKU-DMG-UNORD-3" not in skus
+
+    def test_damaged_exchange_linked_to_two_purchase_orders_no_duplicate_rows(self, auth_client):
+        """T3 .distinct() empirical check: a damaged_exchange LineItem linked
+        to 2+ PurchaseOrders via the M2M relation must appear exactly once in
+        the result set, not once per PO link."""
+        order = _make_order(shopify_order_id=91033)
+        li = _make_line_item(order, shopify_line_item_id=1, sku="SKU-DMG-DISTINCT-1", quantity=1)
+        po1 = PurchaseOrder.objects.create(
+            sku="SKU-DMG-DISTINCT-1", title="Book", distributor="booxen", quantity=1
+        )
+        po2 = PurchaseOrder.objects.create(
+            sku="SKU-DMG-DISTINCT-1", title="Book", distributor="kyobo", quantity=1
+        )
+        po1.line_items.add(li)
+        po2.line_items.add(li)
+        li.purchase_status = "damaged_exchange"
+        li.save(update_fields=["purchase_status"])
+
+        res = auth_client.get(UNORDERED_URL)
+        assert res.status_code == 200
+        matching = [r for r in res.data["results"] if r["sku"] == "SKU-DMG-DISTINCT-1"]
+        assert len(matching) == 1
+
+
+# ---------------------------------------------------------------------------
 # M3: POST /api/purchase-orders/generate-order-file/
 # ---------------------------------------------------------------------------
 
@@ -725,6 +805,86 @@ class TestGenerateOrderFileView:
 
 
 # ---------------------------------------------------------------------------
+# SPEC-PURCHASE-ORDER-010 (T7): GenerateOrderFileView regression — AC-DMG-008
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestGenerateOrderFileDamagedExchangeRegression:
+    """AC-DMG-008 (scenario 6): GenerateOrderFileView must include
+    damaged_exchange SKUs in the generated order file — realistically these
+    SKUs are still linked to their ORIGINAL PurchaseOrder (that's the whole
+    premise of the SPEC: the item was already ordered once, then came back
+    damaged/needs exchange). evaluator-active (Phase 2.8a) found that the
+    original REQ-DMG-008 assumption of "no code change needed" was WRONG —
+    the view's `.exclude(purchase_orders__isnull=False)` still rejected
+    linked damaged_exchange SKUs as "unknown", blocking the entire batch's
+    file generation. Fixed to mirror the same damaged_exchange exception
+    used by `_reorder_candidate_filter()` elsewhere in this file."""
+
+    def test_linked_damaged_exchange_sku_included_in_generated_file(self, auth_client):
+        """Realistic fixture: the LineItem is linked to its original
+        PurchaseOrder (as it would be after a prior order), then marked
+        damaged_exchange. GenerateOrderFileView must still include it —
+        not reject it as unknown."""
+        order = _make_order(shopify_order_id=92011)
+        li = _make_line_item(
+            order, shopify_line_item_id=1, sku="SKU-DMG-GEN-2", title="Damaged Book", quantity=2
+        )
+        old_po = PurchaseOrder.objects.create(
+            sku="SKU-DMG-GEN-2", title="Damaged Book", distributor="booxen", quantity=2
+        )
+        old_po.line_items.add(li)
+        li.purchase_status = "damaged_exchange"
+        li.save(update_fields=["purchase_status"])
+
+        payload = {"distributor": "booxen", "skus": ["SKU-DMG-GEN-2"]}
+        res = auth_client.post(GENERATE_URL, data=payload, format="json")
+        assert res.status_code == 200
+        assert EXCEL_CONTENT_TYPE in res["Content-Type"]
+        wb = openpyxl.load_workbook(io.BytesIO(res.content))
+        ws = wb.active
+        rows = list(ws.iter_rows(values_only=True))
+        assert rows[1][0] == "SKU-DMG-GEN-2"
+
+    def test_unlinked_damaged_exchange_sku_included_in_generated_file(self, auth_client):
+        """Sanity check: an unlinked damaged_exchange SKU is also included
+        (the linkage exception must not accidentally exclude this case)."""
+        order = _make_order(shopify_order_id=92010)
+        li = _make_line_item(
+            order, shopify_line_item_id=1, sku="SKU-DMG-GEN-1", title="Damaged Book", quantity=2
+        )
+        li.purchase_status = "damaged_exchange"
+        li.save(update_fields=["purchase_status"])
+
+        payload = {"distributor": "booxen", "skus": ["SKU-DMG-GEN-1"]}
+        res = auth_client.post(GENERATE_URL, data=payload, format="json")
+        assert res.status_code == 200
+        wb = openpyxl.load_workbook(io.BytesIO(res.content))
+        ws = wb.active
+        rows = list(ws.iter_rows(values_only=True))
+        assert rows[1][0] == "SKU-DMG-GEN-1"
+
+    def test_non_damaged_exchange_linked_sku_still_rejected_as_unknown(self, auth_client):
+        """Regression: a linked SKU that is NOT damaged_exchange is still
+        correctly excluded (reported as unknown) — the exception is scoped
+        to damaged_exchange only."""
+        order = _make_order(shopify_order_id=92012)
+        li = _make_line_item(
+            order, shopify_line_item_id=1, sku="SKU-DMG-GEN-3", title="Ordinary Book", quantity=1
+        )
+        old_po = PurchaseOrder.objects.create(
+            sku="SKU-DMG-GEN-3", title="Ordinary Book", distributor="booxen", quantity=1
+        )
+        old_po.line_items.add(li)
+
+        payload = {"distributor": "booxen", "skus": ["SKU-DMG-GEN-3"]}
+        res = auth_client.post(GENERATE_URL, data=payload, format="json")
+        assert res.status_code == 200
+        assert res.data["unknown_skus"] == ["SKU-DMG-GEN-3"]
+
+
+# ---------------------------------------------------------------------------
 # M4a: POST /api/purchase-orders/upload-vendor-file/
 # ---------------------------------------------------------------------------
 
@@ -1000,6 +1160,54 @@ class TestVendorComparisonView:
 
 
 # ---------------------------------------------------------------------------
+# SPEC-PURCHASE-ORDER-010 (T3): read-side reorder-candidate widening —
+# RunComparisonView
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestRunComparisonViewDamagedExchange:
+    """AC-DMG-005 (scenario 1): damaged_exchange LineItems re-enter the
+    run-comparison candidate set regardless of existing PurchaseOrder
+    linkage."""
+
+    def test_damaged_exchange_linked_line_item_reexposed(self, auth_client):
+        order = _make_order(shopify_order_id=91040)
+        li = _make_line_item(order, shopify_line_item_id=1, sku="SKU-DMG-RUNCMP-1", quantity=1)
+        po = PurchaseOrder.objects.create(
+            sku="SKU-DMG-RUNCMP-1", title="Book", distributor="booxen", quantity=1
+        )
+        po.line_items.add(li)
+        li.purchase_status = "damaged_exchange"
+        li.save(update_fields=["purchase_status"])
+
+        res = auth_client.post(RUN_COMPARISON_URL)
+        assert res.status_code == 200
+        skus = [r["sku"] for r in res.data["results"]]
+        assert "SKU-DMG-RUNCMP-1" in skus
+
+    def test_unordered_unlinked_still_included_regression(self, auth_client):
+        order = _make_order(shopify_order_id=91041)
+        _make_line_item(order, shopify_line_item_id=1, sku="SKU-DMG-RUNCMP-2", quantity=1)
+
+        res = auth_client.post(RUN_COMPARISON_URL)
+        assert res.status_code == 200
+        skus = [r["sku"] for r in res.data["results"]]
+        assert "SKU-DMG-RUNCMP-2" in skus
+
+    def test_cs_required_linked_status_still_excluded(self, auth_client):
+        order = _make_order(shopify_order_id=91042)
+        li = _make_line_item(order, shopify_line_item_id=1, sku="SKU-DMG-RUNCMP-3", quantity=1)
+        li.purchase_status = "cs_required"
+        li.save(update_fields=["purchase_status"])
+
+        res = auth_client.post(RUN_COMPARISON_URL)
+        assert res.status_code == 200
+        skus = [r["sku"] for r in res.data["results"]]
+        assert "SKU-DMG-RUNCMP-3" not in skus
+
+
+# ---------------------------------------------------------------------------
 # M5: POST /api/purchase-orders/confirm/
 # ---------------------------------------------------------------------------
 
@@ -1260,6 +1468,210 @@ class TestConfirmOrderView:
         res = auth_client.post(CONFIRM_URL, data=payload, format="json")
         assert res.status_code == 201
         assert not LineItemNote.objects.filter(line_item=li).exists()
+
+
+# ---------------------------------------------------------------------------
+# SPEC-PURCHASE-ORDER-010 (T4): read-side reorder-candidate widening —
+# ConfirmOrderView (pattern B, REQ-DMG-005B)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestConfirmOrderViewDamagedExchangeReadSide:
+    """AC-DMG-005B (scenario 1b): a damaged_exchange SKU already linked to a
+    prior PurchaseOrder can be confirmed via ConfirmOrderView without a 409
+    conflict error."""
+
+    def test_confirm_accepts_linked_damaged_exchange_sku(self, auth_client):
+        order = _make_order(shopify_order_id=94010)
+        li = _make_line_item(order, shopify_line_item_id=1, sku="ISBN-DMG-001", quantity=1)
+        old_po = PurchaseOrder.objects.create(
+            sku="ISBN-DMG-001", title="Book", distributor="booxen", quantity=1
+        )
+        old_po.line_items.add(li)
+        li.purchase_status = "damaged_exchange"
+        li.save(update_fields=["purchase_status"])
+
+        payload = {
+            "items": [
+                {
+                    "sku": "ISBN-DMG-001",
+                    "distributor": "kyobo",
+                    "quantity": 1,
+                    "unit_price": "9500.00",
+                }
+            ]
+        }
+        res = auth_client.post(CONFIRM_URL, data=payload, format="json")
+        assert res.status_code == 201
+        new_po = PurchaseOrder.objects.get(pk=res.data["purchase_order_ids"][0])
+        assert li in new_po.line_items.all()
+
+    def test_confirm_still_rejects_linked_non_damaged_exchange_sku(self, auth_client):
+        """Regression: only damaged_exchange bypasses the linkage guard —
+        any other status linked to an existing PO is still a 409 conflict."""
+        order = _make_order(shopify_order_id=94011)
+        li = _make_line_item(order, shopify_line_item_id=1, sku="ISBN-DMG-002", quantity=1)
+        old_po = PurchaseOrder.objects.create(
+            sku="ISBN-DMG-002", title="Book", distributor="booxen", quantity=1
+        )
+        old_po.line_items.add(li)
+        li.purchase_status = "cs_required"
+        li.save(update_fields=["purchase_status"])
+
+        payload = {
+            "items": [
+                {
+                    "sku": "ISBN-DMG-002",
+                    "distributor": "kyobo",
+                    "quantity": 1,
+                    "unit_price": "9500.00",
+                }
+            ]
+        }
+        res = auth_client.post(CONFIRM_URL, data=payload, format="json")
+        assert res.status_code == 409
+
+    def test_confirm_linked_to_two_purchase_orders_no_duplicate_bulk_update(self, auth_client):
+        """T4 .distinct() empirical check: a damaged_exchange LineItem linked
+        to 2+ PurchaseOrders must be fetched exactly once by the eligibility
+        query (otherwise bulk_update() would receive duplicate rows)."""
+        order = _make_order(shopify_order_id=94012)
+        li = _make_line_item(order, shopify_line_item_id=1, sku="ISBN-DMG-003", quantity=1)
+        po1 = PurchaseOrder.objects.create(
+            sku="ISBN-DMG-003", title="Book", distributor="booxen", quantity=1
+        )
+        po2 = PurchaseOrder.objects.create(
+            sku="ISBN-DMG-003", title="Book", distributor="kyobo", quantity=1
+        )
+        po1.line_items.add(li)
+        po2.line_items.add(li)
+        li.purchase_status = "damaged_exchange"
+        li.save(update_fields=["purchase_status"])
+
+        payload = {
+            "items": [
+                {
+                    "sku": "ISBN-DMG-003",
+                    "distributor": "sungseoyunion",
+                    "quantity": 1,
+                    "unit_price": "9500.00",
+                }
+            ]
+        }
+        res = auth_client.post(CONFIRM_URL, data=payload, format="json")
+        assert res.status_code == 201
+        li.refresh_from_db()
+        assert li.purchase_status == "unordered"
+
+
+# ---------------------------------------------------------------------------
+# SPEC-PURCHASE-ORDER-010 (T5): ConfirmOrderView write-side auto-reset
+# (REQ-DMG-006)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestConfirmOrderViewDamagedExchangeWriteSide:
+    def test_auto_reset_to_unordered_when_no_explicit_status(self, auth_client):
+        """AC-DMG-006 (scenario 4): confirming a damaged_exchange SKU with no
+        explicit purchase_status in the request auto-resets it to unordered
+        as part of the same write."""
+        order = _make_order(shopify_order_id=94020)
+        li = _make_line_item(order, shopify_line_item_id=1, sku="ISBN-DMG-Q", quantity=1)
+        li.purchase_status = "damaged_exchange"
+        li.save(update_fields=["purchase_status"])
+
+        payload = {
+            "items": [
+                {
+                    "sku": "ISBN-DMG-Q",
+                    "distributor": "booxen",
+                    "quantity": 1,
+                    "unit_price": "9000.00",
+                }
+            ]
+        }
+        res = auth_client.post(CONFIRM_URL, data=payload, format="json")
+        assert res.status_code == 201
+        li.refresh_from_db()
+        assert li.purchase_status == "unordered"
+
+    def test_explicit_override_wins_over_auto_reset(self, auth_client):
+        """AC-DMG-006B (scenario 4b): an explicit purchase_status in the
+        request takes precedence over the automatic damaged_exchange reset."""
+        order = _make_order(shopify_order_id=94021)
+        li = _make_line_item(order, shopify_line_item_id=1, sku="ISBN-DMG-R", quantity=1)
+        li.purchase_status = "damaged_exchange"
+        li.save(update_fields=["purchase_status"])
+
+        payload = {
+            "items": [
+                {
+                    "sku": "ISBN-DMG-R",
+                    "distributor": "booxen",
+                    "quantity": 1,
+                    "unit_price": "9000.00",
+                    "purchase_status": "cs_required",
+                }
+            ]
+        }
+        res = auth_client.post(CONFIRM_URL, data=payload, format="json")
+        assert res.status_code == 201
+        li.refresh_from_db()
+        assert li.purchase_status == "cs_required"
+
+    def test_reset_scoped_to_current_confirmation_batch_only(self, auth_client):
+        """AC-DMG-006C: a damaged_exchange LineItem for a SKU NOT included in
+        this confirmation batch is left untouched (symmetric with the Daily
+        Review upload flow's batch-scope isolation)."""
+        order1 = _make_order(shopify_order_id=94022)
+        _make_line_item(order1, shopify_line_item_id=1, sku="ISBN-DMG-S1", quantity=1)
+
+        order2 = _make_order(shopify_order_id=94023)
+        li_outside_batch = _make_line_item(
+            order2, shopify_line_item_id=1, sku="ISBN-DMG-S2", quantity=1
+        )
+        li_outside_batch.purchase_status = "damaged_exchange"
+        li_outside_batch.save(update_fields=["purchase_status"])
+
+        payload = {
+            "items": [
+                {
+                    "sku": "ISBN-DMG-S1",
+                    "distributor": "booxen",
+                    "quantity": 1,
+                    "unit_price": "9000.00",
+                }
+            ]
+        }
+        res = auth_client.post(CONFIRM_URL, data=payload, format="json")
+        assert res.status_code == 201
+
+        li_outside_batch.refresh_from_db()
+        assert li_outside_batch.purchase_status == "damaged_exchange"
+
+    def test_non_damaged_exchange_status_regression_unaffected(self, auth_client):
+        """Scenario 5 (regression): a plain unordered+unlinked LineItem's
+        purchase_status is unaffected by the new auto-reset logic."""
+        order = _make_order(shopify_order_id=94024)
+        li = _make_line_item(order, shopify_line_item_id=1, sku="ISBN-DMG-T", quantity=1)
+        assert li.purchase_status == "unordered"
+
+        payload = {
+            "items": [
+                {
+                    "sku": "ISBN-DMG-T",
+                    "distributor": "booxen",
+                    "quantity": 1,
+                    "unit_price": "9000.00",
+                }
+            ]
+        }
+        res = auth_client.post(CONFIRM_URL, data=payload, format="json")
+        assert res.status_code == 201
+        li.refresh_from_db()
+        assert li.purchase_status == "unordered"
 
 
 # ---------------------------------------------------------------------------
@@ -1887,6 +2299,19 @@ class TestLineItemStatusUpdateView:
             li.refresh_from_db()
             assert li.purchase_status == choice
 
+    def test_patch_damaged_exchange_accepted(self, auth_client):
+        """REQ-DMG-002/AC-DMG-002 (T2): damaged_exchange is accepted like any
+        other valid purchase_status value — no additional error or side
+        effect, since the view validates dynamically against
+        LineItem.PURCHASE_STATUS_CHOICES."""
+        li = self._make_li(shopify_order_id=95011, shopify_line_item_id=11)
+        url = LINE_ITEM_STATUS_URL.format(pk=li.pk)
+        res = auth_client.patch(url, data={"purchase_status": "damaged_exchange"}, format="json")
+        assert res.status_code == 200
+        assert res.data["purchase_status"] == "damaged_exchange"
+        li.refresh_from_db()
+        assert li.purchase_status == "damaged_exchange"
+
 
 # ---------------------------------------------------------------------------
 # SPEC-PURCHASE-ORDER-004: LineItemBulkStatusUpdateView (bulk PATCH)
@@ -1962,6 +2387,22 @@ class TestLineItemBulkStatusUpdateView:
             format="json",
         )
         assert res.status_code == 401
+
+    def test_bulk_damaged_exchange_accepted(self, auth_client):
+        """REQ-DMG-002/AC-DMG-002 (T2): damaged_exchange is accepted for
+        bulk status updates like any other valid choice."""
+        lis = self._make_lis(2, shopify_order_id=96010)
+        ids = [li.pk for li in lis]
+        res = auth_client.patch(
+            BULK_STATUS_URL,
+            data={"ids": ids, "purchase_status": "damaged_exchange"},
+            format="json",
+        )
+        assert res.status_code == 200
+        assert res.data["updated_count"] == 2
+        for li in lis:
+            li.refresh_from_db()
+            assert li.purchase_status == "damaged_exchange"
 
 
 # ---------------------------------------------------------------------------
