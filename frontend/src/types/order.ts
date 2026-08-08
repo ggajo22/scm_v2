@@ -126,6 +126,9 @@ export interface LineItemDetail {
   confirmed_distributor: string | null
   confirmed_at: string | null
   notes: LineItemNote[]
+  // SPEC-ORDER-011 REQ-LOGI-001: Korea-vendor -> US-warehouse -> customer
+  // logistics pipeline status, independent of purchase_status/fulfillment_status.
+  logistics_status: string
 }
 
 export interface ShippingLine {
@@ -192,4 +195,7 @@ export interface OrderDetail {
   line_items: LineItemDetail[]
   shipping_lines: ShippingLine[]
   refunds: Refund[]
+  // SPEC-ORDER-011 REQ-LOGI-008: computed aggregate over trackable child
+  // LineItems' logistics_status. Null when no trackable LineItems exist.
+  status: string | null
 }

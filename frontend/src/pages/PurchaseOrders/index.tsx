@@ -5,6 +5,7 @@ import { VendorFileUploadTab } from './tabs/VendorFileUploadTab'
 import { PurchaseOrderHistoryTab } from './tabs/PurchaseOrderHistoryTab'
 import { VendorRulesTab } from './tabs/VendorRulesTab'
 import { DailyReviewTab } from './tabs/DailyReviewTab'
+import { LogisticsStatusTab } from './tabs/LogisticsStatusTab'
 
 type TabValue =
   | 'unordered'
@@ -12,6 +13,7 @@ type TabValue =
   | 'history'
   | 'rules'
   | 'daily-review'
+  | 'logistics-status'
 
 interface TabDef {
   value: TabValue
@@ -22,6 +24,8 @@ const TABS: TabDef[] = [
   { value: 'unordered', label: '미발주 현황' },
   { value: 'upload', label: '업체 자료 업로드' },
   { value: 'daily-review', label: 'Daily Review' },
+  // SPEC-ORDER-011 T11: logistics_status upload tab (REQ-LOGI-003/005)
+  { value: 'logistics-status', label: '입고/출고 물류 상태' },
   { value: 'history', label: '발주 이력' },
   { value: 'rules', label: '발주처 규칙 설정' },
 ]
@@ -40,6 +44,8 @@ export function PurchaseOrdersPage() {
         return <VendorFileUploadTab />
       case 'daily-review':
         return <DailyReviewTab />
+      case 'logistics-status':
+        return <LogisticsStatusTab />
       case 'history':
         return <PurchaseOrderHistoryTab />
       case 'rules':

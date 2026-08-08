@@ -242,3 +242,68 @@ def test_order_detail_has_refund_true_when_refunds_exist(
     res = auth_client.get(url)
     assert res.status_code == 200
     assert res.data["has_refund"] is True
+
+
+# ---------------------------------------------------------------------------
+# SPEC-ORDER-011 T11: LineItemDetailSerializer/OrderDetailSerializer must
+# expose logistics_status / status so the frontend has a data source (gap
+# identified during planning — not part of the original backend T1-T10 scope).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_line_item_detail_includes_logistics_status(
+    auth_client: APIClient, order_with_line_items: Order
+) -> None:
+    """REQ-LOGI-001: LineItemDetailSerializer exposes logistics_status."""
+    line_item = order_with_line_items.line_items.first()
+    line_item.logistics_status = "shipment_confirmed"
+    line_item.save(update_fields=["logistics_status"])
+
+    url = DETAIL_URL.format(pk=order_with_line_items.pk)
+    res = auth_client.get(url)
+
+    assert res.status_code == 200
+    items = res.data["line_items"]
+    matched = next(item for item in items if item["id"] == line_item.id)
+    assert matched["logistics_status"] == "shipment_confirmed"
+
+
+@pytest.mark.django_db
+def test_line_item_detail_logistics_status_defaults_to_not_shipped(
+    auth_client: APIClient, order_with_line_items: Order
+) -> None:
+    """REQ-LOGI-001: default logistics_status is not_shipped for untouched LineItems."""
+    url = DETAIL_URL.format(pk=order_with_line_items.pk)
+    res = auth_client.get(url)
+
+    assert res.status_code == 200
+    items = res.data["line_items"]
+    assert all(item["logistics_status"] == "not_shipped" for item in items)
+
+
+@pytest.mark.django_db
+def test_order_detail_includes_status_aggregate(
+    auth_client: APIClient, order_with_line_items: Order
+) -> None:
+    """REQ-LOGI-008: OrderDetailSerializer exposes the status aggregate field."""
+    order_with_line_items.status = "partial"
+    order_with_line_items.save(update_fields=["status"])
+
+    url = DETAIL_URL.format(pk=order_with_line_items.pk)
+    res = auth_client.get(url)
+
+    assert res.status_code == 200
+    assert res.data["status"] == "partial"
+
+
+@pytest.mark.django_db
+def test_order_detail_status_is_null_when_unset(
+    auth_client: APIClient, order: Order
+) -> None:
+    """REQ-LOGI-008: Order.status is null (unset) when no aggregate has been computed."""
+    url = DETAIL_URL.format(pk=order.pk)
+    res = auth_client.get(url)
+
+    assert res.status_code == 200
+    assert res.data["status"] is None

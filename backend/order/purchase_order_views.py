@@ -22,7 +22,20 @@ from decimal import Decimal, InvalidOperation
 from types import SimpleNamespace
 
 from django.db import IntegrityError, transaction
-from django.db.models import Case, Count, Exists, F, IntegerField, OuterRef, Q, Subquery, Sum, Value, When
+from django.db.models import (
+    Case,
+    CharField,
+    Count,
+    Exists,
+    F,
+    IntegerField,
+    OuterRef,
+    Q,
+    Subquery,
+    Sum,
+    Value,
+    When,
+)
 from django.db.models.functions import Coalesce
 from django.http import HttpResponse
 from rest_framework import serializers, status
@@ -39,13 +52,17 @@ from .excel_utils import (
     generate_order_excel,
     parse_daily_review_excel,
     parse_vendor_excel,
+    parse_vendor_shipment_excel,
+    parse_warehouse_receipt_excel,
 )
 from .models import (
+    LOGISTICS_STATUS_CHOICES,
     BooxenData,
     DistributorVendorRule,
     KyoboData,
     LineItem,
     LineItemNote,
+    Order,
     PurchaseOrder,
     Refund,
     VendorComparison,
@@ -88,6 +105,105 @@ def _reorder_candidate_filter(queryset):
         queryset.filter(Q(purchase_status="unordered") | Q(purchase_status="damaged_exchange"))
         .exclude(purchase_status="unordered", purchase_orders__isnull=False)
     )
+
+
+# @MX:NOTE: [AUTO] Order.status aggregate recomputation (SPEC-ORDER-011).
+# Fan-in == 4 (UploadVendorShipmentView, UploadWarehouseReceiptView,
+# LineItemLogisticsStatusUpdateView, LineItemLogisticsStatusBulkUpdateView)
+# would normally qualify for @MX:ANCHOR, but this file is already at its
+# configured anchor_per_file limit (3, see .moai/config/sections/mx.yaml)
+# with 4 pre-existing ANCHOR tags — demoted to NOTE, same precedent as
+# _reorder_candidate_filter above (SPEC-PURCHASE-ORDER-010).
+def _recompute_order_status(order_ids) -> None:
+    """
+    REQ-LOGI-008/009/010: recompute Order.status as an aggregate over
+    trackable (sku not null) child LineItems' logistics_status — the shared
+    value when uniform, "partial" when 2+ distinct values are present, unset
+    (None) when no trackable LineItems exist for that Order.
+
+    Two-query design so the number of queries issued depends on the number
+    of distinct Orders in `order_ids`, never on the number of LineItems that
+    were updated (SPEC-PURCHASE-ORDER-009 N+1-avoidance precedent):
+      1. one SELECT for (order_id, logistics_status) pairs of every
+         trackable LineItem under `order_ids`, grouped in Python.
+      2. one UPDATE (Case/When) covering every Order in `order_ids` in a
+         single statement.
+
+    No-op (zero queries) when `order_ids` is empty.
+    """
+    order_id_list = list(order_ids)
+    if not order_id_list:
+        return
+
+    statuses_by_order: dict[int, set[str]] = defaultdict(set)
+    for order_id, logistics_status in LineItem.objects.filter(
+        order_id__in=order_id_list, sku__isnull=False
+    ).values_list("order_id", "logistics_status"):
+        statuses_by_order[order_id].add(logistics_status)
+
+    status_field = CharField(max_length=50, null=True)
+    whens = []
+    for order_id in order_id_list:
+        statuses = statuses_by_order.get(order_id)
+        if not statuses:
+            new_status = None
+        elif len(statuses) == 1:
+            new_status = next(iter(statuses))
+        else:
+            new_status = "partial"
+        whens.append(When(id=order_id, then=Value(new_status, output_field=status_field)))
+
+    Order.objects.filter(id__in=order_id_list).update(
+        status=Case(*whens, default=Value(None, output_field=status_field), output_field=status_field)
+    )
+
+
+def _apply_logistics_transition(
+    matched_queryset,
+    all_skus: list[str],
+    target_status: str,
+) -> tuple[int, int, set[int]]:
+    """
+    Shared SKU-grouping/transition/bulk_update helper for
+    UploadVendorShipmentView (REQ-LOGI-003) and UploadWarehouseReceiptView
+    (REQ-LOGI-005). `matched_queryset` must already carry each view's own
+    eligibility filter plus `.select_for_update()`.
+
+    Counting convention mirrors UploadDailyReviewView (REQ-LOGI-004): counts
+    are per distinct SKU in `all_skus`, not per LineItem row — a SKU that
+    expands into multiple LineItem rows (bundle SKU) still counts once, and
+    `matched_count + skipped_count == len(all_skus)` always holds
+    (AC-LOGI-004).
+
+    Returns (matched_sku_count, skipped_sku_count, affected_order_ids) —
+    `affected_order_ids` is collected from the already-fetched LineItem
+    instances (zero extra queries), for the caller to pass to
+    `_recompute_order_status()`.
+    """
+    lineitems_by_sku: dict[str, list] = defaultdict(list)
+    for li in matched_queryset:
+        lineitems_by_sku[li.sku].append(li)
+
+    matched_count = 0
+    skipped_count = 0
+    to_update: list = []
+    affected_order_ids: set[int] = set()
+
+    for sku in all_skus:
+        lis = lineitems_by_sku.get(sku)
+        if not lis:
+            skipped_count += 1
+            continue
+        for li in lis:
+            li.logistics_status = target_status
+            affected_order_ids.add(li.order_id)
+        to_update.extend(lis)
+        matched_count += 1
+
+    if to_update:
+        LineItem.objects.bulk_update(to_update, ["logistics_status"])
+
+    return matched_count, skipped_count, affected_order_ids
 
 
 # ---------------------------------------------------------------------------
@@ -1523,6 +1639,142 @@ class UploadDailyReviewView(APIView):
         )
 
 
+# ---------------------------------------------------------------------------
+# SPEC-ORDER-011: logistics_status uploads
+# ---------------------------------------------------------------------------
+
+
+class UploadVendorShipmentView(APIView):
+    """
+    POST /api/purchase-orders/upload-vendor-shipment/
+
+    Multipart: file (.xlsx)
+    REQ-LOGI-003/004: parses a vendor-shipment-confirmation Excel file
+    (SKU-only PLACEHOLDER schema — see
+    excel_utils.parse_vendor_shipment_excel) and transitions matching
+    LineItems' logistics_status from "not_shipped" to "shipment_confirmed".
+    Matching rule: purchase_status != "unordered" AND
+    logistics_status == "not_shipped".
+    """
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request) -> Response:
+        uploaded = request.FILES.get("file")
+        if not uploaded:
+            return Response({"detail": "file is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        filename = uploaded.name or ""
+        if not filename.endswith(".xlsx"):
+            return Response(
+                {"detail": "Invalid file format. Only .xlsx is supported."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            file_bytes = uploaded.read()
+            parsed_rows = parse_vendor_shipment_excel(file_bytes)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+
+        # REQ-LOGI-003a: last row wins per SKU
+        sku_map: dict[str, dict] = {}
+        for row in parsed_rows:
+            sku_map[row["sku"]] = row
+
+        try:
+            with transaction.atomic():
+                all_skus = list(sku_map.keys())
+                queryset = (
+                    LineItem.objects.filter(sku__in=all_skus, logistics_status="not_shipped")
+                    .exclude(purchase_status="unordered")
+                    .select_for_update()
+                )
+                matched_count, skipped_count, affected_order_ids = _apply_logistics_transition(
+                    queryset, all_skus, "shipment_confirmed"
+                )
+                _recompute_order_status(affected_order_ids)
+        except Exception as exc:
+            # REQ-LOGI-003b: single all-or-nothing operation — any exception
+            # rolls back the whole transaction.atomic() block above.
+            return Response(
+                {"detail": f"처리 중 오류가 발생했습니다: {exc}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        return Response(
+            {"matched_count": matched_count, "skipped_count": skipped_count},
+            status=status.HTTP_200_OK,
+        )
+
+
+class UploadWarehouseReceiptView(APIView):
+    """
+    POST /api/purchase-orders/upload-warehouse-receipt/
+
+    Multipart: file (.xlsx)
+    REQ-LOGI-005/006: parses a warehouse-receiving-results Excel file
+    (SKU-only PLACEHOLDER schema — see
+    excel_utils.parse_warehouse_receipt_excel) and transitions matching
+    LineItems' logistics_status to "received". Matching rule:
+    logistics_status IN ("not_shipped", "shipment_confirmed") — allows the
+    direct 미입고 -> 입고 path when the vendor never sent a shipment
+    confirmation (Decision C). Never touches WarehouseStock.quantity
+    (Decision B / REQ-LOGI-006) — this transition is a pure LineItem status
+    flag, not an inventory event.
+    """
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request) -> Response:
+        uploaded = request.FILES.get("file")
+        if not uploaded:
+            return Response({"detail": "file is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        filename = uploaded.name or ""
+        if not filename.endswith(".xlsx"):
+            return Response(
+                {"detail": "Invalid file format. Only .xlsx is supported."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            file_bytes = uploaded.read()
+            parsed_rows = parse_warehouse_receipt_excel(file_bytes)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+
+        # REQ-LOGI-005a: same last-row-wins dedup as REQ-LOGI-003a
+        sku_map: dict[str, dict] = {}
+        for row in parsed_rows:
+            sku_map[row["sku"]] = row
+
+        try:
+            with transaction.atomic():
+                all_skus = list(sku_map.keys())
+                queryset = LineItem.objects.filter(
+                    sku__in=all_skus,
+                    logistics_status__in=["not_shipped", "shipment_confirmed"],
+                ).select_for_update()
+                matched_count, skipped_count, affected_order_ids = _apply_logistics_transition(
+                    queryset, all_skus, "received"
+                )
+                _recompute_order_status(affected_order_ids)
+        except Exception as exc:
+            # REQ-LOGI-005a: same all-or-nothing behavior as REQ-LOGI-003b
+            return Response(
+                {"detail": f"처리 중 오류가 발생했습니다: {exc}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        return Response(
+            {"matched_count": matched_count, "skipped_count": skipped_count},
+            status=status.HTTP_200_OK,
+        )
+
+
 class ConflictError(Exception):
     """Raised when a 409 Conflict response should be returned."""
 
@@ -1606,6 +1858,113 @@ class LineItemBulkStatusUpdateView(APIView):
         missing_ids = [i for i in ids if i not in existing_ids]
 
         updated_count = existing.update(purchase_status=purchase_status_value)
+
+        return Response(
+            {
+                "updated_count": updated_count,
+                "missing_ids": missing_ids,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+# ---------------------------------------------------------------------------
+# SPEC-ORDER-011: LineItem.logistics_status manual status update (single/bulk)
+# ---------------------------------------------------------------------------
+
+
+class LineItemLogisticsStatusUpdateView(APIView):
+    """
+    PATCH /api/purchase-orders/line-items/<pk>/logistics-status/
+
+    REQ-LOGI-007/007a: updates the logistics_status of a single LineItem,
+    then recomputes its parent Order's status (REQ-LOGI-009).
+    """
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, pk: int) -> Response:
+        try:
+            li = LineItem.objects.get(pk=pk)
+        except LineItem.DoesNotExist:
+            return Response({"error": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        logistics_status_value = request.data.get("logistics_status")
+        valid_choices = [c[0] for c in LOGISTICS_STATUS_CHOICES]
+        if logistics_status_value not in valid_choices:
+            # REQ-LOGI-007a: must identify which value was invalid.
+            return Response(
+                {
+                    "error": (
+                        f"Invalid logistics_status: {logistics_status_value!r}. "
+                        f"Valid choices: {valid_choices}"
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        li.logistics_status = logistics_status_value
+        li.save(update_fields=["logistics_status"])
+        _recompute_order_status([li.order_id])
+        return Response(
+            {
+                "id": li.id,
+                "logistics_status": li.logistics_status,
+                "sku": li.sku,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class LineItemLogisticsStatusBulkUpdateView(APIView):
+    """
+    PATCH /api/purchase-orders/line-items/bulk-logistics-status/
+
+    REQ-LOGI-007/007a/010: updates logistics_status for multiple LineItems
+    at once, then recomputes every affected Order's status in one batched
+    call (REQ-LOGI-010).
+    Body: {"ids": [int, ...], "logistics_status": str}
+    """
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request) -> Response:
+        ids = request.data.get("ids", [])
+        logistics_status_value = request.data.get("logistics_status")
+
+        valid_choices = [c[0] for c in LOGISTICS_STATUS_CHOICES]
+
+        if not ids:
+            return Response(
+                {"error": "ids must not be empty"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if logistics_status_value not in valid_choices:
+            # REQ-LOGI-007a: must identify which value was invalid.
+            return Response(
+                {
+                    "error": (
+                        f"Invalid logistics_status: {logistics_status_value!r}. "
+                        f"Valid choices: {valid_choices}"
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        existing = LineItem.objects.filter(pk__in=ids)
+        existing_ids = set(existing.values_list("id", flat=True))
+        missing_ids = [i for i in ids if i not in existing_ids]
+
+        # REQ-LOGI-010: order_ids must be captured BEFORE .update() —
+        # QuerySet.update() does not return the affected instances, so this
+        # is the only chance to know which Orders need recomputation.
+        affected_order_ids = list(existing.values_list("order_id", flat=True).distinct())
+
+        updated_count = existing.update(logistics_status=logistics_status_value)
+
+        _recompute_order_status(affected_order_ids)
 
         return Response(
             {

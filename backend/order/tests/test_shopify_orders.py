@@ -109,6 +109,73 @@ def test_sync_new_line_item_defaults_to_unordered():
     assert li.purchase_status == "unordered"
 
 
+# ---------------------------------------------------------------------------
+# SPEC-ORDER-011 T3: logistics_status / Order.status excluded from sync
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_sync_preserves_order_status_and_lineitem_logistics_status_on_resync():
+    """REQ-LOGI-002/011 — 시나리오6: resyncing an Order must not reset
+    Order.status (no longer derived from financial_status) or any
+    LineItem.logistics_status back to a Shopify-sourced/default value."""
+    order = Order.objects.create(
+        shopify_order_id=900010,
+        store_type="gimssine",
+        order_number=33540,
+        name="#33540",
+        shopify_created_at=timezone.now(),
+        status="received",
+    )
+    li = LineItem.objects.create(
+        order=order,
+        shopify_line_item_id=7010,
+        sku="ISBN010",
+        quantity=2,
+        logistics_status="shipped",
+    )
+
+    order_data = _make_order_data(900010, [_make_shopify_line_item(7010, sku="ISBN010")])
+    order_data["financial_status"] = "paid"
+    _sync_single_order(order_data, "gimssine")
+
+    order.refresh_from_db()
+    li.refresh_from_db()
+    assert order.status == "received"
+    assert li.logistics_status == "shipped"
+
+
+@pytest.mark.django_db
+def test_sync_new_line_item_defaults_logistics_status_to_not_shipped():
+    """REQ-LOGI-001: newly added line items (not in DB yet) default to
+    logistics_status='not_shipped'."""
+    order = Order.objects.create(
+        shopify_order_id=900011,
+        store_type="gimssine",
+        order_number=33541,
+        name="#33541",
+        shopify_created_at=timezone.now(),
+    )
+
+    order_data = _make_order_data(900011, [_make_shopify_line_item(7011, sku="ISBN011")])
+    _sync_single_order(order_data, "gimssine")
+
+    li = LineItem.objects.get(order=order, shopify_line_item_id=7011)
+    assert li.logistics_status == "not_shipped"
+
+
+@pytest.mark.django_db
+def test_sync_does_not_set_order_status_from_financial_status():
+    """REQ-LOGI-011: a brand-new Order synced from Shopify must not get
+    status populated from financial_status — status stays unset (None)."""
+    order_data = _make_order_data(900012, [])
+    order_data["financial_status"] = "paid"
+    _sync_single_order(order_data, "gimssine")
+
+    order = Order.objects.get(shopify_order_id=900012, store_type="gimssine")
+    assert order.status is None
+
+
 @pytest.mark.django_db
 def test_sync_removes_orphaned_line_item_without_po():
     """Line items that disappear from Shopify and have no PO should be deleted."""

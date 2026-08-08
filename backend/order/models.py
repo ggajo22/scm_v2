@@ -1,6 +1,18 @@
 from django.conf import settings
 from django.db import models
 
+# SPEC-ORDER-011 REQ-LOGI-001: module-level (not class-nested) so both
+# LineItem.logistics_status and Order.status (aggregate — see Order.Meta
+# below) can share the same 5-value choices list without cross-importing
+# between the two model classes.
+LOGISTICS_STATUS_CHOICES = [
+    ("not_shipped", "미입고"),
+    ("shipment_confirmed", "입고예정"),
+    ("received", "입고"),
+    ("outbound_scheduled", "출고예정"),
+    ("shipped", "출고"),
+]
+
 
 class Customer(models.Model):
     shopify_customer_id = models.BigIntegerField(unique=True)
@@ -27,7 +39,18 @@ class Order(models.Model):
     phone = models.CharField(max_length=50, null=True, blank=True)
     financial_status = models.CharField(max_length=50, null=True, blank=True)
     fulfillment_status = models.CharField(max_length=50, null=True, blank=True)
-    status = models.CharField(max_length=50, null=True, blank=True)
+    # SPEC-ORDER-011 REQ-LOGI-008: computed aggregate over trackable (sku not
+    # null) child LineItems' logistics_status — see
+    # purchase_order_views._recompute_order_status(). Column itself
+    # (max_length=50, null=True, blank=True) is unchanged; only `choices` is
+    # added for documentation/validation (decision D). No longer populated
+    # from Shopify's financial_status (REQ-LOGI-011).
+    status = models.CharField(
+        max_length=50,
+        null=True,
+        blank=True,
+        choices=LOGISTICS_STATUS_CHOICES + [("partial", "부분입고")],
+    )
     total_price = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
     subtotal_price = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
     total_tax = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
@@ -145,6 +168,17 @@ class LineItem(models.Model):
     confirmed_price = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
     confirmed_distributor = models.CharField(max_length=50, null=True, blank=True)
     confirmed_at = models.DateTimeField(null=True, blank=True)
+    # SPEC-ORDER-011 REQ-LOGI-001: Korea-vendor -> US-warehouse -> customer
+    # logistics pipeline status, fully independent of purchase_status
+    # (why/whether a SKU needs purchasing) and fulfillment_status (Shopify-
+    # synced "shipped to customer"). Manual/upload-driven only — never
+    # written by Shopify sync (REQ-LOGI-002) and never derived from
+    # PurchaseOrder.status (REQ-LOGI-014).
+    logistics_status = models.CharField(
+        max_length=20,
+        choices=LOGISTICS_STATUS_CHOICES,
+        default="not_shipped",
+    )
 
     class Meta:
         db_table = "orders_line_item"

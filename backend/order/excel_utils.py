@@ -924,3 +924,76 @@ def parse_daily_review_excel(file_bytes: bytes) -> list[dict]:
         results.append(result)
 
     return results
+
+
+# ---------------------------------------------------------------------------
+# SPEC-ORDER-011: logistics_status uploads (vendor-shipment-confirmation,
+# warehouse-receiving-results) — PLACEHOLDER SKU-only schema.
+#
+# No real vendor/warehouse template exists yet for either upload (spec.md
+# "확인이 필요한 가정"). Both files are parsed with a minimal SKU-only schema:
+# a single required column whose header contains "sku" or "isbn"
+# (case-insensitive, first match wins) — every other column is ignored.
+# Replace this parser (and the column-matching rule) once the real templates
+# are available; the calling views (UploadVendorShipmentView /
+# UploadWarehouseReceiptView) only depend on each parsed row exposing a
+# "sku" key, so swapping the parser body will not require view changes.
+# ---------------------------------------------------------------------------
+
+
+def _parse_sku_only_xlsx(file_bytes: bytes) -> list[dict]:
+    """
+    Shared placeholder parser for parse_vendor_shipment_excel() and
+    parse_warehouse_receipt_excel(). Mirrors _parse_generic_xlsx's
+    header-name detection, but the SKU/ISBN column is REQUIRED (raises
+    ValueError when no header matches, unlike _parse_generic_xlsx's
+    positional fallback) since this is the only column consumed.
+
+    Blank-SKU rows are skipped uncounted (never added to the returned list)
+    — the calling view's skipped_count only reflects SKUs that failed to
+    match a LineItem, not blank rows in the source file.
+    """
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
+    except Exception as exc:
+        raise ValueError(f"Cannot read .xlsx file: {exc}") from exc
+
+    ws = wb.active
+    rows = list(ws.iter_rows(values_only=True))
+    if not rows:
+        raise ValueError("Empty file")
+
+    header = [str(h).strip().lower() if h is not None else "" for h in rows[0]]
+    sku_idx = next((i for i, h in enumerate(header) if "sku" in h or "isbn" in h), None)
+    if sku_idx is None:
+        raise ValueError("No SKU/ISBN column found in header")
+
+    results = []
+    for row in rows[1:]:
+        if len(row) <= sku_idx:
+            continue
+
+        raw_sku = row[sku_idx]
+        sku = str(raw_sku).strip() if raw_sku is not None else ""
+        if not sku:
+            continue
+
+        results.append({"sku": sku})
+
+    return results
+
+
+def parse_vendor_shipment_excel(file_bytes: bytes) -> list[dict]:
+    """
+    SPEC-ORDER-011 REQ-LOGI-003: parse an uploaded vendor-shipment-
+    confirmation file. PLACEHOLDER schema — see _parse_sku_only_xlsx.
+    """
+    return _parse_sku_only_xlsx(file_bytes)
+
+
+def parse_warehouse_receipt_excel(file_bytes: bytes) -> list[dict]:
+    """
+    SPEC-ORDER-011 REQ-LOGI-005: parse an uploaded warehouse-receiving-
+    results file. PLACEHOLDER schema — see _parse_sku_only_xlsx.
+    """
+    return _parse_sku_only_xlsx(file_bytes)

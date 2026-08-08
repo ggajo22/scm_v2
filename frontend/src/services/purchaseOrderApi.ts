@@ -26,6 +26,19 @@ export const PURCHASE_STATUS_OPTIONS = [
 
 export type PurchaseStatusValue = (typeof PURCHASE_STATUS_OPTIONS)[number]['value']
 
+// SPEC-ORDER-011 REQ-LOGI-001: 5-value logistics_status pipeline
+// (Korea vendor -> US warehouse -> customer), fully independent of
+// PURCHASE_STATUS_OPTIONS above and of fulfillment_status.
+export const LOGISTICS_STATUS_OPTIONS = [
+  { value: 'not_shipped', label: '미입고' },
+  { value: 'shipment_confirmed', label: '입고예정' },
+  { value: 'received', label: '입고' },
+  { value: 'outbound_scheduled', label: '출고예정' },
+  { value: 'shipped', label: '출고' },
+] as const
+
+export type LogisticsStatusValue = (typeof LOGISTICS_STATUS_OPTIONS)[number]['value']
+
 export interface VendorRule {
   id: number
   publisher_name: string
@@ -178,6 +191,65 @@ export interface UploadDailyReviewResponse {
 
 export async function uploadDailyReview(formData: FormData): Promise<UploadDailyReviewResponse> {
   const res = await api.post('/api/purchase-orders/upload-daily-review/', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  })
+  return res.data
+}
+
+// ---------------------------------------------------------------------------
+// SPEC-ORDER-011 T11: logistics_status endpoints
+// ---------------------------------------------------------------------------
+
+export interface LineItemLogisticsStatusResponse {
+  id: number
+  logistics_status: string
+  sku: string | null
+}
+
+export interface BulkLogisticsStatusResponse {
+  updated_count: number
+  missing_ids: number[]
+}
+
+export interface UploadLogisticsResponse {
+  matched_count: number
+  skipped_count: number
+}
+
+// REQ-LOGI-007/007a: single LineItem logistics_status update.
+export async function updateLineItemLogisticsStatus(
+  id: number,
+  logisticsStatus: string
+): Promise<LineItemLogisticsStatusResponse> {
+  const res = await api.patch(`/api/purchase-orders/line-items/${id}/logistics-status/`, {
+    logistics_status: logisticsStatus,
+  })
+  return res.data
+}
+
+// REQ-LOGI-007/007a/010: batched LineItem logistics_status update.
+export async function bulkUpdateLineItemLogisticsStatus(
+  ids: number[],
+  logisticsStatus: string
+): Promise<BulkLogisticsStatusResponse> {
+  const res = await api.patch('/api/purchase-orders/line-items/bulk-logistics-status/', {
+    ids,
+    logistics_status: logisticsStatus,
+  })
+  return res.data
+}
+
+// REQ-LOGI-003/004: vendor shipment confirmation upload → shipment_confirmed.
+export async function uploadVendorShipment(formData: FormData): Promise<UploadLogisticsResponse> {
+  const res = await api.post('/api/purchase-orders/upload-vendor-shipment/', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  })
+  return res.data
+}
+
+// REQ-LOGI-005/006: warehouse receiving results upload → received.
+export async function uploadWarehouseReceipt(formData: FormData): Promise<UploadLogisticsResponse> {
+  const res = await api.post('/api/purchase-orders/upload-warehouse-receipt/', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
   })
   return res.data

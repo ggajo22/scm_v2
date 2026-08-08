@@ -12,8 +12,13 @@ import {
   bulkUpdateLineItemStatus,
   downloadDailyReview,
   uploadDailyReview,
+  updateLineItemLogisticsStatus,
+  bulkUpdateLineItemLogisticsStatus,
+  uploadVendorShipment,
+  uploadWarehouseReceipt,
 } from '@/services/purchaseOrderApi'
 import type { PurchaseOrderParams } from '@/services/purchaseOrderApi'
+import { ORDER_DETAIL_QUERY_KEY } from '@/features/order/hooks/useOrderDetail'
 
 // @MX:ANCHOR: [AUTO] Centralized query keys for purchase order domain
 // @MX:REASON: Fan-in >= 3 — all tabs reference these keys for cache invalidation
@@ -160,6 +165,73 @@ export function useUploadDailyReview() {
     },
     onError: () => {
       toast.error('파일 업로드에 실패했습니다.')
+    },
+  })
+}
+
+// ---------------------------------------------------------------------------
+// SPEC-ORDER-011 T11: logistics_status hooks
+// ---------------------------------------------------------------------------
+
+export function useUpdateLineItemLogisticsStatus() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, logisticsStatus }: { id: number; logisticsStatus: string }) =>
+      updateLineItemLogisticsStatus(id, logisticsStatus),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ORDER_DETAIL_QUERY_KEY })
+    },
+    onError: () => {
+      toast.error('물류 상태 변경에 실패했습니다.')
+    },
+  })
+}
+
+// @MX:WARN: [AUTO] bulkUpdateLineItemLogisticsStatus mutates multiple line items atomically
+// @MX:REASON: Partial success (missing_ids) must be surfaced to the user to avoid silent data loss
+export function useBulkUpdateLineItemLogisticsStatus() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ ids, logisticsStatus }: { ids: number[]; logisticsStatus: string }) =>
+      bulkUpdateLineItemLogisticsStatus(ids, logisticsStatus),
+    onSuccess: (result) => {
+      void queryClient.invalidateQueries({ queryKey: ORDER_DETAIL_QUERY_KEY })
+      if (result.missing_ids.length > 0) {
+        toast.warning(`일부 항목(${result.missing_ids.length}건)이 업데이트되지 않았습니다.`)
+      } else {
+        toast.success(`${result.updated_count}건의 물류 상태가 변경되었습니다.`)
+      }
+    },
+    onError: () => {
+      toast.error('일괄 물류 상태 변경에 실패했습니다.')
+    },
+  })
+}
+
+export function useUploadVendorShipment() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: uploadVendorShipment,
+    onSuccess: (result) => {
+      void queryClient.invalidateQueries({ queryKey: ORDER_DETAIL_QUERY_KEY })
+      toast.success(`벤더 출고확인 처리 완료: ${result.matched_count}건 매칭, ${result.skipped_count}건 건너뜀`)
+    },
+    onError: () => {
+      toast.error('벤더 출고확인 파일 업로드에 실패했습니다.')
+    },
+  })
+}
+
+export function useUploadWarehouseReceipt() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: uploadWarehouseReceipt,
+    onSuccess: (result) => {
+      void queryClient.invalidateQueries({ queryKey: ORDER_DETAIL_QUERY_KEY })
+      toast.success(`창고 입고결과 처리 완료: ${result.matched_count}건 매칭, ${result.skipped_count}건 건너뜀`)
+    },
+    onError: () => {
+      toast.error('창고 입고결과 파일 업로드에 실패했습니다.')
     },
   })
 }

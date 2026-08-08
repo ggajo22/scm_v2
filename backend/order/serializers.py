@@ -112,6 +112,9 @@ class LineItemDetailSerializer(serializers.ModelSerializer):
             "quantity", "price", "total_discount", "fulfillment_status", "vendor", "grams",
             "location", "notes",
             "confirmed_price", "confirmed_distributor", "confirmed_at",
+            # SPEC-ORDER-011 T11: expose logistics_status so the frontend has
+            # a data source for the LineItem-level logistics badge column.
+            "logistics_status",
         ]
 
 
@@ -154,6 +157,9 @@ class OrderDetailSerializer(serializers.ModelSerializer):
             "has_refund", "customer", "shipping_address",
             "line_items", "shipping_lines", "refunds",
             "margin_amount", "margin_rate",
+            # SPEC-ORDER-011 T11: expose the logistics_status aggregate so the
+            # frontend has a data source for the Order-level aggregate badge.
+            "status",
         ]
 
     def get_has_refund(self, obj: Order) -> bool:

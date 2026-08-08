@@ -7,6 +7,7 @@ import type { AxiosError } from 'axios'
 import type { LineItemNote, LineItemNoteAssignee } from '@/types/order'
 import { ASSIGNEE_NOTE_TYPES } from '@/types/order'
 import { api } from '@/lib/axios'
+import { LOGISTICS_STATUS_OPTIONS } from '@/services/purchaseOrderApi'
 
 const DISTRIBUTOR_LABELS: Record<string, string> = {
   booxen: '북센',
@@ -43,6 +44,21 @@ const FULFILLMENT_STATUS_LABELS: Record<string, string> = {
   partial: '부분출고',
   restocked: '재입고',
   unfulfilled: '미출고',
+}
+
+// SPEC-ORDER-011 REQ-LOGI-001/013: LineItem-level logistics_status labels,
+// independent of FULFILLMENT_STATUS_LABELS above. Derived from
+// LOGISTICS_STATUS_OPTIONS (shared source of truth with the upload/PATCH UI).
+const LOGISTICS_STATUS_LABELS: Record<string, string> = LOGISTICS_STATUS_OPTIONS.reduce(
+  (acc, opt) => ({ ...acc, [opt.value]: opt.label }),
+  {} as Record<string, string>
+)
+
+// REQ-LOGI-008: Order.status aggregate reuses the five logistics_status
+// labels plus the "partial" (부분입고) mixed-status bucket (결정 D).
+const ORDER_STATUS_AGGREGATE_LABELS: Record<string, string> = {
+  ...LOGISTICS_STATUS_LABELS,
+  partial: '부분입고',
 }
 
 function formatDate(iso: string | null): string {
@@ -201,8 +217,24 @@ export function OrderDetailPage() {
               </span>
             )}
             {data.fulfillment_status && (
-              <span className="text-xs px-2 py-1 rounded border border-blue-300 text-blue-700 bg-blue-50 font-medium">
+              <span
+                data-badge-header="배송 상태"
+                title="배송 상태"
+                className="text-xs px-2 py-1 rounded border border-blue-300 text-blue-700 bg-blue-50 font-medium"
+              >
                 {FULFILLMENT_STATUS_LABELS[data.fulfillment_status] ?? data.fulfillment_status}
+              </span>
+            )}
+            {/* SPEC-ORDER-011 REQ-LOGI-013: Order.status aggregate badge —
+                distinct header text ("입고출고 현황" shares no word with
+                "배송 상태") and distinct background color (purple vs blue). */}
+            {data.status && (
+              <span
+                data-badge-header="입고출고 현황"
+                title="입고출고 현황"
+                className="text-xs px-2 py-1 rounded border border-purple-300 text-purple-700 bg-purple-50 font-medium"
+              >
+                {ORDER_STATUS_AGGREGATE_LABELS[data.status] ?? data.status}
               </span>
             )}
             <button
@@ -254,13 +286,14 @@ export function OrderDetailPage() {
                 <th className="py-2 px-3 text-right font-medium">소계</th>
                 <th className="py-2 px-3 text-right font-medium">확정 단가</th>
                 <th className="py-2 px-3 text-left font-medium">확정 발주처</th>
+                <th className="py-2 px-3 text-left font-medium">물류상태</th>
                 <th className="py-2 px-3 text-center font-medium w-12">노트</th>
               </tr>
             </thead>
             <tbody>
               {normalItems.length === 0 && (
                 <tr>
-                  <td colSpan={10} className="py-4 text-center text-muted-foreground text-xs">
+                  <td colSpan={11} className="py-4 text-center text-muted-foreground text-xs">
                     상품 없음
                   </td>
                 </tr>
@@ -309,6 +342,18 @@ export function OrderDetailPage() {
                           ? (DISTRIBUTOR_LABELS[item.confirmed_distributor] ?? item.confirmed_distributor)
                           : '—'}
                       </td>
+                      <td className="py-2 px-3">
+                        {/* SPEC-ORDER-011 REQ-LOGI-013: distinct header text
+                            ("물류상태") and distinct badge color (teal) from
+                            both 배송 상태 and 입고출고 현황 above. */}
+                        <span
+                          data-badge-header="물류상태"
+                          title="물류상태"
+                          className="text-xs px-2 py-1 rounded border border-teal-300 text-teal-700 bg-teal-50 font-medium"
+                        >
+                          {LOGISTICS_STATUS_LABELS[item.logistics_status] ?? item.logistics_status}
+                        </span>
+                      </td>
                       <td className="py-2 px-3 text-center">
                         <button
                           onClick={() =>
@@ -339,7 +384,7 @@ export function OrderDetailPage() {
                     </tr>
                     {isExpanded && (
                       <tr key={`${item.id}-notes`} className="border-b bg-muted/20">
-                        <td colSpan={10} className="py-3 px-4">
+                        <td colSpan={11} className="py-3 px-4">
                           <LineItemNotePanel
                             lineItemId={item.id}
                             orderId={orderId}

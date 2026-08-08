@@ -135,7 +135,10 @@ def _sync_single_order(order_data, store_type, location_code="", line_item_locat
             "phone": order_data.get("phone"),
             "financial_status": order_data.get("financial_status"),
             "fulfillment_status": order_data.get("fulfillment_status"),
-            "status": order_data.get("financial_status"),
+            # SPEC-ORDER-011 REQ-LOGI-011: "status" intentionally excluded —
+            # it is now the logistics_status aggregate (REQ-LOGI-008),
+            # recomputed only by purchase_order_views._recompute_order_status().
+            # Shopify sync must never overwrite it with financial_status.
             "total_price": _decimal_or_none(order_data.get("total_price")),
             "subtotal_price": _decimal_or_none(order_data.get("subtotal_price")),
             "total_tax": _decimal_or_none(order_data.get("total_tax")),
@@ -200,7 +203,8 @@ def _sync_single_order(order_data, store_type, location_code="", line_item_locat
     incoming_shopify_ids = set()
     for li in order_data.get("line_items", []):
         incoming_shopify_ids.add(li["id"])
-        # purchase_status intentionally excluded from defaults to preserve manual processing state
+        # purchase_status and logistics_status (SPEC-ORDER-011 REQ-LOGI-002)
+        # are intentionally excluded from defaults to preserve manual processing state
         common_defaults = {
             "product_id": li.get("product_id"),
             "variant_id": li.get("variant_id"),
