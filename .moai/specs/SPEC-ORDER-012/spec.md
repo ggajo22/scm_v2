@@ -1,7 +1,7 @@
 ---
 id: SPEC-ORDER-012
-version: 1.4.0
-status: draft
+version: 1.4.1
+status: completed
 created: 2026-08-09
 created_at: 2026-08-09
 updated: 2026-08-09
@@ -22,6 +22,7 @@ labels: [order, logistics, purchase-order, ready-to-ship]
 | 1.2.0 | 2026-08-09 | ggajo | Phase 2.3 plan-auditor 리뷰(iteration 2, PASS — 비차단 minor 4건). 사용자 승인 하에 오케스트레이터가 직접 마무리: AC-RTS-002a/b/c와 003a/004a의 접미사 분리 기준이 서로 다름(전자는 단일 REQ를 상태별로 나눈 것, 후자는 REQ 자체가 트리거별로 나뉜 것)을 명확히 구분해 "번호 규칙 참고" 재작성, AC-RTS-005의 Unwanted 절 주어를 필드명에서 "the system"으로 교정, AC-RTS-006을 "following the backfill migration"이라는 위장 트리거를 가진 Ubiquitous에서 순수 Event-Driven("When the ... migration is applied")으로 재작성, acceptance.md의 낡은 "AC-RTS-001~008"/"REQ-RTS-001~008" 범위 표기를 실제 12개 ID 전체 나열로 정정 |
 | 1.3.0 | 2026-08-09 | ggajo | Phase 2.3 plan-auditor 검증 재감사(iteration 3/3, FAIL — 4건의 minor 결함, 감사관 자체 평가로도 "설계 문제 아닌 기계적 한 줄 수정") 반영. 사용자 승인 하에 오케스트레이터가 직접 마무리: AC-RTS-004a의 Event-Driven 절 주어를 "the number of SQL queries"(비-system 주어)에서 "the system shall ensure the number of..."로 교정(형제 REQ-RTS-004a는 이미 올바른 형태였음), AC-RTS-001의 둘째 절도 동일한 주어 문제를 "the system shall never infer or synchronize..."로 교정, acceptance.md Definition of Done의 REQ-RTS 범위 표기를 압축형에서 전체 ID 나열로 정정 |
 | 1.4.0 | 2026-08-09 | ggajo | Run 단계 구현 완료 후 evaluator-active Phase 2.8a 검증에서 spec/구현 불일치 발견: 최초 구현이 `ready_to_ship=false`를 `null`과 동일하게 뱃지 미노출로 처리했으나, AC-RTS-008 문언은 `null`의 미노출만 규정하고 `false`의 렌더링 여부는 규정하지 않음(REQ-RTS-007 원문도 3상태 중 `false`를 별도로 다루지 않아 구현이 암묵적으로 과잉 해석됨). 사용자에게 보고 후 결정: CS 대기 등으로 확정된 "출고 불가"(`false`)는 "판정 대상 아님"(`null`)과 시각적으로 구분되어야 하므로 `false` 전용의 독자적 뱃지("출고불가", red 계열)를 신설. 결정 F 신규 추가, REQ-RTS-007을 3상태(true/false 뱃지 렌더링 + 상호 구분) 요구사항으로 재작성, REQ-RTS-008/AC-RTS-008을 "null만 미노출, false는 미노출 대상 아님"으로 명확화, AC-RTS-007을 true/false 두 뱃지 변형 모두를 포괄하도록 확장. 계산 로직(REQ-RTS-002)은 변경 없음 — 순수 프론트엔드 렌더링 규칙 정정. TDD RED-GREEN-REFACTOR로 재구현: `OrderDetailPage.tsx` 3분기 렌더링, `OrderDetailPage.test.tsx` 기존 false-상태 미노출 단언 제거 및 3상태 전체 검증 테스트로 교체 |
+| 1.4.1 | 2026-08-09 | ggajo | Phase 3 문서 동기화 완료. Divergence Analysis 실행: 커밋 6c2653f 검증 완료(M1-M5 모든 마일스톤 반영, 마이그레이션 0032/0033 정확, 테스트 파일 정확). Cross-SPEC 영향도 확인 완료: SPEC-ORDER-011(함수 리네임 _recompute_order_status→_recompute_order_aggregates), SPEC-PURCHASE-ORDER-010(신규 4개 purchase_status write path 연결) 선례 준수. 프로젝트 문서 동기화 불필요 판단: tech.md/structure.md 변경사항 없음(의존성/디렉터리 신규 생성 없음), product.md 고수준 기능 설명으로 구현 세부사항(필드 추가) 미포함 대상. 상태 draft→completed 전환. |
 
 ---
 
