@@ -85,6 +85,30 @@ Shopify 연동 도서 재고 및 주문 관리 관리자 애플리케이션
 - **사이드바** — "주문관리" 내비게이션 항목 추가 (ShoppingCart 아이콘)
 - 29개 pytest 테스트 (모델 4 + Shopify 클라이언트 10 + 동기화 뷰 4 + 목록 뷰 11)
 
+### 8. LineItem 렉번호(Rack Number) 관리 (SPEC-ORDER-013 — 완료)
+- **렉번호 필드** — `LineItem.rack_number` 추가 (CharField, max_length=10, blank=True, default="")
+  - 기존 `location` 필드와 독립적, 계산/집계 없음
+  - Order 레벨 롤업 필드 없음 — 순수 수동/업로드 전용 필드
+- **단건 PATCH 엔드포인트** — `PATCH /api/purchase-orders/line-items/{id}/rack-number/`
+  - 10자 초과 값 거부 (HTTP 400), 미존재 LineItem 404 응답
+- **일괄 PATCH 엔드포인트** — `PATCH /api/purchase-orders/line-items/bulk-rack-number/`
+  - LineItem id 목록 + 렉번호 값 입력, 미존재 id 목록 응답
+- **Excel 업로드** — `POST /api/purchase-orders/upload-rack-number/`
+  - 3컬럼(주문번호/SKU/렉번호) 헤더 자동 탐색 (대소문자 무시 substring 매칭)
+  - `(order_number, sku)` 조합 기반 매칭, 중복 행은 마지막 행 우선
+  - 매칭 건수/스킵 건수 분리 응답
+- **신규 독립 페이지** — `/rack-number` 라우트
+  - 주문번호 검색 (정확 일치)
+  - LineItem 테이블 (SKU/도서명/렉번호)
+  - 체크박스 다중 선택 + "전체선택" 토글
+  - 인라인 편집 (개별 렉번호 수정)
+  - 일괄 적용 컨트롤
+  - Excel 파일 업로드 UI
+- **사이드바** — "렉번호 관리" 메뉴 항목 추가 (MapPin 아이콘)
+- **API 노출** — `LineItemDetailSerializer`에 `rack_number` 필드 추가
+  - OrderDetailPage에는 UI 노출 금지 (데이터만 응답에 포함)
+- 테스트 커버리지: 백엔드 51개 pytest (T1~T7), 프론트엔드 15개 테스트
+
 ---
 
 ## 핵심 기능 (3가지 — 예정)

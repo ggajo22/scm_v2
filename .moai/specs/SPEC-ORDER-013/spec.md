@@ -1,9 +1,10 @@
 ---
 id: SPEC-ORDER-013
-version: 1.1.1
-status: draft
+version: 1.2.0
+status: completed
 created_at: 2026-08-09
 updated: 2026-08-09
+completed_at: 2026-08-09
 author: ggajo
 priority: High
 issue_number: 11
@@ -19,6 +20,7 @@ labels: [order, logistics, rack-number]
 | 1.0.0 | 2026-08-09 | ggajo | 최초 작성 — 사용자 인터뷰로 확정된 요구사항(데이터 모델, 신규 독립 페이지, 검색→체크박스 일괄 적용, 개별 인라인 편집, Excel 3컬럼 업로드, 3개 백엔드 엔드포인트, OrderDetailPage 노출 제외)을 EARS 형식으로 formalize |
 | 1.1.0 | 2026-08-09 | ggajo | Phase 2.3 plan-auditor 리뷰(iteration 2, FAIL — MP-2 잔존) 반영, iteration 3 제출본. (D9, critical/MP-2) AC-RACK-003/003a/003b의 후행 "shall" 절 주어를 "the response"/"no LineItem's rack_number"/"the target LineItem's rack_number"에서 모두 "the system"으로 통일. REQ-RACK-002에서도 동일 결함 유형("rack_number shall be set only by...")을 자체 재검토로 추가 발견해 "the system shall set..."으로 정정. (D8) AC-RACK-006을 006(양성 매칭)/006c(음성 범위 제한, 신설)로, AC-RACK-010을 010(렌더링)/010b(전체선택 토글, 신설)/010c(재검색 시 선택 초기화, 신설)로 분리해 AC 1개당 단일 테스트 가능 동작 원칙 준수. (D10) REQ-RACK-008/AC-RACK-008에서 구현 세부사항 "lazy-loaded route"/"code-split" 문구 제거, 관찰 가능한 라우팅/메뉴 동작만 기술 |
 | 1.1.1 | 2026-08-09 | ggajo | Phase 2.3 iteration 3 리뷰(FAIL, D11 critical/MP-2 단독 잔존) 이후 사용자 승인 하에 경량 수정 적용 — 3회 감사 반복 소진, 감사관 권고에 따라 전체 4차 감사 사이클 생략. AC-RACK-008의 "shall" 절 주어를 "The rack-number management page"에서 "The system"으로 정정(EARS 주어 일관성 원칙 준수). |
+| 1.2.0 | 2026-08-09 | ggajo | Phase 3 (Sync) 완료 — 전체 구현 완료 및 테스트 통과. 백엔드 51개 테스트, 프론트엔드 15개 테스트 완료. |
 
 ---
 
@@ -370,3 +372,80 @@ or capacity rule tied to a rack code.
   일괄 PATCH 엔드포인트 구조(`ids`+값, `missing_ids` 응답)의 직접적 선례.
 - SPEC-SHOPIFY-SKU-SET-002: `(order, shopify_line_item_id, sku)` unique_together — 동일
   주문 내 동일 SKU가 2개 이상의 LineItem으로 존재할 수 있는 근거(결정 E의 배경).
+
+---
+
+## 구현 노트
+
+### 구현 현황
+
+**백엔드 파일** (7개 수정/신규):
+- `models.py` — `LineItem.rack_number` 필드 추가 (CharField, max_length=10, blank=True)
+- `migrations/0034_lineitem_add_rack_number.py` — AddField 마이그레이션
+- `purchase_order_views.py` — `LineItemRackNumberUpdateView`, `LineItemBulkRackNumberUpdateView` 2개 클래스 추가
+- `urls.py` — 3개 신규 경로 등록 (bulk 경로 우선 등록 규칙 준수)
+- `excel_utils.py` — `parse_rack_number_excel()` 함수 추가
+- `serializers.py` — `LineItemDetailSerializer`에 `rack_number` 필드 노출
+- `tests/test_spec_013.py` — 백엔드 테스트 51개
+
+**프론트엔드 파일** (11개 수정/신규):
+- `pages/RackNumberPage.tsx` — 신규 독립 페이지 (검색 + 테이블 + 체크박스 + 인라인 편집 + Excel 업로드)
+- `pages/RackNumberPage.test.tsx` — 프론트엔드 테스트 15개
+- `router/index.tsx` — `/rack-number` 라우트 등록
+- `components/Sidebar.tsx` — 메뉴 항목 추가 (MapPin 아이콘)
+- `services/rackNumberApi.ts` — 3개 함수 (단건 PATCH, 일괄 PATCH, Excel 업로드)
+- `hooks/useRackNumberQueries.ts` — 3개 mutation 훅
+- `types/order.ts` — 타입 정의 추가
+- `features/order/hooks/useOrders.ts`, `useOrderDetail.ts` — 선택적 `{enabled?: boolean}` 파라미터 추가 (비용 절감 목적)
+- `components/Sidebar.test.tsx`, `pages/OrderDetailPage.test.tsx` — 기존 컴포넌트 테스트 수정
+
+### 테스트 커버리지
+
+- **백엔드**: 51개 테스트 (T1~T7 coverage targets 완전 포함)
+  - T1: 필드 선언 검증
+  - T2: 필드 독립성 검증 (location/logistics_status/purchase_status와 무관)
+  - T3: Order 레벨 집계 필드 부재 검증
+  - T4: 단건 PATCH (정상/404/400)
+  - T5: 일괄 PATCH (정상/empty list 검증)
+  - T6: Excel 파서 (헤더 탐색, 검증)
+  - T7: 업로드 뷰 (매칭/미매칭/중복 처리)
+- **프론트엔드**: 15개 테스트
+  - 검색 기능
+  - 테이블 렌더링
+  - 체크박스 선택/해제
+  - 인라인 편집 (단건 PATCH)
+  - 일괄 적용 (bulk PATCH)
+  - Excel 업로드
+
+### 발견 및 해결된 결함
+
+**Phase 2 (Run) 평가 단계에서 발견된 사항:**
+- Excel 업로드 시 파싱 불가능한 주문번호(예: 빈 값, 비숫자 텍스트)가 있는 행을 자동으로 건너뛰는 로직이
+  정확히 작동했으나, 초기 구현에서 해당 행 카운팅 방식이 일관성 없었음.
+  → **수정**: `matched_count`와 `skipped_count`를 distinct `(order_number, sku)` 키 기반으로 정확히 집계.
+
+### 예정되지 않은 변경사항
+
+1. **프론트엔드 훅 파라미터 확장** (minor, 하위 호환):
+   - `useOrders()`와 `useOrderDetail()` 훅에 선택적 `{enabled?: boolean}` 파라미터 추가.
+   - 렉번호 페이지에서 검색 전까지 주문 조회를 지연시키기 위한 기능 (네트워크 비용 절감).
+   - 기존 호출처에서는 이 파라미터를 전달하지 않으므로 완전 하위 호환.
+
+2. **테스트 커버리지 확대**:
+   - `Sidebar.test.tsx`: 렉번호 메뉴 항목 추가 검증
+   - `OrderDetailPage.test.tsx`: REQ-RACK-012 (OrderDetailPage에 rack_number 노출 금지) 검증 추가
+
+### 주요 설계 결정 준수
+
+- ✓ REQ-RACK-001: `rack_number` 필드를 `location`과 동일한 패턴 적용
+- ✓ REQ-RACK-002: Order 레벨 집계 필드 없음, `_recompute_order_aggregates()` 호출 없음
+- ✓ REQ-RACK-003~007: 단건/일괄/Excel 엔드포인트 모두 구현 및 테스트
+- ✓ REQ-RACK-008~013: 독립 페이지, 메뉴 추가, 검색/체크박스/인라인 편집 UI, OrderDetailPage 제외
+
+### 품질 검증
+
+- 모든 51개 백엔드 테스트 통과 ✓
+- 모든 15개 프론트엔드 테스트 통과 ✓
+- EARS 형식 요구사항 100% 추적 및 AC 기반 테스트 ✓
+- 결정 A~F 모두 설계 문서 및 코드 주석에 반영 ✓
+- @MX 태그: NOTE(3), WARN(1), TODO(0) 적용 ✓
