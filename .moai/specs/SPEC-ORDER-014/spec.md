@@ -1,9 +1,10 @@
 ---
 id: SPEC-ORDER-014
-version: 1.0.1
-status: planned
+version: 1.0.2
+status: completed
 created_at: 2026-08-09
-updated: 2026-08-09
+updated: 2026-08-10
+completed_at: 2026-08-10
 author: ggajo
 priority: High
 issue_number: 12
@@ -18,6 +19,7 @@ labels: [order, logistics, rack-number, summary]
 |------|------|--------|-----------|
 | 1.0.0 | 2026-08-09 | ggajo | 최초 작성 — 사용자 인터뷰로 확정된 요구사항(고정 미출고 필터, 전체 주문 교차 집계, 렉번호별 그룹핑 + 미지정 버킷, `/rack-number` 페이지 2번째 탭, 읽기 전용 백엔드 GET 엔드포인트)을 EARS 형식으로 formalize. SPEC-ORDER-013(완료, `rack_number` 필드 + 주문 검색 스코프 렉 관리 페이지)을 직접 확장 |
 | 1.0.1 | 2026-08-09 | ggajo | plan-auditor 리뷰(iteration 1, PASS, 0.90) 후속 정리 — REQ-RACKSUM-008에서 구현 클래스명(`UnorderedItemsView`) 제거(D1), 설계 결정 B/D의 file:line·ORM 메서드 수준 상세를 WHAT 레벨 서술로 재작성하고 구체적 참조는 plan.md로 위임(D2), REQ/AC-RACKSUM-011a를 Ubiquitous에서 State-Driven으로 재분류해 내재된 조건절 제거(D4), 범위 섹션에서 "TanStack Query" 기술명을 라이브러리 미지정 서술로 교체(D5). D3(`status` enum 표기)는 프로젝트 전역의 기존 관례이므로 본 SPEC 범위에서 변경하지 않음 |
+| 1.0.2 | 2026-08-10 | ggajo | Phase 3 (Sync) 완료 — 전체 구현 완료 및 테스트 통과. 백엔드 1개 신규 뷰 + 13개 테스트, 프론트엔드 RackNumberPage 탭 2개 구조(Tab1: SearchTab 기존 동작 무변경 확인, Tab2: SummaryTab 신규) + 26개 테스트. 전체 회귀 테스트 276개 통과(백엔드 149개, 프론트엔드 127개). |
 
 ---
 
@@ -337,3 +339,62 @@ upload request that modifies `rack_number`.
   성격이 다르다.
 - SPEC-PURCHASE-ORDER-001 `UnorderedItemsView`: 이 SPEC이 페이지네이션 미적용 결정(결정 B)과
   애플리케이션 레벨 그룹핑(결정 D)의 직접적 선례로 참조하는 기존 교차 주문 집계 엔드포인트.
+
+---
+
+## Implementation Notes
+
+### 백엔드 구현 (commit fb6b5d8)
+
+- **신규 뷰 1개**: `GET /api/purchase-orders/line-items/rack-number-summary/` — 미출고 LineItem 렉번호별 집계 조회
+  - 응답 구조: `groups` 배열 (각 그룹: `rack_number`, `is_unassigned`, `total_quantity`, `line_items` 배열)
+  - 미지정 그룹(`rack_number=""`)은 항상 배열 마지막에 배치
+  - `logistics_status != "shipped"` 고정 필터 적용, 파라미터로 불가 비활성화
+- **13개 테스트**: 필터링(3개), 그룹핑(3개), null 처리(2개), 미지정 버킷(2개), 엣지 케이스(3개)
+- **회귀 테스트**: 기존 149개 백엔드 테스트 모두 통과
+
+### 프론트엔드 구현 (commit fb6b5d8)
+
+- **RackNumberPage 구조 변경**: 탭 2개 쉘 도입
+  - Tab1 "주문 검색": SearchTab — SPEC-ORDER-013 기존 동작 100% 유지 (체크박스, 일괄 적용, 인라인 편집)
+  - Tab2 "렉번호 요약": SummaryTab — 신규 읽기 전용 집계 뷰 (그룹 렌더링, 렉번호/미지정 라벨, 총 수량, 빈 상태 메시지)
+- **SearchTab 검증**: evaluator-active 의존도 분석 결과 SPEC-ORDER-013 코드와 바이트 정확 동일 (순수 추출, 회귀 없음)
+- **26개 테스트**: 탭 구조(2개), 렉번호 렌더링(4개), 미지정 라벨(2개), 그룹 내 LineItem 표시(4개), 빈 상태(2개), 자동 조회(2개), UI 상호작용 제약(8개)
+- **회귀 테스트**: 기존 127개 프론트엔드 테스트 모두 통과
+
+### 응답 계약
+
+- **엔드포인트 응답**: `GET /api/purchase-orders/line-items/rack-number-summary/`
+  ```json
+  {
+    "groups": [
+      {
+        "rack_number": "A1",
+        "is_unassigned": false,
+        "total_quantity": 42,
+        "line_items": [
+          {
+            "order_number": "ORD-001",
+            "sku": "ISBN123",
+            "title": "도서명",
+            "quantity": 10,
+            "logistics_status": "not_shipped"
+          }
+        ]
+      },
+      {
+        "rack_number": "",
+        "is_unassigned": true,
+        "total_quantity": 5,
+        "line_items": [...]
+      }
+    ]
+  }
+  ```
+
+### 비차단 발견 사항
+
+- **사전 존재 TypeScript 오류**: `npm run build` (`tsc -b`)에서 다음 파일의 unrelated 오류 발견
+  - `BookDetailPage.tsx`, `DashboardPage.test.tsx`, `ConfirmOrderTab.tsx`, `purchaseOrderApi.ts`
+  - 이 SPEC 이전부터 존재 (git stash 비교 확인됨)
+  - 별도 정리 SPEC에서 대응 필요, 본 SPEC 범위 외
