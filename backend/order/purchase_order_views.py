@@ -2245,6 +2245,78 @@ class UploadRackNumberView(APIView):
 
 
 # ---------------------------------------------------------------------------
+# SPEC-ORDER-014: cross-order rack_number summary (read-only aggregate)
+# ---------------------------------------------------------------------------
+
+
+# @MX:NOTE: [AUTO] no pagination and application-level grouping (rather than
+# DB-level annotate) mirror UnorderedItemsView above (M2) — grouping needs
+# each member LineItem's order_number/sku/title/quantity/logistics_status
+# together, which annotate-only aggregation cannot produce in one query.
+# @MX:WARN: [AUTO] returns every not-yet-shipped LineItem system-wide in a
+# single non-paginated payload — response size grows with unshipped LineItem
+# count and could become slow at large scale.
+# @MX:REASON: intentional per SPEC-ORDER-014 결정 B — unshipped LineItems are
+# naturally scope-limited (excludes the "shipped" majority); pagination is
+# explicitly deferred to a follow-up SPEC if this becomes a real problem.
+class LineItemRackNumberSummaryView(APIView):
+    """
+    GET /api/purchase-orders/line-items/rack-number-summary/
+
+    REQ-RACKSUM-001~008: cross-order read-only aggregate of every LineItem
+    that has not yet shipped (logistics_status != "shipped"), grouped by
+    rack_number. LineItems with an empty rack_number are grouped into a
+    single unassigned bucket (REQ-RACKSUM-004a) rather than dropped.
+    """
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request) -> Response:
+        line_items = (
+            LineItem.objects.exclude(logistics_status="shipped")
+            .select_related("order")
+            .order_by("rack_number", "order__order_number")
+        )
+
+        groups: dict[str, dict] = {}
+        for li in line_items:
+            key = li.rack_number  # "" -> unassigned bucket (REQ-RACKSUM-004a)
+            group = groups.setdefault(
+                key,
+                {
+                    "rack_number": key,
+                    "is_unassigned": key == "",
+                    "total_quantity": 0,
+                    "line_items": [],
+                },
+            )
+            # REQ-RACKSUM-005: null quantity treated as 0, mirroring
+            # UnorderedItemsView's `li.quantity or 0` convention.
+            group["total_quantity"] += li.quantity or 0
+            group["line_items"].append(
+                {
+                    "id": li.id,
+                    "order_number": li.order.order_number,
+                    "sku": li.sku,
+                    "title": li.title,
+                    "quantity": li.quantity,
+                    "logistics_status": li.logistics_status,
+                }
+            )
+
+        # REQ-RACKSUM-004/004a: named groups sorted alphabetically by
+        # rack_number, unassigned bucket always last.
+        named = sorted(
+            (g for k, g in groups.items() if k != ""),
+            key=lambda g: g["rack_number"],
+        )
+        unassigned = [groups[""]] if "" in groups else []
+
+        return Response({"groups": named + unassigned}, status=status.HTTP_200_OK)
+
+
+# ---------------------------------------------------------------------------
 # M6: Distributor vendor rules
 # ---------------------------------------------------------------------------
 

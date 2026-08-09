@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
-import { RackNumberPage } from './RackNumberPage'
+import { SearchTab } from './SearchTab'
 import { useOrders } from '@/features/order/hooks/useOrders'
 import { useOrderDetail } from '@/features/order/hooks/useOrderDetail'
 import {
@@ -126,7 +126,7 @@ function buildOrderDetail(overrides: Partial<OrderDetail> = {}): OrderDetail {
   }
 }
 
-describe('RackNumberPage — SPEC-ORDER-013', () => {
+describe('SearchTab — SPEC-ORDER-013', () => {
   const updateMutate = vi.fn()
   const bulkMutate = vi.fn()
   const uploadMutate = vi.fn()
@@ -166,7 +166,7 @@ describe('RackNumberPage — SPEC-ORDER-013', () => {
   }
 
   it('renders a search input and search button', () => {
-    render(<RackNumberPage />)
+    render(<SearchTab />)
     expect(screen.getByLabelText('주문번호 검색')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '검색' })).toBeInTheDocument()
   })
@@ -181,7 +181,7 @@ describe('RackNumberPage — SPEC-ORDER-013', () => {
       isFetching: false,
     } as unknown as ReturnType<typeof useOrderDetail>)
 
-    render(<RackNumberPage />)
+    render(<SearchTab />)
     search('1001')
 
     expect(screen.getByText('SKU-A')).toBeInTheDocument()
@@ -196,7 +196,7 @@ describe('RackNumberPage — SPEC-ORDER-013', () => {
       isFetching: false,
     } as unknown as ReturnType<typeof useOrders>)
 
-    render(<RackNumberPage />)
+    render(<SearchTab />)
     search('9999')
 
     expect(screen.getByText('일치하는 주문을 찾을 수 없습니다.')).toBeInTheDocument()
@@ -215,7 +215,7 @@ describe('RackNumberPage — SPEC-ORDER-013', () => {
       isFetching: false,
     } as unknown as ReturnType<typeof useOrders>)
 
-    render(<RackNumberPage />)
+    render(<SearchTab />)
     search('1001')
 
     expect(screen.getByText('일치하는 주문을 찾을 수 없습니다.')).toBeInTheDocument()
@@ -231,7 +231,7 @@ describe('RackNumberPage — SPEC-ORDER-013', () => {
       isFetching: false,
     } as unknown as ReturnType<typeof useOrderDetail>)
 
-    render(<RackNumberPage />)
+    render(<SearchTab />)
     search('1001')
 
     expect(screen.getByLabelText('전체 선택')).toBeInTheDocument()
@@ -249,7 +249,7 @@ describe('RackNumberPage — SPEC-ORDER-013', () => {
       isFetching: false,
     } as unknown as ReturnType<typeof useOrderDetail>)
 
-    render(<RackNumberPage />)
+    render(<SearchTab />)
     search('1001')
 
     const selectAll = screen.getByLabelText('전체 선택') as HTMLInputElement
@@ -272,7 +272,7 @@ describe('RackNumberPage — SPEC-ORDER-013', () => {
       isFetching: false,
     } as unknown as ReturnType<typeof useOrderDetail>)
 
-    render(<RackNumberPage />)
+    render(<SearchTab />)
     search('1001')
 
     fireEvent.click(screen.getByLabelText('SKU-A 선택'))
@@ -295,7 +295,7 @@ describe('RackNumberPage — SPEC-ORDER-013', () => {
       opts?.onSuccess?.({ updated_count: 2, missing_ids: [] })
     })
 
-    render(<RackNumberPage />)
+    render(<SearchTab />)
     search('1001')
 
     fireEvent.click(screen.getByLabelText('전체 선택'))
@@ -318,7 +318,7 @@ describe('RackNumberPage — SPEC-ORDER-013', () => {
       isFetching: false,
     } as unknown as ReturnType<typeof useOrderDetail>)
 
-    render(<RackNumberPage />)
+    render(<SearchTab />)
     search('1001')
 
     expect(screen.queryByRole('button', { name: '일괄 적용' })).not.toBeInTheDocument()
@@ -334,7 +334,7 @@ describe('RackNumberPage — SPEC-ORDER-013', () => {
       isFetching: false,
     } as unknown as ReturnType<typeof useOrderDetail>)
 
-    render(<RackNumberPage />)
+    render(<SearchTab />)
     search('1001')
 
     const input = screen.getByLabelText('SKU-A 렉번호') as HTMLInputElement
@@ -356,7 +356,7 @@ describe('RackNumberPage — SPEC-ORDER-013', () => {
       isFetching: false,
     } as unknown as ReturnType<typeof useOrderDetail>)
 
-    render(<RackNumberPage />)
+    render(<SearchTab />)
     search('1001')
 
     expect(screen.getByLabelText('SKU-A 렉번호')).toHaveAttribute('maxLength', '10')
@@ -372,7 +372,7 @@ describe('RackNumberPage — SPEC-ORDER-013', () => {
       isFetching: false,
     } as unknown as ReturnType<typeof useOrderDetail>)
 
-    render(<RackNumberPage />)
+    render(<SearchTab />)
     search('1001')
 
     const input = screen.getByLabelText('SKU-A 렉번호')
@@ -391,7 +391,7 @@ describe('RackNumberPage — SPEC-ORDER-013', () => {
       isFetching: false,
     } as unknown as ReturnType<typeof useOrderDetail>)
 
-    render(<RackNumberPage />)
+    render(<SearchTab />)
     fireEvent.change(screen.getByLabelText('주문번호 검색'), { target: { value: '1001' } })
     fireEvent.keyDown(screen.getByLabelText('주문번호 검색'), { key: 'Enter' })
 
@@ -408,7 +408,7 @@ describe('RackNumberPage — SPEC-ORDER-013', () => {
       isFetching: false,
     } as unknown as ReturnType<typeof useOrderDetail>)
 
-    render(<RackNumberPage />)
+    render(<SearchTab />)
     search('1001')
 
     const input = screen.getByLabelText('SKU-A 렉번호')
@@ -419,7 +419,7 @@ describe('RackNumberPage — SPEC-ORDER-013', () => {
   })
 
   it('Excel upload: selecting a file calls uploadRackNumber mutation with FormData', () => {
-    const { container } = render(<RackNumberPage />)
+    const { container } = render(<SearchTab />)
     const file = new File(['dummy'], 'rack.xlsx', {
       type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     })

@@ -12,9 +12,10 @@ import type { LineItemDetail } from '@/types/order'
 // SPEC-ORDER-013: independent rack_number management page (REQ-RACK-008).
 // Search-only flow scoped to a single Order — selection state is local
 // (결정 F), never the global usePurchaseOrderStore.
-// @MX:ANCHOR: [AUTO] RackNumberPage — entry point for the /rack-number route
-// @MX:REASON: Lazy-loaded from router; exported name must stay stable for dynamic import
-export function RackNumberPage() {
+// SPEC-ORDER-014 TASK-002: extracted verbatim from the former flat
+// RackNumberPage.tsx into the "주문 검색" tab of the new tab shell
+// (RackNumberPage/index.tsx) — no logic, styling, or behavior changed.
+export function SearchTab() {
   const [searchInput, setSearchInput] = useState('')
   const [submittedSearch, setSubmittedSearch] = useState<string | null>(null)
   const [selectedIds, setSelectedIds] = useState<number[]>([])

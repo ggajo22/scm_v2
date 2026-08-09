@@ -1,9 +1,10 @@
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import {
   updateLineItemRackNumber,
   bulkUpdateLineItemRackNumber,
   uploadRackNumber,
+  getRackNumberSummary,
 } from '@/services/rackNumberApi'
 import { ORDER_DETAIL_QUERY_KEY } from '@/features/order/hooks/useOrderDetail'
 
@@ -62,5 +63,19 @@ export function useUploadRackNumber() {
     onError: () => {
       toast.error('렉번호 파일 업로드에 실패했습니다.')
     },
+  })
+}
+
+// ---------------------------------------------------------------------------
+// SPEC-ORDER-014: cross-order rack_number summary query hook (Tab2, read-only)
+// ---------------------------------------------------------------------------
+
+// REQ-RACKSUM-010: fetched once when the "렉번호 요약" tab mounts — no
+// `enabled` flag needed since the tab-switcher only mounts SummaryTab when
+// that tab is active (결정 F).
+export function useRackNumberSummary() {
+  return useQuery({
+    queryKey: ['rack-number-summary'],
+    queryFn: getRackNumberSummary,
   })
 }

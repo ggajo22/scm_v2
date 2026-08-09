@@ -10,6 +10,7 @@ from .purchase_order_views import (
     LineItemBulkStatusUpdateView,
     LineItemLogisticsStatusBulkUpdateView,
     LineItemLogisticsStatusUpdateView,
+    LineItemRackNumberSummaryView,
     LineItemRackNumberUpdateView,
     LineItemStatusUpdateView,
     PurchaseOrderListView,
@@ -93,6 +94,13 @@ urlpatterns = [
         "purchase-orders/upload-rack-number/",
         UploadRackNumberView.as_view(),
         name="po-upload-rack-number",
+    ),
+    # SPEC-ORDER-014: cross-order read-only rack_number summary (GET only,
+    # no <int:pk> conflict possible — path segment is all letters/hyphens)
+    path(
+        "purchase-orders/line-items/rack-number-summary/",
+        LineItemRackNumberSummaryView.as_view(),
+        name="po-line-item-rack-number-summary",
     ),
     path(
         "purchase-orders/upload-vendor-shipment/",

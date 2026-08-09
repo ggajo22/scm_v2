@@ -51,3 +51,33 @@ export async function uploadRackNumber(formData: FormData): Promise<UploadRackNu
   })
   return res.data
 }
+
+// ---------------------------------------------------------------------------
+// SPEC-ORDER-014: cross-order rack_number summary API (read-only, Tab2)
+// ---------------------------------------------------------------------------
+
+export interface RackNumberSummaryLineItem {
+  id: number
+  order_number: number | null
+  sku: string | null
+  title: string | null
+  quantity: number | null
+  logistics_status: string
+}
+
+export interface RackNumberSummaryGroup {
+  rack_number: string
+  is_unassigned: boolean
+  total_quantity: number
+  line_items: RackNumberSummaryLineItem[]
+}
+
+export interface RackNumberSummaryResponse {
+  groups: RackNumberSummaryGroup[]
+}
+
+// REQ-RACKSUM-001~008: cross-order read-only rack_number summary.
+export async function getRackNumberSummary(): Promise<RackNumberSummaryResponse> {
+  const res = await api.get('/api/purchase-orders/line-items/rack-number-summary/')
+  return res.data
+}
