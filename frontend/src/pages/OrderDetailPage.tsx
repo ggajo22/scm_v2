@@ -237,6 +237,31 @@ export function OrderDetailPage() {
                 {ORDER_STATUS_AGGREGATE_LABELS[data.status] ?? data.status}
               </span>
             )}
+            {/* SPEC-ORDER-012 REQ-RTS-007/008 (결정 F): Order.ready_to_ship
+                three-state badge — header text and background color distinct
+                across all three existing badges. true -> "출고가능" (emerald),
+                false -> "출고불가" (red), null -> rendered nothing at all
+                (AC-RTS-008 hides only the null case; false gets its own
+                visually distinct badge so a CS-blocked order is
+                distinguishable from an N/A order). */}
+            {data.ready_to_ship === true && (
+              <span
+                data-badge-header="출고가능"
+                title="출고가능"
+                className="text-xs px-2 py-1 rounded border border-emerald-300 text-emerald-700 bg-emerald-50 font-medium"
+              >
+                출고가능
+              </span>
+            )}
+            {data.ready_to_ship === false && (
+              <span
+                data-badge-header="출고불가"
+                title="출고불가"
+                className="text-xs px-2 py-1 rounded border border-red-300 text-red-700 bg-red-50 font-medium"
+              >
+                출고불가
+              </span>
+            )}
             <button
               onClick={() => resync()}
               disabled={isSyncing}

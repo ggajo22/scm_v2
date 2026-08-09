@@ -82,7 +82,7 @@
 - [MODIFY] `frontend/src/pages/OrderDetailPage.tsx`: 기존 두 뱃지(파란색 `fulfillment_status`
   219-227행, 보라색 `Order.status` 231-239행) 옆에 세 번째 뱃지 추가 — 헤더 텍스트("출고가능" 등,
   기존 두 헤더와 단어 겹침 없음), 배경색 구분(예: 초록/에메랄드 계열),
-  `{data.ready_to_ship && (...)}` 패턴으로 null/False 모두 미노출(REQ-RTS-007/008).
+  `true`/`false`는 각각 독자적인 색상의 뱃지(에메랄드/빨강)로 표시, `null`만 미노출(결정 F, REQ-RTS-007/008 참조 — v1.4.0에서 갱신).
 
 ## 리스크
 

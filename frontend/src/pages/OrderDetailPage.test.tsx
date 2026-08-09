@@ -88,6 +88,7 @@ function buildOrderDetail(overrides: Partial<OrderDetail> = {}): OrderDetail {
     shipping_lines: [],
     refunds: [],
     status: 'shipment_confirmed',
+    ready_to_ship: null,
     ...overrides,
   }
 }
@@ -181,5 +182,154 @@ describe('OrderDetailPage — SPEC-ORDER-011 logistics status badges (AC-LOGI-01
     expect(fulfillmentBg).toBeDefined()
     expect(logisticsBg).toBeDefined()
     expect(fulfillmentBg).not.toEqual(logisticsBg)
+  })
+})
+
+describe('OrderDetailPage — SPEC-ORDER-012 ready_to_ship badge (AC-RTS-007/008)', () => {
+  beforeEach(() => {
+    vi.mocked(useCreateLineItemNote).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+    } as unknown as ReturnType<typeof useCreateLineItemNote>)
+    vi.mocked(useResolveLineItemNote).mockReturnValue({
+      mutate: vi.fn(),
+    } as unknown as ReturnType<typeof useResolveLineItemNote>)
+  })
+
+  it('renders the 출고가능 badge when ready_to_ship is true', () => {
+    vi.mocked(useOrderDetail).mockReturnValue({
+      data: buildOrderDetail({ ready_to_ship: true }),
+      isPending: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useOrderDetail>)
+
+    renderPage()
+
+    const badge = screen.getByText('출고가능')
+    expect(badge).toBeInTheDocument()
+    expect(badge.getAttribute('data-badge-header')).toBe('출고가능')
+    expect([...badge.classList]).toContain('bg-emerald-50')
+    expect(screen.queryByText('출고불가')).not.toBeInTheDocument()
+  })
+
+  it('renders a distinct 출고불가 badge when ready_to_ship is false (결정 F)', () => {
+    vi.mocked(useOrderDetail).mockReturnValue({
+      data: buildOrderDetail({ ready_to_ship: false }),
+      isPending: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useOrderDetail>)
+
+    renderPage()
+
+    const badge = screen.getByText('출고불가')
+    expect(badge).toBeInTheDocument()
+    expect(badge.getAttribute('data-badge-header')).toBe('출고불가')
+    expect([...badge.classList]).toContain('bg-red-50')
+    expect(screen.queryByText('출고가능')).not.toBeInTheDocument()
+  })
+
+  it('renders neither ready_to_ship badge when ready_to_ship is null', () => {
+    vi.mocked(useOrderDetail).mockReturnValue({
+      data: buildOrderDetail({ ready_to_ship: null }),
+      isPending: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useOrderDetail>)
+
+    renderPage()
+
+    expect(screen.queryByText('출고가능')).not.toBeInTheDocument()
+    expect(screen.queryByText('출고불가')).not.toBeInTheDocument()
+  })
+
+  it('AC-RTS-007: all four badges (true/false ready_to_ship variants included) share no header word and use distinct background colors', () => {
+    const headerWords = (el: HTMLElement) =>
+      new Set((el.getAttribute('data-badge-header') ?? '').split(/\s+/).filter(Boolean))
+    const bgClass = (el: HTMLElement) => [...el.classList].find((c) => c.startsWith('bg-'))
+
+    // true-state pass: 출고가능 vs fulfillment_status vs status
+    vi.mocked(useOrderDetail).mockReturnValue({
+      data: buildOrderDetail({
+        ready_to_ship: true,
+        status: 'partial',
+        fulfillment_status: 'fulfilled',
+      }),
+      isPending: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useOrderDetail>)
+
+    const { unmount } = renderPage()
+
+    let fulfillmentBadge = screen.getByText(/출고완료/)
+    let statusBadge = screen.getByText(/부분입고/)
+    const readyBadge = screen.getByText('출고가능')
+
+    let fulfillmentWords = headerWords(fulfillmentBadge)
+    let statusWords = headerWords(statusBadge)
+    const readyWords = headerWords(readyBadge)
+
+    expect(readyWords.size).toBeGreaterThan(0)
+    for (const word of readyWords) {
+      expect(fulfillmentWords.has(word)).toBe(false)
+      expect(statusWords.has(word)).toBe(false)
+    }
+
+    let fulfillmentBg = bgClass(fulfillmentBadge)
+    let statusBg = bgClass(statusBadge)
+    const readyBg = bgClass(readyBadge)
+
+    expect(readyBg).toBeDefined()
+    expect(readyBg).not.toEqual(fulfillmentBg)
+    expect(readyBg).not.toEqual(statusBg)
+
+    unmount()
+
+    // false-state pass: 출고불가 vs fulfillment_status vs status
+    vi.mocked(useOrderDetail).mockReturnValue({
+      data: buildOrderDetail({
+        ready_to_ship: false,
+        status: 'partial',
+        fulfillment_status: 'fulfilled',
+      }),
+      isPending: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useOrderDetail>)
+
+    renderPage()
+
+    fulfillmentBadge = screen.getByText(/출고완료/)
+    statusBadge = screen.getByText(/부분입고/)
+    const notReadyBadge = screen.getByText('출고불가')
+
+    fulfillmentWords = headerWords(fulfillmentBadge)
+    statusWords = headerWords(statusBadge)
+    const notReadyWords = headerWords(notReadyBadge)
+
+    expect(notReadyWords.size).toBeGreaterThan(0)
+    for (const word of notReadyWords) {
+      expect(fulfillmentWords.has(word)).toBe(false)
+      expect(statusWords.has(word)).toBe(false)
+    }
+
+    fulfillmentBg = bgClass(fulfillmentBadge)
+    statusBg = bgClass(statusBadge)
+    const notReadyBg = bgClass(notReadyBadge)
+
+    expect(notReadyBg).toBeDefined()
+    expect(notReadyBg).not.toEqual(fulfillmentBg)
+    expect(notReadyBg).not.toEqual(statusBg)
+    // true-state and false-state ready_to_ship badges must also differ from
+    // each other in both header word and background color.
+    expect(notReadyWords.has('출고가능')).toBe(false)
+    expect(notReadyBg).not.toEqual(readyBg)
   })
 })

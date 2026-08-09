@@ -160,6 +160,9 @@ class OrderDetailSerializer(serializers.ModelSerializer):
             # SPEC-ORDER-011 T11: expose the logistics_status aggregate so the
             # frontend has a data source for the Order-level aggregate badge.
             "status",
+            # SPEC-ORDER-012 REQ-RTS-007: expose the ready_to_ship aggregate
+            # for the Order detail screen's third badge.
+            "ready_to_ship",
         ]
 
     def get_has_refund(self, obj: Order) -> bool:

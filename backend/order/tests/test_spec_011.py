@@ -2,7 +2,7 @@
 
 Coverage targets (backend only — T1~T10; frontend T11 is a separate cycle):
   T1   LineItem.logistics_status field + Order.status choices
-  T4   _recompute_order_status() aggregation + N+1 query-count regression
+  T4   _recompute_order_aggregates() aggregation + N+1 query-count regression
   T5   excel_utils SKU-only placeholder parsers
   T6   UploadVendorShipmentView
   T7   UploadWarehouseReceiptView
@@ -27,7 +27,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 
 from order.excel_utils import parse_vendor_shipment_excel, parse_warehouse_receipt_excel
 from order.models import LineItem, Order, PurchaseOrder
-from order.purchase_order_views import _recompute_order_status
+from order.purchase_order_views import _recompute_order_aggregates
 
 User = get_user_model()
 
@@ -228,7 +228,7 @@ class TestParseSkuOnlyExcel:
 
 
 # ---------------------------------------------------------------------------
-# T4: _recompute_order_status() helper
+# T4: _recompute_order_aggregates() helper
 # ---------------------------------------------------------------------------
 
 
@@ -239,7 +239,7 @@ class TestRecomputeOrderStatusHelper:
         order = _make_order(shopify_order_id=87001)
         _make_line_item(order, shopify_line_item_id=1, sku="SKU-U1", logistics_status="received")
         _make_line_item(order, shopify_line_item_id=2, sku="SKU-U2", logistics_status="received")
-        _recompute_order_status([order.id])
+        _recompute_order_aggregates([order.id])
         order.refresh_from_db()
         assert order.status == "received"
 
@@ -248,7 +248,7 @@ class TestRecomputeOrderStatusHelper:
         order = _make_order(shopify_order_id=87002)
         _make_line_item(order, shopify_line_item_id=1, sku="SKU-M1", logistics_status="not_shipped")
         _make_line_item(order, shopify_line_item_id=2, sku="SKU-M2", logistics_status="received")
-        _recompute_order_status([order.id])
+        _recompute_order_aggregates([order.id])
         order.refresh_from_db()
         assert order.status == "partial"
 
@@ -258,20 +258,20 @@ class TestRecomputeOrderStatusHelper:
         LineItem.objects.create(
             order=order, shopify_line_item_id=1, sku=None, quantity=1, title="No SKU"
         )
-        _recompute_order_status([order.id])
+        _recompute_order_aggregates([order.id])
         order.refresh_from_db()
         assert order.status is None
 
     def test_noop_on_empty_order_ids(self):
         """No-op — must not raise and must not issue any query."""
         with CaptureQueriesContext(connection) as ctx:
-            _recompute_order_status([])
+            _recompute_order_aggregates([])
         assert len(ctx.captured_queries) == 0
 
     def test_recompute_overwrites_stale_status(self):
         order = _make_order(shopify_order_id=87004, status="paid")
         _make_line_item(order, shopify_line_item_id=1, sku="SKU-S1", logistics_status="shipped")
-        _recompute_order_status([order.id])
+        _recompute_order_aggregates([order.id])
         order.refresh_from_db()
         assert order.status == "shipped"
 

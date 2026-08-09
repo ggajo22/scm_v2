@@ -41,7 +41,8 @@ class Order(models.Model):
     fulfillment_status = models.CharField(max_length=50, null=True, blank=True)
     # SPEC-ORDER-011 REQ-LOGI-008: computed aggregate over trackable (sku not
     # null) child LineItems' logistics_status — see
-    # purchase_order_views._recompute_order_status(). Column itself
+    # purchase_order_views._recompute_order_aggregates() (renamed from
+    # _recompute_order_status() by SPEC-ORDER-012). Column itself
     # (max_length=50, null=True, blank=True) is unchanged; only `choices` is
     # added for documentation/validation (decision D). No longer populated
     # from Shopify's financial_status (REQ-LOGI-011).
@@ -51,6 +52,14 @@ class Order(models.Model):
         blank=True,
         choices=LOGISTICS_STATUS_CHOICES + [("partial", "부분입고")],
     )
+    # SPEC-ORDER-012 REQ-RTS-001/002: computed aggregate over trackable (sku
+    # not null) child LineItems' purchase_status/logistics_status — see
+    # purchase_order_views._recompute_order_aggregates(). Fully independent
+    # of Order.status (decision A). Three states: True (ready), False (not
+    # ready), None (zero non-excluded trackable LineItems). Calculated only
+    # — no manual PATCH endpoint exists for this field (decision E). Never
+    # populated from Shopify-sourced fields (REQ-RTS-005).
+    ready_to_ship = models.BooleanField(null=True, blank=True)
     total_price = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
     subtotal_price = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
     total_tax = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)

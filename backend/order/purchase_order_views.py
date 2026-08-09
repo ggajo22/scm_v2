@@ -23,6 +23,7 @@ from types import SimpleNamespace
 
 from django.db import IntegrityError, transaction
 from django.db.models import (
+    BooleanField,
     Case,
     CharField,
     Count,
@@ -107,27 +108,40 @@ def _reorder_candidate_filter(queryset):
     )
 
 
-# @MX:NOTE: [AUTO] Order.status aggregate recomputation (SPEC-ORDER-011).
-# Fan-in == 4 (UploadVendorShipmentView, UploadWarehouseReceiptView,
-# LineItemLogisticsStatusUpdateView, LineItemLogisticsStatusBulkUpdateView)
-# would normally qualify for @MX:ANCHOR, but this file is already at its
-# configured anchor_per_file limit (3, see .moai/config/sections/mx.yaml)
-# with 4 pre-existing ANCHOR tags — demoted to NOTE, same precedent as
-# _reorder_candidate_filter above (SPEC-PURCHASE-ORDER-010).
-def _recompute_order_status(order_ids) -> None:
+# @MX:NOTE: [AUTO] Order.status + Order.ready_to_ship aggregate recomputation
+# (SPEC-ORDER-011, extended by SPEC-ORDER-012). Fan-in == 8
+# (UploadVendorShipmentView, UploadWarehouseReceiptView,
+# LineItemLogisticsStatusUpdateView, LineItemLogisticsStatusBulkUpdateView,
+# ConfirmOrderView, LineItemStatusUpdateView, LineItemBulkStatusUpdateView,
+# UploadDailyReviewView) would normally qualify for @MX:ANCHOR, but this
+# file is already at its configured anchor_per_file limit (3, see
+# .moai/config/sections/mx.yaml) with 4 pre-existing ANCHOR tags — demoted
+# to NOTE, same precedent as _reorder_candidate_filter above
+# (SPEC-PURCHASE-ORDER-010).
+def _recompute_order_aggregates(order_ids) -> None:
     """
     REQ-LOGI-008/009/010: recompute Order.status as an aggregate over
     trackable (sku not null) child LineItems' logistics_status — the shared
     value when uniform, "partial" when 2+ distinct values are present, unset
     (None) when no trackable LineItems exist for that Order.
 
+    SPEC-ORDER-012 REQ-RTS-002/003/003a/004: in the same pass, recompute
+    Order.ready_to_ship over the same trackable LineItem set: LineItems with
+    purchase_status="order_cancelled" are excluded entirely; if none remain,
+    `None`; else `False` if any remaining LineItem has
+    purchase_status="cs_required"; else `True` iff every remaining LineItem
+    has logistics_status="received" OR purchase_status="in_stock" (`False`
+    otherwise).
+
     Two-query design so the number of queries issued depends on the number
     of distinct Orders in `order_ids`, never on the number of LineItems that
-    were updated (SPEC-PURCHASE-ORDER-009 N+1-avoidance precedent):
-      1. one SELECT for (order_id, logistics_status) pairs of every
-         trackable LineItem under `order_ids`, grouped in Python.
-      2. one UPDATE (Case/When) covering every Order in `order_ids` in a
-         single statement.
+    were updated (SPEC-PURCHASE-ORDER-009 N+1-avoidance precedent,
+    REQ-RTS-004a):
+      1. one SELECT for (order_id, logistics_status, purchase_status)
+         triples of every trackable LineItem under `order_ids`, grouped in
+         Python.
+      2. one UPDATE (Case/When for both `status` and `ready_to_ship`)
+         covering every Order in `order_ids` in a single statement.
 
     No-op (zero queries) when `order_ids` is empty.
     """
@@ -135,26 +149,47 @@ def _recompute_order_status(order_ids) -> None:
     if not order_id_list:
         return
 
-    statuses_by_order: dict[int, set[str]] = defaultdict(set)
-    for order_id, logistics_status in LineItem.objects.filter(
+    items_by_order: dict[int, list[tuple[str, str]]] = defaultdict(list)
+    for order_id, logistics_status, purchase_status in LineItem.objects.filter(
         order_id__in=order_id_list, sku__isnull=False
-    ).values_list("order_id", "logistics_status"):
-        statuses_by_order[order_id].add(logistics_status)
+    ).values_list("order_id", "logistics_status", "purchase_status"):
+        items_by_order[order_id].append((logistics_status, purchase_status))
 
     status_field = CharField(max_length=50, null=True)
-    whens = []
+    ready_field = BooleanField(null=True)
+    status_whens = []
+    ready_whens = []
     for order_id in order_id_list:
-        statuses = statuses_by_order.get(order_id)
-        if not statuses:
+        items = items_by_order.get(order_id)
+
+        # REQ-LOGI-008/009/010: Order.status aggregate.
+        if not items:
             new_status = None
-        elif len(statuses) == 1:
-            new_status = next(iter(statuses))
         else:
-            new_status = "partial"
-        whens.append(When(id=order_id, then=Value(new_status, output_field=status_field)))
+            statuses = {logistics_status for logistics_status, _ in items}
+            new_status = next(iter(statuses)) if len(statuses) == 1 else "partial"
+        status_whens.append(When(id=order_id, then=Value(new_status, output_field=status_field)))
+
+        # SPEC-ORDER-012 REQ-RTS-002: Order.ready_to_ship aggregate.
+        non_cancelled = [it for it in (items or []) if it[1] != "order_cancelled"]
+        if not non_cancelled:
+            ready_to_ship = None
+        elif any(purchase_status == "cs_required" for _, purchase_status in non_cancelled):
+            ready_to_ship = False
+        else:
+            ready_to_ship = all(
+                logistics_status == "received" or purchase_status == "in_stock"
+                for logistics_status, purchase_status in non_cancelled
+            )
+        ready_whens.append(When(id=order_id, then=Value(ready_to_ship, output_field=ready_field)))
 
     Order.objects.filter(id__in=order_id_list).update(
-        status=Case(*whens, default=Value(None, output_field=status_field), output_field=status_field)
+        status=Case(
+            *status_whens, default=Value(None, output_field=status_field), output_field=status_field
+        ),
+        ready_to_ship=Case(
+            *ready_whens, default=Value(None, output_field=ready_field), output_field=ready_field
+        ),
     )
 
 
@@ -178,7 +213,7 @@ def _apply_logistics_transition(
     Returns (matched_sku_count, skipped_sku_count, affected_order_ids) —
     `affected_order_ids` is collected from the already-fetched LineItem
     instances (zero extra queries), for the caller to pass to
-    `_recompute_order_status()`.
+    `_recompute_order_aggregates()`.
     """
     lineitems_by_sku: dict[str, list] = defaultdict(list)
     for li in matched_queryset:
@@ -813,6 +848,9 @@ class ConfirmOrderView(APIView):
     note (if key present and non-empty, or null to clear).
     Uses @transaction.atomic to prevent partial writes.
 
+    SPEC-ORDER-012 REQ-RTS-003a/004: recomputes every affected Order's
+    status/ready_to_ship aggregates once per request after the loop above.
+
     # @MX:WARN: [AUTO] Atomic transaction with select_for_update — potential lock contention under high concurrency
     # @MX:REASON: select_for_update() needed to prevent double-linking of LineItems; deadlock risk if multiple confirm requests overlap
     """
@@ -832,6 +870,11 @@ class ConfirmOrderView(APIView):
             )
 
         created_ids = []
+        # SPEC-ORDER-012 REQ-RTS-003a/004: order_ids touched across every
+        # SKU in this request, recomputed once after the loop — not once
+        # per SKU (N+1 avoidance, same discipline as
+        # _apply_logistics_transition's affected_order_ids).
+        affected_order_ids: set[int] = set()
 
         try:
             with transaction.atomic():
@@ -961,6 +1004,12 @@ class ConfirmOrderView(APIView):
                         # REQ-CON-034: null → no longer clears (field removed from LineItem)
 
                     LineItem.objects.bulk_update(unordered_lis, update_fields)
+                    affected_order_ids.update(li.order_id for li in unordered_lis)
+
+                # SPEC-ORDER-012 REQ-RTS-003a/004/004a: one recompute call
+                # for the whole request, regardless of how many SKUs/items
+                # were processed above.
+                _recompute_order_aggregates(affected_order_ids)
 
         except ConflictError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_409_CONFLICT)
@@ -1188,6 +1237,10 @@ class UploadDailyReviewView(APIView):
     Yes24Data (Part B — REQ-PO8-014).
     Rows with empty or unrecognized '선택' are skipped from PO/CS/warehouse
     confirmation only.
+
+    SPEC-ORDER-012 REQ-RTS-003a/004: recomputes every Order status/
+    ready_to_ship aggregate touched by any of the three branches, once per
+    upload request.
     """
 
     authentication_classes = [JWTAuthentication]
@@ -1563,6 +1616,16 @@ class UploadDailyReviewView(APIView):
                         ["confirmed_distributor", "confirmed_price", "purchase_status"],
                     )
 
+                # SPEC-ORDER-012 REQ-RTS-003a/004: one recompute call per
+                # upload request, merging order_ids across all three
+                # branches — not once per branch (N+1 avoidance, same
+                # discipline as ConfirmOrderView).
+                affected_order_ids = {
+                    li.order_id
+                    for li in cs_status_updates + warehouse_li_updates + nonwarehouse_li_updates
+                }
+                _recompute_order_aggregates(affected_order_ids)
+
                 # REQ-PO9-007: batch-create every non-warehouse-branch
                 # PurchaseOrder in a single bulk_create(), then batch-link
                 # the M2M `line_items` relation through the through-table's
@@ -1694,7 +1757,7 @@ class UploadVendorShipmentView(APIView):
                 matched_count, skipped_count, affected_order_ids = _apply_logistics_transition(
                     queryset, all_skus, "shipment_confirmed"
                 )
-                _recompute_order_status(affected_order_ids)
+                _recompute_order_aggregates(affected_order_ids)
         except Exception as exc:
             # REQ-LOGI-003b: single all-or-nothing operation — any exception
             # rolls back the whole transaction.atomic() block above.
@@ -1761,7 +1824,7 @@ class UploadWarehouseReceiptView(APIView):
                 matched_count, skipped_count, affected_order_ids = _apply_logistics_transition(
                     queryset, all_skus, "received"
                 )
-                _recompute_order_status(affected_order_ids)
+                _recompute_order_aggregates(affected_order_ids)
         except Exception as exc:
             # REQ-LOGI-005a: same all-or-nothing behavior as REQ-LOGI-003b
             return Response(
@@ -1789,6 +1852,9 @@ class LineItemStatusUpdateView(APIView):
     PATCH /api/purchase-orders/line-items/<pk>/status/
 
     Updates the purchase_status of a single LineItem.
+
+    SPEC-ORDER-012 REQ-RTS-003a: recomputes the parent Order's status/
+    ready_to_ship aggregates after the write.
     """
 
     authentication_classes = [JWTAuthentication]
@@ -1810,6 +1876,7 @@ class LineItemStatusUpdateView(APIView):
 
         li.purchase_status = purchase_status_value
         li.save(update_fields=["purchase_status"])
+        _recompute_order_aggregates([li.order_id])
         return Response(
             {
                 "id": li.id,
@@ -1831,6 +1898,9 @@ class LineItemBulkStatusUpdateView(APIView):
 
     Updates purchase_status for multiple LineItems at once.
     Body: {"ids": [int, ...], "purchase_status": str}
+
+    SPEC-ORDER-012 REQ-RTS-003a/004: recomputes every affected Order's
+    status/ready_to_ship aggregates in one batched call after the write.
     """
 
     authentication_classes = [JWTAuthentication]
@@ -1857,7 +1927,14 @@ class LineItemBulkStatusUpdateView(APIView):
         existing_ids = set(existing.values_list("id", flat=True))
         missing_ids = [i for i in ids if i not in existing_ids]
 
+        # SPEC-ORDER-012 REQ-RTS-003a: order_ids must be captured BEFORE
+        # .update() — QuerySet.update() does not return the affected
+        # instances (same constraint as LineItemLogisticsStatusBulkUpdateView).
+        affected_order_ids = list(existing.values_list("order_id", flat=True).distinct())
+
         updated_count = existing.update(purchase_status=purchase_status_value)
+
+        _recompute_order_aggregates(affected_order_ids)
 
         return Response(
             {
@@ -1906,7 +1983,7 @@ class LineItemLogisticsStatusUpdateView(APIView):
 
         li.logistics_status = logistics_status_value
         li.save(update_fields=["logistics_status"])
-        _recompute_order_status([li.order_id])
+        _recompute_order_aggregates([li.order_id])
         return Response(
             {
                 "id": li.id,
@@ -1964,7 +2041,7 @@ class LineItemLogisticsStatusBulkUpdateView(APIView):
 
         updated_count = existing.update(logistics_status=logistics_status_value)
 
-        _recompute_order_status(affected_order_ids)
+        _recompute_order_aggregates(affected_order_ids)
 
         return Response(
             {

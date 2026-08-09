@@ -1,6 +1,6 @@
 ---
 id: SPEC-ORDER-012
-version: 1.3.0
+version: 1.4.0
 status: draft
 created: 2026-08-09
 created_at: 2026-08-09
@@ -21,6 +21,7 @@ labels: [order, logistics, purchase-order, ready-to-ship]
 | 1.1.0 | 2026-08-09 | ggajo | Phase 2.3 plan-auditor 리뷰(iteration 1, FAIL — MP-1/MP-2 위반 2건 + minor 3건) 반영. MP-1: `REQ-RTS-003a`가 기본 번호 계열을 깬다는 지적에 대해, 기본 계열(001~008)에 결번·중복이 없고 알파벳 접미사는 SPEC-ORDER-011(`REQ-LOGI-003/003a/003b` 등)·SPEC-PURCHASE-ORDER-010(`REQ-DMG-005/005B`)에서 이미 확립된 프로젝트 전역 관례임을 REQUIREMENTS/ACCEPTANCE CRITERIA 양 섹션 상단에 "번호 규칙 참고" 설명으로 명문화(단순 선례 인용이 아니라 왜 분리가 단일-트리거 원칙상 옳은지 근거 추가) — 순차 재번호 대신 관례 문서화로 해결. MP-2: `AC-RTS-002a/002b/002c`를 "For an Order with..." 위장 조건문(Ubiquitous 오표기)에서 감사 보고서 권고안 그대로 순수 State-Driven("While...")으로 재작성. Minor 처리: `priority: High` 대문자 표기는 SPEC-PURCHASE-ORDER-010 v1.2.0 HISTORY가 이미 프로젝트 전역 관례로 명시적으로 확정한 사안이라 변경하지 않음(재검토 후 유지 결정). `REQ-RTS-007`에 "헤더 텍스트 단어 미공유 + 배경색 상이"라는 구체적 판정 메커니즘을 REQ 본문에 직접 명시(REQ-LOGI-013 최종 수정 패턴 재사용). `REQ-RTS-004`/`AC-RTS-004`를 완전성 진술(004)과 쿼리 비선형성 비기능 제약(004a)으로 분리 |
 | 1.2.0 | 2026-08-09 | ggajo | Phase 2.3 plan-auditor 리뷰(iteration 2, PASS — 비차단 minor 4건). 사용자 승인 하에 오케스트레이터가 직접 마무리: AC-RTS-002a/b/c와 003a/004a의 접미사 분리 기준이 서로 다름(전자는 단일 REQ를 상태별로 나눈 것, 후자는 REQ 자체가 트리거별로 나뉜 것)을 명확히 구분해 "번호 규칙 참고" 재작성, AC-RTS-005의 Unwanted 절 주어를 필드명에서 "the system"으로 교정, AC-RTS-006을 "following the backfill migration"이라는 위장 트리거를 가진 Ubiquitous에서 순수 Event-Driven("When the ... migration is applied")으로 재작성, acceptance.md의 낡은 "AC-RTS-001~008"/"REQ-RTS-001~008" 범위 표기를 실제 12개 ID 전체 나열로 정정 |
 | 1.3.0 | 2026-08-09 | ggajo | Phase 2.3 plan-auditor 검증 재감사(iteration 3/3, FAIL — 4건의 minor 결함, 감사관 자체 평가로도 "설계 문제 아닌 기계적 한 줄 수정") 반영. 사용자 승인 하에 오케스트레이터가 직접 마무리: AC-RTS-004a의 Event-Driven 절 주어를 "the number of SQL queries"(비-system 주어)에서 "the system shall ensure the number of..."로 교정(형제 REQ-RTS-004a는 이미 올바른 형태였음), AC-RTS-001의 둘째 절도 동일한 주어 문제를 "the system shall never infer or synchronize..."로 교정, acceptance.md Definition of Done의 REQ-RTS 범위 표기를 압축형에서 전체 ID 나열로 정정 |
+| 1.4.0 | 2026-08-09 | ggajo | Run 단계 구현 완료 후 evaluator-active Phase 2.8a 검증에서 spec/구현 불일치 발견: 최초 구현이 `ready_to_ship=false`를 `null`과 동일하게 뱃지 미노출로 처리했으나, AC-RTS-008 문언은 `null`의 미노출만 규정하고 `false`의 렌더링 여부는 규정하지 않음(REQ-RTS-007 원문도 3상태 중 `false`를 별도로 다루지 않아 구현이 암묵적으로 과잉 해석됨). 사용자에게 보고 후 결정: CS 대기 등으로 확정된 "출고 불가"(`false`)는 "판정 대상 아님"(`null`)과 시각적으로 구분되어야 하므로 `false` 전용의 독자적 뱃지("출고불가", red 계열)를 신설. 결정 F 신규 추가, REQ-RTS-007을 3상태(true/false 뱃지 렌더링 + 상호 구분) 요구사항으로 재작성, REQ-RTS-008/AC-RTS-008을 "null만 미노출, false는 미노출 대상 아님"으로 명확화, AC-RTS-007을 true/false 두 뱃지 변형 모두를 포괄하도록 확장. 계산 로직(REQ-RTS-002)은 변경 없음 — 순수 프론트엔드 렌더링 규칙 정정. TDD RED-GREEN-REFACTOR로 재구현: `OrderDetailPage.tsx` 3분기 렌더링, `OrderDetailPage.test.tsx` 기존 false-상태 미노출 단언 제거 및 3상태 전체 검증 테스트로 교체 |
 
 ---
 
@@ -102,6 +103,23 @@ REQ-LOGI-010 확장).
 별도 PATCH 엔드포인트를 두지 않는다. `OrderDetailView`가 `RetrieveAPIView`(GET 전용)임을 확인했으므로
 우발적 쓰기 경로도 없다.
 
+### 결정 F — `ready_to_ship=false`도 독자적인 뱃지로 표시 (사용자 승인, evaluator-active Phase 2.8a 발견)
+
+최초 구현(v1.3.0)은 `{data.ready_to_ship && (...)}` 패턴으로 `false`와 `null`을 UI에서 동일하게
+"뱃지 미노출"로 처리했다. evaluator-active의 Phase 2.8a 검증에서 이 구현이 REQ-RTS-007/AC-RTS-008의
+실제 문언(AC-RTS-008은 "`null`일 때 미노출"만 규정하며 `false`의 렌더링 여부는 규정하지 않음)과
+불일치함을 발견했고, 사용자는 다음과 같이 결정했다: CS 대기 등으로 명확히 "출고 불가"인 주문은
+"판정 대상 자체가 아님"(N/A, `null`)과 시각적으로 구분되어야 하므로, `ready_to_ship=false`는
+`true`(출고가능, emerald)와도 `null`(미노출)과도 다른 별도의 뱃지("출고불가", red 계열 배경)로
+렌더링한다. 이로써 `ready_to_ship` 뱃지는 이제 3가지 렌더링 상태를 갖는다:
+
+- `true` → "출고가능" 뱃지 표시 (emerald 배경)
+- `false` → "출고불가" 뱃지 표시 (red 배경) — `true`/`null` 상태와 헤더 텍스트·배경색 모두 구분
+- `null` → 뱃지 렌더링 안 함 (AC-RTS-008, 변경 없음)
+
+계산 로직(REQ-RTS-002, `_recompute_order_aggregates()`) 자체는 이 결정의 영향을 받지 않는다 —
+순수하게 프론트엔드 렌더링 규칙의 정정이다.
+
 ---
 
 ## 요구사항 (EARS)
@@ -162,13 +180,22 @@ system shall NOT set or overwrite `Order.ready_to_ship` from any Shopify-sourced
 
 ### UI
 
+**번호 규칙 참고**: `REQ-RTS-007`은 결정 F(사용자 승인, evaluator-active Phase 2.8a 발견)에 따라
+3가지 렌더링 상태(`true`/`false`/`null`) 각각의 뱃지 규칙을 하나의 State-Driven 요구사항으로
+기술한다. `REQ-RTS-008`은 `null` 상태의 미노출 규칙만을 다루는 별도 항목으로 유지한다 — `true`와
+`false` 상태는 서로 다른 뱃지를 항상 렌더링하므로(미노출 규칙이 없으므로) 독립된 REQ로 분리할
+필요가 없다.
+
 **REQ-RTS-007** (State-Driven): While displaying `Order.ready_to_ship` alongside `Order.status`
-and `fulfillment_status` on the Order detail screen, the system shall render `ready_to_ship` under
-a badge whose header text shares no word with either of the other two badges' header text and
-whose background color (or design token) differs from both.
+and `fulfillment_status` on the Order detail screen, the system shall render `ready_to_ship` as one
+of two mutually exclusive badges depending on its value — a "ready" badge when `true` and a
+distinct "not ready" badge when `false` — such that all badges shown together (the two
+`ready_to_ship` variants and the `Order.status`/`fulfillment_status` badges) pairwise share no
+header-text word and pairwise differ in background color (or design token).
 
 **REQ-RTS-008** (State-Driven): While `Order.ready_to_ship` is `null`, the system shall NOT render
-the ready-to-ship badge.
+either ready_to_ship badge variant (neither the `true`-state "ready" badge nor the `false`-state
+"not ready" badge).
 
 ---
 
@@ -229,13 +256,17 @@ leave `ready_to_ship` unchanged after the sync completes.
 applied, the system shall ensure every pre-existing Order has a `ready_to_ship` value consistent
 with REQ-RTS-002's rules.
 
-**AC-RTS-007** (State-Driven) — Traces: REQ-RTS-007. While the Order detail screen displays
-`ready_to_ship`, `status`, and `fulfillment_status` badges together, the system shall render them
+**AC-RTS-007** (State-Driven) — Traces: REQ-RTS-007. While the Order detail screen displays a
+`ready_to_ship` badge (either the `true`-state "ready" badge or the `false`-state "not ready"
+badge) together with the `status` and `fulfillment_status` badges, the system shall render them
 such that no two badges' header text shares a word in common and no two badges share the same
-background color.
+background color — including between the `true`-state and `false`-state `ready_to_ship` badges
+themselves when compared across separate renders.
 
 **AC-RTS-008** (State-Driven) — Traces: REQ-RTS-008. While `Order.ready_to_ship` is `null`, the
-system shall omit the ready-to-ship badge from the rendered Order detail screen.
+system shall omit both ready_to_ship badge variants from the rendered Order detail screen (the
+`false` value renders its own distinct "not ready" badge per REQ-RTS-007/결정 F and is therefore
+NOT covered by this omission rule — only `null` is).
 
 ---
 

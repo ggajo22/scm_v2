@@ -137,8 +137,12 @@ def _sync_single_order(order_data, store_type, location_code="", line_item_locat
             "fulfillment_status": order_data.get("fulfillment_status"),
             # SPEC-ORDER-011 REQ-LOGI-011: "status" intentionally excluded —
             # it is now the logistics_status aggregate (REQ-LOGI-008),
-            # recomputed only by purchase_order_views._recompute_order_status().
+            # recomputed only by purchase_order_views._recompute_order_aggregates().
             # Shopify sync must never overwrite it with financial_status.
+            # SPEC-ORDER-012 REQ-RTS-005: "ready_to_ship" is likewise never
+            # Shopify-sourced. It needs no explicit exclusion line here (it
+            # was never added to this defaults dict in the first place) — it
+            # is recomputed only by the same _recompute_order_aggregates().
             "total_price": _decimal_or_none(order_data.get("total_price")),
             "subtotal_price": _decimal_or_none(order_data.get("subtotal_price")),
             "total_tax": _decimal_or_none(order_data.get("total_tax")),

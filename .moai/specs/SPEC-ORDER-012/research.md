@@ -176,8 +176,10 @@ else:
   null일 때 미노출).
 
 `ready_to_ship` 뱃지는 세 번째 뱃지로 추가 — 헤더 텍스트("출고가능" 등)가 위 두 개와 단어 겹침 없이,
-배경색도 구분(예: 초록/에메랄드 계열), `{data.ready_to_ship && (...)}`로 null/False 모두 미노출
-(False와 null을 UI에서 구분하지 않음 — API 시맨틱스만 3상태 유지).
+배경색도 구분(예: 초록/에메랄드 계열). **v1.4.0 갱신**: evaluator-active Phase 2.8a 검증에서 최초
+구현이 `false`/`null`을 UI에서 동일하게 미노출 처리해 SPEC 문구(AC-RTS-008은 `null`만 미노출 규정)와
+어긋남을 발견 — 사용자 결정으로 `false`도 독자적인 뱃지(빨강 계열, "출고불가")로 표시하도록 변경(결정 F,
+spec.md 참조). `null`만 계속 미노출.
 
 `backend/order/serializers.py`: `OrderDetailSerializer.Meta.fields`에 `"status"` 노출 지점 162행 —
 `ready_to_ship`도 같은 자리에 추가. `OrderListSerializer`(목록 화면)에는 추가하지 않음 — 뱃지는

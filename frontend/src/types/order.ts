@@ -198,4 +198,7 @@ export interface OrderDetail {
   // SPEC-ORDER-011 REQ-LOGI-008: computed aggregate over trackable child
   // LineItems' logistics_status. Null when no trackable LineItems exist.
   status: string | null
+  // SPEC-ORDER-012 REQ-RTS-001/002: computed "ready to ship" aggregate,
+  // fully independent of `status` above. True/False/null.
+  ready_to_ship: boolean | null
 }
