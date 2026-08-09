@@ -110,7 +110,7 @@ class LineItemDetailSerializer(serializers.ModelSerializer):
         fields = [
             "id", "shopify_line_item_id", "title", "variant_title", "sku",
             "quantity", "price", "total_discount", "fulfillment_status", "vendor", "grams",
-            "location", "notes",
+            "location", "rack_number", "notes",
             "confirmed_price", "confirmed_distributor", "confirmed_at",
             # SPEC-ORDER-011 T11: expose logistics_status so the frontend has
             # a data source for the LineItem-level logistics badge column.

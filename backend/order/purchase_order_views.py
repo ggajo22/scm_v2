@@ -52,6 +52,7 @@ from .excel_utils import (
     generate_daily_review_excel,
     generate_order_excel,
     parse_daily_review_excel,
+    parse_rack_number_excel,
     parse_vendor_excel,
     parse_vendor_shipment_excel,
     parse_warehouse_receipt_excel,
@@ -2048,6 +2049,197 @@ class LineItemLogisticsStatusBulkUpdateView(APIView):
                 "updated_count": updated_count,
                 "missing_ids": missing_ids,
             },
+            status=status.HTTP_200_OK,
+        )
+
+
+# ---------------------------------------------------------------------------
+# SPEC-ORDER-013: LineItem.rack_number manual update (single/bulk) + upload
+# ---------------------------------------------------------------------------
+
+
+def _validate_rack_number_value(value) -> str | None:
+    """REQ-RACK-003b/004: shared validation for the rack_number PATCH
+    endpoints — returns an error message when the value exceeds the field's
+    max_length (10), else None. Duplicate values across LineItems are never
+    rejected (REQ-RACK-013 — no uniqueness constraint)."""
+    if not isinstance(value, str) or len(value) > 10:
+        return "rack_number must be a string of at most 10 characters."
+    return None
+
+
+class LineItemRackNumberUpdateView(APIView):
+    """
+    PATCH /api/purchase-orders/line-items/<pk>/rack-number/
+
+    REQ-RACK-003/003a/003b: updates the rack_number of a single LineItem.
+    rack_number is a pure manual/upload field (REQ-RACK-002) — unlike
+    purchase_status/logistics_status, this view never calls
+    _recompute_order_aggregates(); there is no Order-level rack_number
+    aggregate to recompute.
+    """
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, pk: int) -> Response:
+        try:
+            li = LineItem.objects.get(pk=pk)
+        except LineItem.DoesNotExist:
+            return Response({"error": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        rack_number_value = request.data.get("rack_number", "")
+        error = _validate_rack_number_value(rack_number_value)
+        if error:
+            return Response({"error": error}, status=status.HTTP_400_BAD_REQUEST)
+
+        li.rack_number = rack_number_value
+        li.save(update_fields=["rack_number"])
+        return Response(
+            {
+                "id": li.id,
+                "rack_number": li.rack_number,
+                "sku": li.sku,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+# @MX:NOTE: [AUTO] rack_number is not an Order-level aggregate
+# (REQ-RACK-002) — this view intentionally never calls
+# _recompute_order_aggregates(), unlike LineItemBulkStatusUpdateView /
+# LineItemLogisticsStatusBulkUpdateView above. Do not add that call here.
+class LineItemBulkRackNumberUpdateView(APIView):
+    """
+    PATCH /api/purchase-orders/line-items/bulk-rack-number/
+
+    REQ-RACK-004/004a: updates rack_number for multiple LineItems at once.
+    Body: {"ids": [int, ...], "rack_number": str}
+    """
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request) -> Response:
+        ids = request.data.get("ids", [])
+        rack_number_value = request.data.get("rack_number", "")
+
+        if not ids:
+            return Response(
+                {"error": "ids must not be empty"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        error = _validate_rack_number_value(rack_number_value)
+        if error:
+            return Response({"error": error}, status=status.HTTP_400_BAD_REQUEST)
+
+        existing = LineItem.objects.filter(pk__in=ids)
+        existing_ids = set(existing.values_list("id", flat=True))
+        missing_ids = [i for i in ids if i not in existing_ids]
+
+        updated_count = existing.update(rack_number=rack_number_value)
+
+        return Response(
+            {
+                "updated_count": updated_count,
+                "missing_ids": missing_ids,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class UploadRackNumberView(APIView):
+    """
+    POST /api/purchase-orders/upload-rack-number/
+
+    Multipart: file (.xlsx)
+    REQ-RACK-006/006a/006b/007: parses a 3-column (order number/SKU/rack
+    number) Excel file and applies rack_number to every LineItem matching a
+    parsed row's (order_number, sku) pair.
+    """
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request) -> Response:
+        uploaded = request.FILES.get("file")
+        if not uploaded:
+            return Response({"detail": "file is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        filename = uploaded.name or ""
+        if not filename.endswith(".xlsx"):
+            return Response(
+                {"detail": "Invalid file format. Only .xlsx is supported."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            file_bytes = uploaded.read()
+            parsed_rows = parse_rack_number_excel(file_bytes)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+
+        # REQ-RACK-006b: last-row-wins dedup keyed on (order_number, sku).
+        # Bug fix (REQ-RACK-006a/AC-RACK-007): rows whose order-number cell
+        # failed integer parsing carry order_number=None (see
+        # parse_rack_number_excel) and must NOT be deduped against each
+        # other under the same (None, sku) key — there is no reliable
+        # identity to merge them on, so each keeps its own row index in the
+        # key, ensuring every such row is still counted (as skipped) below.
+        dedup_map: dict[tuple, dict] = {}
+        for idx, row in enumerate(parsed_rows):
+            key = (
+                (row["order_number"], row["sku"])
+                if row["order_number"] is not None
+                else (None, idx)
+            )
+            dedup_map[key] = row
+
+        matched_count = 0
+        skipped_count = 0
+        try:
+            with transaction.atomic():
+                # @MX:WARN: [AUTO] A single (order_number, sku) key may match
+                # 2+ LineItems (SPEC-SHOPIFY-SKU-SET-002 unique_together
+                # allows duplicate SKUs per order via distinct
+                # shopify_line_item_id) — ALL matching LineItems receive the
+                # same rack_number value, not just one (결정 E).
+                # @MX:REASON: intentional per SPEC-ORDER-013 결정 E — no way
+                # to disambiguate which specific LineItem an Excel row
+                # targets when duplicates exist; treated as "same physical
+                # book, same rack" by design, not a bug.
+                for row in dedup_map.values():
+                    order_number = row["order_number"]
+                    sku = row["sku"]
+
+                    if order_number is None:
+                        # Bug fix (REQ-RACK-006a): unparseable order number
+                        # -> treated the same as "order not found" -> skip.
+                        skipped_count += 1
+                        continue
+
+                    order = Order.objects.filter(order_number=order_number).first()
+                    if order is None:
+                        # REQ-RACK-006a: order not found -> skip.
+                        skipped_count += 1
+                        continue
+
+                    line_items = LineItem.objects.filter(order=order, sku=sku)
+                    if not line_items.exists():
+                        # REQ-RACK-006a: no matching LineItem -> skip.
+                        skipped_count += 1
+                        continue
+
+                    line_items.update(rack_number=row["rack_number"])
+                    matched_count += 1
+        except Exception as exc:
+            return Response(
+                {"detail": f"처리 중 오류가 발생했습니다: {exc}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        return Response(
+            {"matched_count": matched_count, "skipped_count": skipped_count},
             status=status.HTTP_200_OK,
         )
 

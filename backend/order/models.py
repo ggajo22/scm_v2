@@ -169,6 +169,13 @@ class LineItem(models.Model):
     vendor = models.CharField(max_length=255, null=True, blank=True)
     grams = models.IntegerField(null=True, blank=True)
     location = models.CharField(max_length=10, blank=True, default="")
+    # SPEC-ORDER-013 REQ-RACK-001/002: physical rack/shelf code for locating
+    # a book in the warehouse. Same CharField(max_length=10) shape as
+    # `location` above, but semantically distinct (rack != warehouse
+    # location code). Manual/upload-driven only (single PATCH, bulk PATCH,
+    # or Excel upload) — never computed, and no Order-level aggregate or
+    # rollup field exists for it (REQ-RACK-002).
+    rack_number = models.CharField(max_length=10, blank=True, default="")
     purchase_status = models.CharField(
         max_length=20,
         choices=PURCHASE_STATUS_CHOICES,

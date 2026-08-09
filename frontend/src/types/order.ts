@@ -129,6 +129,11 @@ export interface LineItemDetail {
   // SPEC-ORDER-011 REQ-LOGI-001: Korea-vendor -> US-warehouse -> customer
   // logistics pipeline status, independent of purchase_status/fulfillment_status.
   logistics_status: string
+  // SPEC-ORDER-013 REQ-RACK-001: short operational storage-rack code, manual/
+  // upload-only, independent of `location`/`logistics_status`/`purchase_status`.
+  // Exposed here for reuse by RackNumberPage; OrderDetailPage must not render it
+  // (REQ-RACK-012).
+  rack_number: string
 }
 
 export interface ShippingLine {

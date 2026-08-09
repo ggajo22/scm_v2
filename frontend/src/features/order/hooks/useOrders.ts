@@ -4,7 +4,9 @@ import type { OrderListParams, OrderListResponse } from '@/types/order'
 
 export const ORDERS_QUERY_KEY = ['orders']
 
-export function useOrders(params: OrderListParams = {}) {
+// SPEC-ORDER-013: optional `enabled` flag lets callers (e.g. RackNumberPage)
+// defer the query until a search has actually been submitted.
+export function useOrders(params: OrderListParams = {}, options: { enabled?: boolean } = {}) {
   return useQuery<OrderListResponse>({
     queryKey: [...ORDERS_QUERY_KEY, params],
     queryFn: async () => {
@@ -21,5 +23,6 @@ export function useOrders(params: OrderListParams = {}) {
       const res = await api.get('/api/orders/', { params: searchParams })
       return res.data
     },
+    enabled: options.enabled ?? true,
   })
 }

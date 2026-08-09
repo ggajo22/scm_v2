@@ -6,12 +6,15 @@ export const ORDER_DETAIL_QUERY_KEY = ['order-detail']
 
 // @MX:ANCHOR: [AUTO] useOrderDetail — called from OrderDetailPage (fan_in will grow with refund/edit pages)
 // @MX:REASON: Single fetch point for order detail; cache key must stay stable for invalidation
-export function useOrderDetail(id: number) {
+// SPEC-ORDER-013: optional `enabled` flag lets callers (e.g. RackNumberPage)
+// defer the query until an order has actually been matched by search.
+export function useOrderDetail(id: number, options: { enabled?: boolean } = {}) {
   return useQuery<OrderDetail>({
     queryKey: [...ORDER_DETAIL_QUERY_KEY, id],
     queryFn: async () => {
       const res = await api.get(`/api/orders/${id}/`)
       return res.data
     },
+    enabled: options.enabled ?? true,
   })
 }

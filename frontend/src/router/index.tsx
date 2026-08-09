@@ -113,6 +113,13 @@ export const router = createBrowserRouter([
             },
           },
           {
+            path: '/rack-number',
+            lazy: async () => {
+              const { RackNumberPage } = await import('@/pages/RackNumberPage')
+              return { Component: RackNumberPage }
+            },
+          },
+          {
             path: '/settings/sku-sets',
             lazy: async () => {
               const { SkuSetsPage } = await import('@/features/sku-sets/SkuSetsPage')

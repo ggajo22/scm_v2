@@ -83,6 +83,7 @@ function buildOrderDetail(overrides: Partial<OrderDetail> = {}): OrderDetail {
         confirmed_at: null,
         notes: [],
         logistics_status: 'shipment_confirmed',
+        rack_number: '',
       },
     ],
     shipping_lines: [],
@@ -331,5 +332,59 @@ describe('OrderDetailPage — SPEC-ORDER-012 ready_to_ship badge (AC-RTS-007/008
     // each other in both header word and background color.
     expect(notReadyWords.has('출고가능')).toBe(false)
     expect(notReadyBg).not.toEqual(readyBg)
+  })
+})
+
+// SPEC-ORDER-013 REQ-RACK-012/AC-RACK-012: rack_number is exposed on the
+// shared LineItemDetail API response (consumed by RackNumberPage), but
+// OrderDetailPage must never render or allow editing it.
+describe('OrderDetailPage — SPEC-ORDER-013 rack_number exclusion (REQ-RACK-012)', () => {
+  beforeEach(() => {
+    vi.mocked(useCreateLineItemNote).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+    } as unknown as ReturnType<typeof useCreateLineItemNote>)
+    vi.mocked(useResolveLineItemNote).mockReturnValue({
+      mutate: vi.fn(),
+    } as unknown as ReturnType<typeof useResolveLineItemNote>)
+  })
+
+  it('does not render any rack_number field, label, input, or badge even when the API response includes a non-empty value', () => {
+    vi.mocked(useOrderDetail).mockReturnValue({
+      data: buildOrderDetail({
+        line_items: [
+          {
+            id: 11,
+            shopify_line_item_id: 111,
+            title: '테스트 상품',
+            variant_title: null,
+            sku: 'SKU-1',
+            quantity: 1,
+            price: '30000.00',
+            total_discount: null,
+            fulfillment_status: null,
+            vendor: null,
+            grams: null,
+            location: '',
+            confirmed_price: null,
+            confirmed_distributor: null,
+            confirmed_at: null,
+            notes: [],
+            logistics_status: 'shipment_confirmed',
+            rack_number: 'RACK-Z9',
+          },
+        ],
+      }),
+      isPending: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useOrderDetail>)
+
+    renderPage()
+
+    expect(screen.queryByText('RACK-Z9')).not.toBeInTheDocument()
+    expect(screen.queryByText(/렉번호/)).not.toBeInTheDocument()
+    expect(screen.queryByDisplayValue('RACK-Z9')).not.toBeInTheDocument()
   })
 })

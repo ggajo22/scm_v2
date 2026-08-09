@@ -137,6 +137,20 @@ describe('Sidebar', () => {
     })
   })
 
+  describe('SPEC-ORDER-013 REQ-RACK-008: 렉번호 관리 내비게이션 항목', () => {
+    it('"렉번호 관리" 링크가 /rack-number 경로로 렌더링된다', () => {
+      renderSidebar()
+      const link = screen.getByRole('link', { name: '렉번호 관리' })
+      expect(link).toBeInTheDocument()
+      expect(link).toHaveAttribute('href', '/rack-number')
+    })
+
+    it('/rack-number 경로에서 "렉번호 관리" 링크가 aria-current="page"를 가진다', () => {
+      renderSidebar('super_admin', '/rack-number')
+      expect(screen.getByRole('link', { name: '렉번호 관리' })).toHaveAttribute('aria-current', 'page')
+    })
+  })
+
   describe('REQ-007 & REQ-008: 관리자 계정 관리 역할 기반 표시', () => {
     it('REQ-007: super_admin은 관리자 계정 관리 메뉴를 볼 수 있다', () => {
       renderSidebar('super_admin')
