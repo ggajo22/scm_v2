@@ -195,6 +195,20 @@ class LineItem(models.Model):
         choices=LOGISTICS_STATUS_CHOICES,
         default="not_shipped",
     )
+    # @MX:NOTE: [AUTO] SPEC-ORDER-015 REQ-OUTBOUND-001/002/002a: cumulative
+    # outbound quantity and last-processed timestamp. These fill the one
+    # missing step of the LOGISTICS_STATUS_CHOICES pipeline above —
+    # `outbound_scheduled` -> `shipped` (Korea warehouse -> US warehouse) —
+    # which had no upload/entry path, unlike `shipment_confirmed`
+    # (UploadVendorShipmentView) and `received` (UploadWarehouseReceiptView).
+    # shipped_quantity accumulates across multiple partial outbound requests
+    # and drives the automatic transition to logistics_status="shipped" once
+    # it reaches `quantity`; shipped_at stays NULL until the first outbound
+    # event actually touches the row (REQ-OUTBOUND-002a). Distinct from
+    # `fulfillment_status` (Shopify "shipped to customer", never written here)
+    # and from `book.Info.qty` / `WarehouseStock` (untouched by this SPEC).
+    shipped_quantity = models.IntegerField(default=0)
+    shipped_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         db_table = "orders_line_item"

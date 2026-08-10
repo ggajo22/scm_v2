@@ -101,6 +101,22 @@ pytest + 15 프론트) / SPEC-ORDER-014(13 pytest + 26 프론트) 기존 테스�
 `POST /api/purchase-orders/upload-outbound/`(Excel) — 기존 `upload-rack-number`/
 `upload-vendor-shipment` 네이밍 관례를 따름.
 
+## MX 태그 계획
+
+- `backend/order/purchase_order_views.py`의 `_process_outbound_rows` — 신규 함수. `@MX:NOTE`로
+  중복 행 합산(설계 결정 C) 및 null quantity=0 취급(설계 결정 B) 같은 비자명한 비즈니스 규칙의
+  근거를 명시(REQ-OUTBOUND-007/009 참조). 호출자는 `OutboundProcessView`/`UploadOutboundView`
+  2곳으로 fan_in=2이며 `@MX:ANCHOR` 임계치(fan_in>=3)에는 미달하므로 부여하지 않는다.
+- 동일 함수의 락 없는 갱신 로직(리스크 섹션의 "동시성" 항목) — `@MX:WARN` + `@MX:REASON`으로
+  두 사용자가 동시에 같은 LineItem을 처리할 때의 race condition 미해결 상태를 명시하고,
+  `UploadRackNumberView`도 동일하게 락 없이 처리하는 기존 관례를 참조로 남긴다.
+- `LineItem.shipped_quantity`/`shipped_at` 필드(models.py) — `@MX:NOTE`로 SPEC-ORDER-015 도입
+  배경(logistics_status 파이프라인의 outbound_scheduled→shipped 전이를 위한 누적 수량/시각
+  필드)을 남긴다.
+- `parse_outbound_excel` — 신규 파서 함수, 기존 `parse_rack_number_excel` 대비 특이사항 없어
+  MX 태그 불필요(단순 구조적 재사용).
+- 구현(run) 단계에서 위 태그를 실제 코드에 부여하고, 필요 시 이 목록을 갱신한다.
+
 ## 관련 참조 구현
 
 - `backend/order/purchase_order_views.py:2151-2254` `UploadRackNumberView` — Excel 업로드 뷰

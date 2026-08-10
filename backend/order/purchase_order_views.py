@@ -52,6 +52,7 @@ from .excel_utils import (
     generate_daily_review_excel,
     generate_order_excel,
     parse_daily_review_excel,
+    parse_outbound_excel,
     parse_rack_number_excel,
     parse_vendor_excel,
     parse_vendor_shipment_excel,
@@ -2327,6 +2328,292 @@ class LineItemRackNumberSummaryView(APIView):
         unassigned = [groups[""]] if "" in groups else []
 
         return Response({"groups": named + unassigned}, status=status.HTTP_200_OK)
+
+
+# ---------------------------------------------------------------------------
+# SPEC-ORDER-015: outbound processing (Korea warehouse -> US warehouse)
+# ---------------------------------------------------------------------------
+
+
+def _to_int(value, default: int = 0) -> int:
+    """Coerce a spreadsheet/JSON cell to int, falling back to `default`."""
+    if value is None or value == "":
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+# @MX:NOTE: [AUTO] Two non-obvious business rules live here, both deliberate
+# SPEC-ORDER-015 design decisions rather than incidental behaviour:
+#   (설계 결정 C, REQ-OUTBOUND-007) duplicate (order name, sku) rows in ONE
+#   request are SUMMED and judged once — NOT last-row-wins as
+#   UploadRackNumberView does. Judging row-by-row would let two rows that each
+#   fit under `quantity` jointly overshoot it.
+#   (설계 결정 B, REQ-OUTBOUND-009) a NULL `quantity` is read as 0 capacity, so
+#   any positive request against it is rejected as over-capacity instead of
+#   being silently applied against an unknown limit.
+#   (설계 결정 A, REQ-OUTBOUND-005a) a 2+ LineItem match is reported unmatched
+#   and left untouched — there is no quantity-distribution rule.
+#   (spec.md Exclusions) a non-positive `total` is rejected per row before
+#   summation. shipped_quantity must never decrease: 출고 취소/되돌리기(undo)
+#   is explicitly out of scope, and a negative total would otherwise reach
+#   that excluded capability through ordinary input.
+# @MX:WARN: [AUTO] LineItems are read and updated without select_for_update()
+# locking — two concurrent outbound requests targeting the same LineItem can
+# both pass the over-capacity check against the same stale shipped_quantity
+# and jointly push it past `quantity`.
+# @MX:REASON: known, accepted gap carried over from UploadRackNumberView
+# (which updates rack_number lock-free the same way); SPEC-ORDER-015 plan.md
+# "동시성" explicitly defers row-level locking to a follow-up SPEC. Add
+# select_for_update() here first if this is ever revisited.
+def _process_outbound_rows(rows: list[dict]) -> dict:
+    """
+    SPEC-ORDER-015 REQ-OUTBOUND-003~011/013: match, judge and apply outbound
+    quantities for a batch of rows, atomically.
+
+    Shared entry point for OutboundProcessView (manual JSON) and
+    UploadOutboundView (Excel) — both supply rows shaped
+    {"name": str, "sku": str, "total": int}, so the two endpoints are
+    guaranteed to produce identical results for equivalent input.
+
+    Returns a dict with `matched` / `unmatched` / `quantity_exceeded` item
+    lists plus their `*_count` totals (REQ-OUTBOUND-014). `unmatched` reasons
+    are `order_not_found`, `line_item_not_found`, `multiple_line_items`,
+    `invalid_total` (non-positive quantity) and `invalid_row` (malformed
+    input shape).
+    """
+    matched: list[dict] = []
+    unmatched: list[dict] = []
+    quantity_exceeded: list[dict] = []
+
+    # REQ-OUTBOUND-007 (설계 결정 C): rows sharing an (order name, sku) key
+    # are SUMMED into one combined quantity before any matching or quantity
+    # judgement — not last-row-wins.
+    grouped: dict[tuple[str, str], int] = {}
+    for row in rows:
+        # Defensive: OutboundProcessView rejects malformed rows with 400 and
+        # parse_outbound_excel only ever emits well-formed dicts, but this is
+        # a shared entry point — degrade to a reported row instead of raising
+        # AttributeError (which would surface as an opaque 500).
+        if not isinstance(row, dict):
+            unmatched.append(
+                {"name": "", "sku": "", "total": 0, "reason": "invalid_row"}
+            )
+            continue
+
+        order_name = str(row.get("name") or "").strip()
+        sku = str(row.get("sku") or "").strip()
+        total = _to_int(row.get("total"))
+
+        # spec.md Exclusions forbid 출고 취소/되돌리기 (undo): shipped_quantity
+        # must never decrease. A negative `total` would reach exactly that
+        # excluded capability through ordinary input, and a zero/unparseable
+        # total is not a shippable amount either — so non-positive totals are
+        # rejected here, per row and BEFORE summation. Rejecting after
+        # summation would let a negative row quietly shrink a legitimate
+        # positive one for the same key.
+        if total <= 0:
+            unmatched.append(
+                {
+                    "name": order_name,
+                    "sku": sku,
+                    "total": total,
+                    "reason": "invalid_total",
+                }
+            )
+            continue
+
+        key = (order_name, sku)
+        grouped[key] = grouped.get(key, 0) + total
+
+    # REQ-OUTBOUND-011/013: one transaction for the whole batch, so a failure
+    # part-way through leaves no partially-applied rows behind.
+    with transaction.atomic():
+        for (order_name, sku), total in grouped.items():
+            # REQ-OUTBOUND-003/003a: matched on `Order.name` exact string
+            # equality ("#37349", "#EB10011778"). `Order.order_number` is
+            # deliberately never consulted — the two diverge for manually-
+            # entered "EB"-prefixed orders, which is exactly why
+            # SPEC-ORDER-013 abandoned it as a matching key.
+            order = Order.objects.filter(name=order_name).first()
+            if order is None:
+                unmatched.append(
+                    {
+                        "name": order_name,
+                        "sku": sku,
+                        "total": total,
+                        "reason": "order_not_found",
+                    }
+                )
+                continue
+
+            # REQ-OUTBOUND-004/005/005a (설계 결정 A): only an exact single
+            # match is actionable. Zero matches and 2+ matches are BOTH
+            # reported as unmatched — there is no rule for splitting a
+            # quantity across ambiguous candidates, so nothing is written
+            # rather than guessing. The [:2] slice is enough to tell those
+            # three cases apart without fetching every duplicate.
+            # REQ-OUTBOUND-006: no logistics_status filter here on purpose —
+            # a LineItem in any pipeline state is eligible for outbound.
+            candidates = list(LineItem.objects.filter(order=order, sku=sku)[:2])
+            if len(candidates) != 1:
+                unmatched.append(
+                    {
+                        "name": order_name,
+                        "sku": sku,
+                        "total": total,
+                        "reason": (
+                            "line_item_not_found" if not candidates else "multiple_line_items"
+                        ),
+                    }
+                )
+                continue
+
+            line_item = candidates[0]
+            # REQ-OUTBOUND-009 (설계 결정 B): NULL quantity == 0 capacity.
+            effective_quantity = line_item.quantity or 0
+            if line_item.shipped_quantity + total > effective_quantity:
+                quantity_exceeded.append(
+                    {
+                        "name": order_name,
+                        "sku": sku,
+                        "total": total,
+                        "line_item_id": line_item.id,
+                        "shipped_quantity": line_item.shipped_quantity,
+                        "quantity": line_item.quantity,
+                        "reason": "quantity_exceeded",
+                    }
+                )
+                continue
+
+            # REQ-OUTBOUND-008: accumulate and stamp the processing time.
+            line_item.shipped_quantity += total
+            line_item.shipped_at = timezone.now()
+            update_fields = ["shipped_quantity", "shipped_at"]
+
+            # REQ-OUTBOUND-010/010a: advance to "shipped" only once the
+            # cumulative quantity reaches `quantity`; below that threshold
+            # logistics_status is left exactly as it was. This only ever
+            # writes the pre-existing "shipped" choice — SPEC-ORDER-015 adds
+            # no new LOGISTICS_STATUS_CHOICES value.
+            if line_item.shipped_quantity >= effective_quantity:
+                line_item.logistics_status = "shipped"
+                update_fields.append("logistics_status")
+
+            line_item.save(update_fields=update_fields)
+            matched.append(
+                {
+                    "name": order_name,
+                    "sku": sku,
+                    "total": total,
+                    "line_item_id": line_item.id,
+                    "shipped_quantity": line_item.shipped_quantity,
+                    "quantity": line_item.quantity,
+                    "logistics_status": line_item.logistics_status,
+                }
+            )
+
+    # REQ-OUTBOUND-014: three categories, each with its item list and count.
+    return {
+        "matched": matched,
+        "unmatched": unmatched,
+        "quantity_exceeded": quantity_exceeded,
+        "matched_count": len(matched),
+        "unmatched_count": len(unmatched),
+        "quantity_exceeded_count": len(quantity_exceeded),
+    }
+
+
+class OutboundProcessView(APIView):
+    """
+    POST /api/purchase-orders/line-items/outbound-process/
+
+    REQ-OUTBOUND-011: manual-entry outbound processing.
+    Body: {"rows": [{"name": str, "sku": str, "total": int}, ...]}
+    """
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    REQUIRED_ROW_KEYS = ("name", "sku", "total")
+
+    def post(self, request) -> Response:
+        rows = request.data.get("rows", [])
+        if not isinstance(rows, list):
+            return Response(
+                {"detail": "rows must be a list."}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # A structurally invalid body is a client error. Without this check a
+        # non-dict item reaches row.get() and raises AttributeError, which the
+        # caller would see as an opaque 500 instead of an actionable 400.
+        for index, row in enumerate(rows):
+            if not isinstance(row, dict):
+                return Response(
+                    {"detail": f"rows[{index}] must be an object."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            missing = [k for k in self.REQUIRED_ROW_KEYS if k not in row]
+            if missing:
+                return Response(
+                    {"detail": f"rows[{index}] is missing required key(s): {', '.join(missing)}."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        try:
+            result = _process_outbound_rows(rows)
+        except Exception as exc:
+            return Response(
+                {"detail": f"처리 중 오류가 발생했습니다: {exc}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        return Response(result, status=status.HTTP_200_OK)
+
+
+class UploadOutboundView(APIView):
+    """
+    POST /api/purchase-orders/upload-outbound/
+
+    Multipart: file (.xlsx)
+    REQ-OUTBOUND-013: Excel-driven outbound processing. Parses the upload with
+    `parse_outbound_excel` and hands the rows to the same
+    `_process_outbound_rows` the manual endpoint uses, so both paths cannot
+    drift apart (REQ-OUTBOUND-011/013). A header the parser cannot resolve
+    surfaces as HTTP 422 (REQ-OUTBOUND-012a).
+    """
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request) -> Response:
+        uploaded = request.FILES.get("file")
+        if not uploaded:
+            return Response({"detail": "file is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        filename = uploaded.name or ""
+        if not filename.endswith(".xlsx"):
+            return Response(
+                {"detail": "Invalid file format. Only .xlsx is supported."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            parsed_rows = parse_outbound_excel(uploaded.read())
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+
+        try:
+            result = _process_outbound_rows(parsed_rows)
+        except Exception as exc:
+            return Response(
+                {"detail": f"처리 중 오류가 발생했습니다: {exc}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        return Response(result, status=status.HTTP_200_OK)
 
 
 # ---------------------------------------------------------------------------

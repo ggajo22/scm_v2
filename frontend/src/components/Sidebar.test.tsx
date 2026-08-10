@@ -151,6 +151,30 @@ describe('Sidebar', () => {
     })
   })
 
+  describe('SPEC-ORDER-015 REQ-OUTBOUND-015: 출고 처리 내비게이션 항목', () => {
+    it('AC-OUTBOUND-017: "출고 처리" 링크가 /outbound 경로로 렌더링된다', () => {
+      renderSidebar()
+      const link = screen.getByRole('link', { name: '출고 처리' })
+      expect(link).toBeInTheDocument()
+      expect(link).toHaveAttribute('href', '/outbound')
+    })
+
+    it('/outbound 경로에서 "출고 처리" 링크가 aria-current="page"를 가진다', () => {
+      renderSidebar('super_admin', '/outbound')
+      expect(screen.getByRole('link', { name: '출고 처리' })).toHaveAttribute('aria-current', 'page')
+    })
+
+    it('/outbound 경로에서 "렉번호 관리" 링크는 aria-current를 가지지 않는다', () => {
+      renderSidebar('super_admin', '/outbound')
+      expect(screen.getByRole('link', { name: '렉번호 관리' })).not.toHaveAttribute('aria-current')
+    })
+
+    it('admin 역할에게도 "출고 처리" 항목이 보인다 (역할 제한 없음)', () => {
+      renderSidebar('admin')
+      expect(screen.getByRole('link', { name: '출고 처리' })).toBeInTheDocument()
+    })
+  })
+
   describe('REQ-007 & REQ-008: 관리자 계정 관리 역할 기반 표시', () => {
     it('REQ-007: super_admin은 관리자 계정 관리 메뉴를 볼 수 있다', () => {
       renderSidebar('super_admin')
