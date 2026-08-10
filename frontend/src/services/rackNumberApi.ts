@@ -58,7 +58,7 @@ export async function uploadRackNumber(formData: FormData): Promise<UploadRackNu
 
 export interface RackNumberSummaryLineItem {
   id: number
-  order_number: number | null
+  order_name: string | null
   sku: string | null
   title: string | null
   quantity: number | null

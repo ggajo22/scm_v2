@@ -1,6 +1,6 @@
 ---
 id: SPEC-ORDER-013
-version: 1.2.0
+version: 1.3.0
 status: completed
 created_at: 2026-08-09
 updated: 2026-08-09
@@ -20,6 +20,7 @@ labels: [order, logistics, rack-number]
 | 1.0.0 | 2026-08-09 | ggajo | 최초 작성 — 사용자 인터뷰로 확정된 요구사항(데이터 모델, 신규 독립 페이지, 검색→체크박스 일괄 적용, 개별 인라인 편집, Excel 3컬럼 업로드, 3개 백엔드 엔드포인트, OrderDetailPage 노출 제외)을 EARS 형식으로 formalize |
 | 1.1.0 | 2026-08-09 | ggajo | Phase 2.3 plan-auditor 리뷰(iteration 2, FAIL — MP-2 잔존) 반영, iteration 3 제출본. (D9, critical/MP-2) AC-RACK-003/003a/003b의 후행 "shall" 절 주어를 "the response"/"no LineItem's rack_number"/"the target LineItem's rack_number"에서 모두 "the system"으로 통일. REQ-RACK-002에서도 동일 결함 유형("rack_number shall be set only by...")을 자체 재검토로 추가 발견해 "the system shall set..."으로 정정. (D8) AC-RACK-006을 006(양성 매칭)/006c(음성 범위 제한, 신설)로, AC-RACK-010을 010(렌더링)/010b(전체선택 토글, 신설)/010c(재검색 시 선택 초기화, 신설)로 분리해 AC 1개당 단일 테스트 가능 동작 원칙 준수. (D10) REQ-RACK-008/AC-RACK-008에서 구현 세부사항 "lazy-loaded route"/"code-split" 문구 제거, 관찰 가능한 라우팅/메뉴 동작만 기술 |
 | 1.1.1 | 2026-08-09 | ggajo | Phase 2.3 iteration 3 리뷰(FAIL, D11 critical/MP-2 단독 잔존) 이후 사용자 승인 하에 경량 수정 적용 — 3회 감사 반복 소진, 감사관 권고에 따라 전체 4차 감사 사이클 생략. AC-RACK-008의 "shall" 절 주어를 "The rack-number management page"에서 "The system"으로 정정(EARS 주어 일관성 원칙 준수). |
+| 1.3.0 | 2026-08-10 | ggajo | 완료 후 실사용(실제 창고 업로드 파일) 검증 중 발견된 설계 결함 정정. (1) Excel 업로드/검색의 주문 식별 기준을 `Order.order_number`(int)에서 `Order.name`(문자열, 예 `"#37349"`, `"#EB10011778"`)으로 전면 교체 — 수동 입력된 "EB" 접두사 주문은 `order_number`가 실제 주문과 무관한 값을 가져(예: `order_number=1778`) int 매칭으로는 원천적으로 찾을 수 없음이 실사용 데이터로 확인됨. `parse_rack_number_excel()` 반환 키 `order_number`(int|None) → `order_name`(str|None)으로 변경, `#` 스트립/정수 파싱 로직 제거(문자열 원본 보존, `#` 포함). `UploadRackNumberView`/`SearchTab`(프론트) 모두 동일 기준으로 정정. REQ-RACK-006 계열의 "order_number" 표현은 실질적으로 "order_name"을 의미하도록 재해석됨 — 외부 응답 계약(matched_count/skipped_count)은 변경 없음. (2) `SearchTab`의 주문 검색도 동일하게 `Order.name` 기준 정규화 매칭(대소문자/`#` 유무 무시) 추가, 기존 숫자 `order_number` 검색과 병행 지원. |
 | 1.2.0 | 2026-08-09 | ggajo | Phase 3 (Sync) 완료 — 전체 구현 완료 및 테스트 통과. 백엔드 51개 테스트, 프론트엔드 15개 테스트 완료. |
 
 ---

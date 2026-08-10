@@ -221,6 +221,71 @@ describe('SearchTab — SPEC-ORDER-013', () => {
     expect(screen.getByText('일치하는 주문을 찾을 수 없습니다.')).toBeInTheDocument()
   })
 
+  it('BUGFIX: matches an order by name (no leading #) when order_number does not correlate with the typed search', () => {
+    // Real production case: a manually-entered order has name="#EB10011778"
+    // but order_number=1778. The backend already OR-matches on name, but the
+    // frontend previously discarded this hit by filtering on order_number only.
+    vi.mocked(useOrders).mockReturnValue({
+      data: {
+        count: 1,
+        next: null,
+        previous: null,
+        results: [buildOrder({ order_number: 1778, name: '#EB10011778' })],
+      },
+      isFetching: false,
+    } as unknown as ReturnType<typeof useOrders>)
+    vi.mocked(useOrderDetail).mockReturnValue({
+      data: buildOrderDetail(),
+      isFetching: false,
+    } as unknown as ReturnType<typeof useOrderDetail>)
+
+    render(<SearchTab />)
+    search('EB10011778')
+
+    expect(screen.getByText('SKU-A')).toBeInTheDocument()
+    expect(screen.queryByText('일치하는 주문을 찾을 수 없습니다.')).not.toBeInTheDocument()
+  })
+
+  it('BUGFIX: matches an order by name when the typed search includes a leading # (case-insensitive)', () => {
+    vi.mocked(useOrders).mockReturnValue({
+      data: {
+        count: 1,
+        next: null,
+        previous: null,
+        results: [buildOrder({ order_number: 1778, name: '#EB10011778' })],
+      },
+      isFetching: false,
+    } as unknown as ReturnType<typeof useOrders>)
+    vi.mocked(useOrderDetail).mockReturnValue({
+      data: buildOrderDetail(),
+      isFetching: false,
+    } as unknown as ReturnType<typeof useOrderDetail>)
+
+    render(<SearchTab />)
+    search('#eb10011778')
+
+    expect(screen.getByText('SKU-A')).toBeInTheDocument()
+    expect(screen.queryByText('일치하는 주문을 찾을 수 없습니다.')).not.toBeInTheDocument()
+  })
+
+  it('BUGFIX: a search matching neither name nor order_number still shows the not-found state', () => {
+    vi.mocked(useOrders).mockReturnValue({
+      data: {
+        count: 1,
+        next: null,
+        previous: null,
+        results: [buildOrder({ order_number: 1778, name: '#EB10011778' })],
+      },
+      isFetching: false,
+    } as unknown as ReturnType<typeof useOrders>)
+
+    render(<SearchTab />)
+    search('NOMATCH')
+
+    expect(screen.getByText('일치하는 주문을 찾을 수 없습니다.')).toBeInTheDocument()
+    expect(screen.queryByText('SKU-A')).not.toBeInTheDocument()
+  })
+
   it('AC-RACK-010: renders one checkbox per row and one header select-all checkbox', () => {
     vi.mocked(useOrders).mockReturnValue({
       data: { count: 1, next: null, previous: null, results: [buildOrder()] },

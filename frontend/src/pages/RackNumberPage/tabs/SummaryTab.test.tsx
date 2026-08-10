@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { SummaryTab } from './SummaryTab'
 import { useRackNumberSummary } from '@/hooks/useRackNumberQueries'
 import type { RackNumberSummaryResponse } from '@/services/rackNumberApi'
@@ -18,7 +19,7 @@ function buildResponse(overrides: Partial<RackNumberSummaryResponse> = {}): Rack
         line_items: [
           {
             id: 42,
-            order_number: 1001,
+            order_name: '#1001',
             sku: 'SKU-001',
             title: '테스트 상품 A',
             quantity: 3,
@@ -26,7 +27,7 @@ function buildResponse(overrides: Partial<RackNumberSummaryResponse> = {}): Rack
           },
           {
             id: 43,
-            order_number: 1002,
+            order_name: '#1002',
             sku: 'SKU-002',
             title: '테스트 상품 B',
             quantity: 5,
@@ -41,7 +42,7 @@ function buildResponse(overrides: Partial<RackNumberSummaryResponse> = {}): Rack
         line_items: [
           {
             id: 44,
-            order_number: 1003,
+            order_name: '#1003',
             sku: 'SKU-003',
             title: '테스트 상품 C',
             quantity: 2,
@@ -85,25 +86,28 @@ describe('SummaryTab — SPEC-ORDER-014', () => {
     expect(screen.getByText('미지정')).toBeInTheDocument()
   })
 
-  it('AC-RACKSUM-012: renders order_number/sku/title/quantity/logistics_status for each member LineItem', () => {
+  it('AC-RACKSUM-012: renders order_name/sku/title/quantity/logistics_status for each member LineItem after expanding the group', async () => {
+    const user = userEvent.setup()
     vi.mocked(useRackNumberSummary).mockReturnValue({
       data: buildResponse(),
       isPending: false,
     } as unknown as ReturnType<typeof useRackNumberSummary>)
 
     render(<SummaryTab />)
+    await user.click(screen.getByRole('button', { name: /A-1/ }))
 
-    expect(screen.getByText('1001')).toBeInTheDocument()
+    expect(screen.getByText('#1001')).toBeInTheDocument()
     expect(screen.getByText('SKU-001')).toBeInTheDocument()
     expect(screen.getByText('테스트 상품 A')).toBeInTheDocument()
     expect(screen.getByText('3')).toBeInTheDocument()
     expect(screen.getByText('입고')).toBeInTheDocument() // received label
 
-    // Cross-order group member from a different order_number (AC-RACKSUM-004b)
-    expect(screen.getByText('1002')).toBeInTheDocument()
+    // Cross-order group member from a different order_name (AC-RACKSUM-004b)
+    expect(screen.getByText('#1002')).toBeInTheDocument()
   })
 
-  it('renders "-" for a member LineItem with a null order_number', () => {
+  it('renders "-" for a member LineItem with a null order_name after expanding the group', async () => {
+    const user = userEvent.setup()
     vi.mocked(useRackNumberSummary).mockReturnValue({
       data: {
         groups: [
@@ -114,7 +118,7 @@ describe('SummaryTab — SPEC-ORDER-014', () => {
             line_items: [
               {
                 id: 50,
-                order_number: null,
+                order_name: null,
                 sku: 'SKU-050',
                 title: '테스트 상품 D',
                 quantity: 1,
@@ -128,6 +132,7 @@ describe('SummaryTab — SPEC-ORDER-014', () => {
     } as unknown as ReturnType<typeof useRackNumberSummary>)
 
     render(<SummaryTab />)
+    await user.click(screen.getByRole('button', { name: /B-2/ }))
 
     expect(screen.getByText('-')).toBeInTheDocument()
   })
@@ -144,13 +149,15 @@ describe('SummaryTab — SPEC-ORDER-014', () => {
     expect(screen.queryByRole('table')).not.toBeInTheDocument()
   })
 
-  it('AC-RACKSUM-014/015: renders no checkbox, textbox, or apply button anywhere on the tab', () => {
+  it('AC-RACKSUM-014/015: renders no checkbox, textbox, or apply button anywhere on the tab, even when expanded', async () => {
+    const user = userEvent.setup()
     vi.mocked(useRackNumberSummary).mockReturnValue({
       data: buildResponse(),
       isPending: false,
     } as unknown as ReturnType<typeof useRackNumberSummary>)
 
     render(<SummaryTab />)
+    await user.click(screen.getByRole('button', { name: /A-1/ }))
 
     expect(screen.queryAllByRole('checkbox')).toHaveLength(0)
     expect(screen.queryAllByRole('textbox')).toHaveLength(0)
@@ -166,5 +173,100 @@ describe('SummaryTab — SPEC-ORDER-014', () => {
     render(<SummaryTab />)
 
     expect(screen.getByRole('status', { name: '로딩 중' })).toBeInTheDocument()
+  })
+
+  describe('collapse/expand behavior (SPEC-ORDER-014 UX improvement)', () => {
+    it('does not render the LineItem table for a group before its header is clicked', () => {
+      vi.mocked(useRackNumberSummary).mockReturnValue({
+        data: buildResponse(),
+        isPending: false,
+      } as unknown as ReturnType<typeof useRackNumberSummary>)
+
+      render(<SummaryTab />)
+
+      expect(screen.queryByText('#1001')).not.toBeInTheDocument()
+      expect(screen.queryByText('SKU-001')).not.toBeInTheDocument()
+      expect(screen.queryAllByRole('table')).toHaveLength(0)
+    })
+
+    it('reveals the LineItem table for a group after clicking its header', async () => {
+      const user = userEvent.setup()
+      vi.mocked(useRackNumberSummary).mockReturnValue({
+        data: buildResponse(),
+        isPending: false,
+      } as unknown as ReturnType<typeof useRackNumberSummary>)
+
+      render(<SummaryTab />)
+      await user.click(screen.getByRole('button', { name: /A-1/ }))
+
+      expect(screen.getByText('#1001')).toBeInTheDocument()
+      expect(screen.getAllByRole('table')).toHaveLength(1)
+    })
+
+    it('hides the LineItem table again after clicking the header a second time', async () => {
+      const user = userEvent.setup()
+      vi.mocked(useRackNumberSummary).mockReturnValue({
+        data: buildResponse(),
+        isPending: false,
+      } as unknown as ReturnType<typeof useRackNumberSummary>)
+
+      render(<SummaryTab />)
+      const header = screen.getByRole('button', { name: /A-1/ })
+      await user.click(header)
+      expect(screen.getByText('#1001')).toBeInTheDocument()
+
+      await user.click(header)
+      expect(screen.queryByText('#1001')).not.toBeInTheDocument()
+    })
+
+    it('expanding one group does not expand a different group', async () => {
+      const user = userEvent.setup()
+      vi.mocked(useRackNumberSummary).mockReturnValue({
+        data: buildResponse(),
+        isPending: false,
+      } as unknown as ReturnType<typeof useRackNumberSummary>)
+
+      render(<SummaryTab />)
+      await user.click(screen.getByRole('button', { name: /A-1/ }))
+
+      expect(screen.getByText('#1001')).toBeInTheDocument()
+      // The unassigned group ("미지정") remains collapsed.
+      expect(screen.queryByText('#1003')).not.toBeInTheDocument()
+    })
+
+    it('always shows the rack_number/label and total_quantity in the header regardless of expand state', async () => {
+      const user = userEvent.setup()
+      vi.mocked(useRackNumberSummary).mockReturnValue({
+        data: buildResponse(),
+        isPending: false,
+      } as unknown as ReturnType<typeof useRackNumberSummary>)
+
+      render(<SummaryTab />)
+
+      // Collapsed state: header text is present.
+      const header = screen.getByRole('button', { name: /A-1/ })
+      expect(header).toHaveTextContent('A-1')
+      expect(header).toHaveTextContent('8')
+
+      // Expanded state: header text remains present.
+      await user.click(header)
+      expect(header).toHaveTextContent('A-1')
+      expect(header).toHaveTextContent('8')
+    })
+
+    it('group headers are keyboard-accessible buttons with aria-expanded state', async () => {
+      const user = userEvent.setup()
+      vi.mocked(useRackNumberSummary).mockReturnValue({
+        data: buildResponse(),
+        isPending: false,
+      } as unknown as ReturnType<typeof useRackNumberSummary>)
+
+      render(<SummaryTab />)
+      const header = screen.getByRole('button', { name: /A-1/ })
+
+      expect(header).toHaveAttribute('aria-expanded', 'false')
+      await user.click(header)
+      expect(header).toHaveAttribute('aria-expanded', 'true')
+    })
   })
 })

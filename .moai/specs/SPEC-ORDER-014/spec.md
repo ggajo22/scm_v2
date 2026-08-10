@@ -1,6 +1,6 @@
 ---
 id: SPEC-ORDER-014
-version: 1.0.2
+version: 1.1.0
 status: completed
 created_at: 2026-08-09
 updated: 2026-08-10
@@ -20,6 +20,7 @@ labels: [order, logistics, rack-number, summary]
 | 1.0.0 | 2026-08-09 | ggajo | 최초 작성 — 사용자 인터뷰로 확정된 요구사항(고정 미출고 필터, 전체 주문 교차 집계, 렉번호별 그룹핑 + 미지정 버킷, `/rack-number` 페이지 2번째 탭, 읽기 전용 백엔드 GET 엔드포인트)을 EARS 형식으로 formalize. SPEC-ORDER-013(완료, `rack_number` 필드 + 주문 검색 스코프 렉 관리 페이지)을 직접 확장 |
 | 1.0.1 | 2026-08-09 | ggajo | plan-auditor 리뷰(iteration 1, PASS, 0.90) 후속 정리 — REQ-RACKSUM-008에서 구현 클래스명(`UnorderedItemsView`) 제거(D1), 설계 결정 B/D의 file:line·ORM 메서드 수준 상세를 WHAT 레벨 서술로 재작성하고 구체적 참조는 plan.md로 위임(D2), REQ/AC-RACKSUM-011a를 Ubiquitous에서 State-Driven으로 재분류해 내재된 조건절 제거(D4), 범위 섹션에서 "TanStack Query" 기술명을 라이브러리 미지정 서술로 교체(D5). D3(`status` enum 표기)는 프로젝트 전역의 기존 관례이므로 본 SPEC 범위에서 변경하지 않음 |
 | 1.0.2 | 2026-08-10 | ggajo | Phase 3 (Sync) 완료 — 전체 구현 완료 및 테스트 통과. 백엔드 1개 신규 뷰 + 13개 테스트, 프론트엔드 RackNumberPage 탭 2개 구조(Tab1: SearchTab 기존 동작 무변경 확인, Tab2: SummaryTab 신규) + 26개 테스트. 전체 회귀 테스트 276개 통과(백엔드 149개, 프론트엔드 127개). |
+| 1.1.0 | 2026-08-10 | ggajo | 완료 후 실사용 검증 중 발견된 사항 반영(SPEC-ORDER-013 1.3.0과 연계). (1) 응답 필드 `line_items[].order_number`(int) → `order_name`(str, `Order.name`)으로 교체 — "EB" 접두사 수동 주문의 `order_number`가 실제 식별자와 무관해 표시가 누락되던 문제 해결. (2) 미출고 필터에 `purchase_status="order_cancelled"` 제외 조건 추가(REQ-RACKSUM-001 필터 범위 확장, 사용자 확정) — 주문취소건은 렉 요약에서 더 이상 노출되지 않음. (3) UI: 각 렉 그룹을 기본 접힘 상태(렉번호+총 수량만 표시)로 변경하고 클릭 시 LineItem 리스트가 펼쳐지는 아코디언 인터랙션 추가(REQ-RACKSUM-010/011 렌더링 요구사항의 UI 표현 방식 변경, 읽기 전용 원칙 REQ-RACKSUM-014/015는 그대로 유지). |
 
 ---
 

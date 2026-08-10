@@ -1,6 +1,9 @@
+import { useState } from 'react'
+import { ChevronDown } from 'lucide-react'
 import { useRackNumberSummary } from '@/hooks/useRackNumberQueries'
 import { LOGISTICS_STATUS_OPTIONS } from '@/services/purchaseOrderApi'
 import type { RackNumberSummaryGroup } from '@/services/rackNumberApi'
+import { cn } from '@/lib/utils'
 
 // Local label map reusing the shared LOGISTICS_STATUS_OPTIONS source of
 // truth — same construction pattern as OrderDetailPage.tsx's
@@ -57,41 +60,60 @@ function RackNumberSummaryGroupSection({ group }: { group: RackNumberSummaryGrou
   // named rack_number group.
   const label = group.is_unassigned ? '미지정' : group.rack_number
 
+  // SPEC-ORDER-014 UX improvement: each group is collapsed by default and
+  // toggled independently — no shared/cross-group state.
+  const [expanded, setExpanded] = useState(false)
+
   return (
     <div className="space-y-2">
-      <div className="flex items-baseline gap-2">
+      <button
+        type="button"
+        onClick={() => setExpanded((prev) => !prev)}
+        aria-expanded={expanded}
+        className={cn(
+          'w-full flex items-center gap-2 rounded-md px-1 py-1 text-left',
+          'cursor-pointer hover:bg-muted/50 transition-colors',
+          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
+        )}
+      >
+        <ChevronDown
+          className={cn('h-3.5 w-3.5 transition-transform duration-200 shrink-0', !expanded && '-rotate-90')}
+          aria-hidden="true"
+        />
         <h2 className="text-sm font-semibold">{label}</h2>
         <span className="text-sm text-muted-foreground">총 {group.total_quantity}권</span>
-      </div>
+      </button>
 
-      <div className="overflow-x-auto rounded border">
-        <table className="w-full text-sm border-collapse">
-          <thead>
-            <tr className="border-b bg-muted/50">
-              <th className="py-2 px-3 text-left font-medium">주문번호</th>
-              <th className="py-2 px-3 text-left font-medium">SKU</th>
-              <th className="py-2 px-3 text-left font-medium">도서명</th>
-              <th className="py-2 px-3 text-left font-medium">수량</th>
-              <th className="py-2 px-3 text-left font-medium">물류상태</th>
-            </tr>
-          </thead>
-          <tbody>
-            {group.line_items.map((item) => (
-              <tr key={item.id} className="border-b last:border-0 hover:bg-muted/30">
-                <td className="py-2 px-3">{item.order_number ?? '-'}</td>
-                <td className="py-2 px-3 font-mono text-xs">{item.sku}</td>
-                <td className="py-2 px-3 max-w-xs truncate" title={item.title ?? undefined}>
-                  {item.title}
-                </td>
-                <td className="py-2 px-3">{item.quantity}</td>
-                <td className="py-2 px-3">
-                  {LOGISTICS_STATUS_LABELS[item.logistics_status] ?? item.logistics_status}
-                </td>
+      {expanded && (
+        <div className="overflow-x-auto rounded border">
+          <table className="w-full text-sm border-collapse">
+            <thead>
+              <tr className="border-b bg-muted/50">
+                <th className="py-2 px-3 text-left font-medium">주문번호</th>
+                <th className="py-2 px-3 text-left font-medium">SKU</th>
+                <th className="py-2 px-3 text-left font-medium">도서명</th>
+                <th className="py-2 px-3 text-left font-medium">수량</th>
+                <th className="py-2 px-3 text-left font-medium">물류상태</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody>
+              {group.line_items.map((item) => (
+                <tr key={item.id} className="border-b last:border-0 hover:bg-muted/30">
+                  <td className="py-2 px-3">{item.order_name ?? '-'}</td>
+                  <td className="py-2 px-3 font-mono text-xs">{item.sku}</td>
+                  <td className="py-2 px-3 max-w-xs truncate" title={item.title ?? undefined}>
+                    {item.title}
+                  </td>
+                  <td className="py-2 px-3">{item.quantity}</td>
+                  <td className="py-2 px-3">
+                    {LOGISTICS_STATUS_LABELS[item.logistics_status] ?? item.logistics_status}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   )
 }

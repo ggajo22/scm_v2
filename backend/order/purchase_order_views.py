@@ -2153,9 +2153,13 @@ class UploadRackNumberView(APIView):
     POST /api/purchase-orders/upload-rack-number/
 
     Multipart: file (.xlsx)
-    REQ-RACK-006/006a/006b/007: parses a 3-column (order number/SKU/rack
+    REQ-RACK-006/006a/006b/007: parses a 3-column (order identifier/SKU/rack
     number) Excel file and applies rack_number to every LineItem matching a
-    parsed row's (order_number, sku) pair.
+    parsed row's (order_name, sku) pair. The order identifier is matched
+    against `Order.name` (Shopify's order display name, e.g. "#37349") via
+    exact string equality — NOT `Order.order_number` (design fix,
+    same-day follow-up to SPEC-ORDER-013) — since the two fields diverge for
+    manually-entered "EB"-prefixed orders.
     """
 
     authentication_classes = [JWTAuthentication]
@@ -2179,18 +2183,18 @@ class UploadRackNumberView(APIView):
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
 
-        # REQ-RACK-006b: last-row-wins dedup keyed on (order_number, sku).
-        # Bug fix (REQ-RACK-006a/AC-RACK-007): rows whose order-number cell
-        # failed integer parsing carry order_number=None (see
-        # parse_rack_number_excel) and must NOT be deduped against each
-        # other under the same (None, sku) key — there is no reliable
-        # identity to merge them on, so each keeps its own row index in the
-        # key, ensuring every such row is still counted (as skipped) below.
+        # REQ-RACK-006b: last-row-wins dedup keyed on (order_name, sku).
+        # Rows whose order-identifier cell is blank/empty carry
+        # order_name=None (see parse_rack_number_excel) and must NOT be
+        # deduped against each other under the same (None, sku) key — there
+        # is no reliable identity to merge them on, so each keeps its own
+        # row index in the key, ensuring every such row is still counted
+        # (as skipped) below.
         dedup_map: dict[tuple, dict] = {}
         for idx, row in enumerate(parsed_rows):
             key = (
-                (row["order_number"], row["sku"])
-                if row["order_number"] is not None
+                (row["order_name"], row["sku"])
+                if row["order_name"] is not None
                 else (None, idx)
             )
             dedup_map[key] = row
@@ -2199,7 +2203,7 @@ class UploadRackNumberView(APIView):
         skipped_count = 0
         try:
             with transaction.atomic():
-                # @MX:WARN: [AUTO] A single (order_number, sku) key may match
+                # @MX:WARN: [AUTO] A single (order_name, sku) key may match
                 # 2+ LineItems (SPEC-SHOPIFY-SKU-SET-002 unique_together
                 # allows duplicate SKUs per order via distinct
                 # shopify_line_item_id) — ALL matching LineItems receive the
@@ -2209,16 +2213,22 @@ class UploadRackNumberView(APIView):
                 # targets when duplicates exist; treated as "same physical
                 # book, same rack" by design, not a bug.
                 for row in dedup_map.values():
-                    order_number = row["order_number"]
+                    order_name = row["order_name"]
                     sku = row["sku"]
 
-                    if order_number is None:
-                        # Bug fix (REQ-RACK-006a): unparseable order number
-                        # -> treated the same as "order not found" -> skip.
+                    if order_name is None:
+                        # Blank order-identifier cell -> treated the same
+                        # as "order not found" -> skip (REQ-RACK-006a).
                         skipped_count += 1
                         continue
 
-                    order = Order.objects.filter(order_number=order_number).first()
+                    # Design fix (same-day follow-up to SPEC-ORDER-013):
+                    # match against Order.name (exact string, e.g.
+                    # "#37349" or "#EB10011778"), NOT Order.order_number —
+                    # the two fields diverge for manually-entered
+                    # "EB"-prefixed orders, where order_number cannot encode
+                    # the identifier at all.
+                    order = Order.objects.filter(name=order_name).first()
                     if order is None:
                         # REQ-RACK-006a: order not found -> skip.
                         skipped_count += 1
@@ -2251,7 +2261,7 @@ class UploadRackNumberView(APIView):
 
 # @MX:NOTE: [AUTO] no pagination and application-level grouping (rather than
 # DB-level annotate) mirror UnorderedItemsView above (M2) — grouping needs
-# each member LineItem's order_number/sku/title/quantity/logistics_status
+# each member LineItem's order_name/sku/title/quantity/logistics_status
 # together, which annotate-only aggregation cannot produce in one query.
 # @MX:WARN: [AUTO] returns every not-yet-shipped LineItem system-wide in a
 # single non-paginated payload — response size grows with unshipped LineItem
@@ -2267,6 +2277,8 @@ class LineItemRackNumberSummaryView(APIView):
     that has not yet shipped (logistics_status != "shipped"), grouped by
     rack_number. LineItems with an empty rack_number are grouped into a
     single unassigned bucket (REQ-RACKSUM-004a) rather than dropped.
+    Also excludes LineItems with purchase_status="order_cancelled",
+    mirroring the same exclusion used elsewhere for cancelled purchases.
     """
 
     authentication_classes = [JWTAuthentication]
@@ -2275,6 +2287,7 @@ class LineItemRackNumberSummaryView(APIView):
     def get(self, request) -> Response:
         line_items = (
             LineItem.objects.exclude(logistics_status="shipped")
+            .exclude(purchase_status="order_cancelled")
             .select_related("order")
             .order_by("rack_number", "order__order_number")
         )
@@ -2297,7 +2310,7 @@ class LineItemRackNumberSummaryView(APIView):
             group["line_items"].append(
                 {
                     "id": li.id,
-                    "order_number": li.order.order_number,
+                    "order_name": li.order.name,
                     "sku": li.sku,
                     "title": li.title,
                     "quantity": li.quantity,

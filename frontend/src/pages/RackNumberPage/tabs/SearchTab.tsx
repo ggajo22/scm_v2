@@ -9,6 +9,13 @@ import {
 } from '@/hooks/useRackNumberQueries'
 import type { LineItemDetail } from '@/types/order'
 
+// BUGFIX: normalizes an order search term for name matching — case-insensitive,
+// tolerant of an optional leading '#' on either side (Order.name is stored as
+// "#EB10011778"; users may type "EB10011778", "eb10011778", or "#EB10011778").
+function normalizeOrderSearch(value: string): string {
+  return value.trim().replace(/^#/, '').toUpperCase()
+}
+
 // SPEC-ORDER-013: independent rack_number management page (REQ-RACK-008).
 // Search-only flow scoped to a single Order — selection state is local
 // (결정 F), never the global usePurchaseOrderStore.
@@ -23,15 +30,20 @@ export function SearchTab() {
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   // 결정 C: reuse GET /api/orders/?search= (which also OR-matches on name),
-  // then filter client-side to only an exact order_number match.
+  // then filter client-side to an exact order_number OR order name match.
+  // BUGFIX: manually-entered orders can have a name (e.g. "#EB10011778")
+  // that does not numerically correlate with order_number (e.g. 1778) — an
+  // order_number-only filter silently discarded these backend hits.
   const { data: searchResults, isFetching: isSearching } = useOrders(
     { search: submittedSearch ?? '' },
     { enabled: submittedSearch !== null }
   )
 
-  const matchedOrder = searchResults?.results.find(
-    (o) => String(o.order_number) === submittedSearch
-  )
+  const matchedOrder = searchResults?.results.find((o) => {
+    if (String(o.order_number) === submittedSearch) return true
+    if (submittedSearch === null || o.name == null) return false
+    return normalizeOrderSearch(o.name) === normalizeOrderSearch(submittedSearch)
+  })
 
   const { data: orderDetail } = useOrderDetail(matchedOrder?.id ?? 0, {
     enabled: matchedOrder !== undefined,

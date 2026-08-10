@@ -4,12 +4,12 @@ Coverage targets (see plan.md M2):
   T1  not-shipped filter definition — not_shipped/shipment_confirmed/received/
       outbound_scheduled included, shipped excluded (AC-RACKSUM-001/007)
   T2  cross-order grouping by rack_number, each item keeps its own
-      order_number (AC-RACKSUM-004/004b)
+      order_name (AC-RACKSUM-004/004b)
   T3  empty rack_number LineItems grouped into a single unassigned bucket
       (AC-RACKSUM-004a)
   T4  total_quantity sums member quantities, null quantity treated as 0
       (AC-RACKSUM-005)
-  T5  member LineItem dict includes order_number/sku/title/quantity/
+  T5  member LineItem dict includes order_name/sku/title/quantity/
       logistics_status (AC-RACKSUM-006)
   T6  Order fully shipped is excluded entirely; partially shipped Order only
       contributes its not-shipped LineItems (AC-RACKSUM-007/007a)
@@ -121,8 +121,8 @@ class TestCrossOrderGrouping:
     grouped together, each item retains its own order_number."""
 
     def test_same_rack_number_different_orders_grouped_together(self, auth_client):
-        order1 = _make_order(shopify_order_id=400101, order_number=1001)
-        order2 = _make_order(shopify_order_id=400102, order_number=1002)
+        order1 = _make_order(shopify_order_id=400101, name="#1001")
+        order2 = _make_order(shopify_order_id=400102, name="#1002")
         _make_line_item(order1, sku="SKU-T2-A", rack_number="B-1", logistics_status="received")
         _make_line_item(
             order2,
@@ -138,8 +138,8 @@ class TestCrossOrderGrouping:
         group = _find_group(groups, "B-1")
         assert group is not None
         assert len(group["line_items"]) == 2
-        order_numbers = {item["order_number"] for item in group["line_items"]}
-        assert order_numbers == {1001, 1002}
+        order_names = {item["order_name"] for item in group["line_items"]}
+        assert order_names == {"#1001", "#1002"}
 
 
 @pytest.mark.django_db
@@ -197,11 +197,11 @@ class TestTotalQuantity:
 
 @pytest.mark.django_db
 class TestMemberFields:
-    """T5: AC-RACKSUM-006 — each member LineItem dict includes order_number/
+    """T5: AC-RACKSUM-006 — each member LineItem dict includes order_name/
     sku/title/quantity/logistics_status."""
 
     def test_member_line_item_has_required_fields(self, auth_client):
-        order = _make_order(order_number=2001)
+        order = _make_order(name="#2001")
         _make_line_item(
             order,
             sku="SKU-T5",
@@ -216,12 +216,38 @@ class TestMemberFields:
         groups = response.json()["groups"]
         group = _find_group(groups, "D-1")
         item = group["line_items"][0]
-        assert item["order_number"] == 2001
+        assert item["order_name"] == "#2001"
         assert item["sku"] == "SKU-T5"
         assert item["title"] == "Some Title"
         assert item["quantity"] == 4
         assert item["logistics_status"] == "outbound_scheduled"
         assert "id" in item
+
+
+@pytest.mark.django_db
+class TestOrderNameField:
+    """SPEC-ORDER-014 regression: the summary view must display
+    `Order.name` (the authoritative Shopify-style display identifier, e.g.
+    "#EB10011778"), never `Order.order_number` (int, unreliable/divergent
+    for manually-entered EB-prefixed orders). An EB order's order_number
+    holds an unrelated integer completely disconnected from its name."""
+
+    def test_eb_prefixed_order_shows_order_name_not_order_number(self, auth_client):
+        order = _make_order(order_number=1778, name="#EB10011778")
+        _make_line_item(
+            order,
+            sku="SKU-EB",
+            rack_number="EB-01",
+            logistics_status="not_shipped",
+        )
+
+        response = auth_client.get(RACK_SUMMARY_URL)
+
+        groups = response.json()["groups"]
+        group = _find_group(groups, "EB-01")
+        item = group["line_items"][0]
+        assert item["order_name"] == "#EB10011778"
+        assert "order_number" not in item
 
 
 @pytest.mark.django_db
@@ -262,6 +288,46 @@ class TestOrderLevelExclusion:
         group = _find_group(groups, "E-2")
         skus = {item["sku"] for item in group["line_items"]}
         assert skus == {"SKU-T6-D"}
+
+
+@pytest.mark.django_db
+class TestOrderCancelledExclusion:
+    """Regression: LineItems with purchase_status="order_cancelled" must be
+    excluded from the rack-number summary even when logistics_status is not
+    "shipped" (mirrors the exclusion precedent used elsewhere for cancelled
+    purchases)."""
+
+    def test_order_cancelled_line_item_is_excluded(self, auth_client):
+        order = _make_order()
+        _make_line_item(
+            order,
+            sku="SKU-CANCELLED",
+            rack_number="Z-1",
+            logistics_status="not_shipped",
+            purchase_status="order_cancelled",
+        )
+
+        response = auth_client.get(RACK_SUMMARY_URL)
+
+        assert response.status_code == 200
+        skus = {item["sku"] for item in _flatten_line_items(response.json()["groups"])}
+        assert "SKU-CANCELLED" not in skus
+
+    def test_non_cancelled_not_shipped_line_item_still_included(self, auth_client):
+        order = _make_order()
+        _make_line_item(
+            order,
+            sku="SKU-NOT-CANCELLED",
+            rack_number="Z-2",
+            logistics_status="not_shipped",
+            purchase_status="unordered",
+        )
+
+        response = auth_client.get(RACK_SUMMARY_URL)
+
+        assert response.status_code == 200
+        skus = {item["sku"] for item in _flatten_line_items(response.json()["groups"])}
+        assert "SKU-NOT-CANCELLED" in skus
 
 
 @pytest.mark.django_db

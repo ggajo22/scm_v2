@@ -986,29 +986,47 @@ def _parse_sku_only_xlsx(file_bytes: bytes) -> list[dict]:
 # @MX:NOTE: [AUTO] Column alias lists ("주문번호"/"order", "sku"/"isbn",
 # "렉번호"/"rack") intentionally mirror the case-insensitive substring
 # convention already used by _parse_sku_only_xlsx above, extended from 1 to
-# 3 required columns (SPEC-ORDER-013 결정 D).
+# 3 required columns (SPEC-ORDER-013 결정 D). The order-number alias also
+# accepts an exact "name" header match (Shopify's bare "Name" column) and
+# excludes any header containing "date" from the loose "order" substring
+# match, so "Order Date" is never mistaken for the order-number column
+# (bug fix, real-world "발송정리" export file).
 def parse_rack_number_excel(file_bytes: bytes) -> list[dict]:
     """
-    SPEC-ORDER-013 REQ-RACK-005/005a: parse an uploaded rack-number Excel
-    file. Header row (row 0) is scanned for three required columns —
-    order number, SKU, rack number — using case-insensitive substring
-    matching against each column's expected name variants, independent of
-    left-to-right position (REQ-RACK-005). Raises ValueError when any of the
-    three columns cannot be located (REQ-RACK-005a).
+    SPEC-ORDER-013 REQ-RACK-005/005a (design correction, same-day follow-up):
+    parse an uploaded rack-number Excel file. Header row (row 0) is scanned
+    for three required columns — order identifier, SKU, rack number — using
+    case-insensitive substring matching against each column's expected name
+    variants, independent of left-to-right position (REQ-RACK-005). The
+    order-identifier column also matches on an exact "name" header (Shopify
+    order-name column alias) and excludes any header containing "date" from
+    the loose "order" substring match, so a leading "Order Date" column is
+    never mistaken for the order-identifier column (bug fix). Raises
+    ValueError when any of the three columns cannot be located
+    (REQ-RACK-005a).
+
+    Order-identifier cell values are read as a raw string and whitespace-
+    stripped only — no "#" stripping and no integer conversion (design fix).
+    `Order.name` (Shopify's order display name, e.g. "#37349") is what this
+    value is matched against downstream, and it is stored WITH the leading
+    "#". Order.name and Order.order_number usually correlate numerically for
+    normal Shopify orders but diverge for manually-entered "EB"-prefixed
+    orders (e.g. name="#EB10011778" with an unrelated order_number=1778),
+    where there is no way to derive one from the other. Matching against
+    Order.name as an exact string is therefore the only correct approach.
 
     Data rows: a row is skipped (not included in the result) only when its
-    SKU is blank. A row whose order-number cell fails to parse as an
-    integer is still included, with `order_number` set to `None` — it is
-    NOT dropped here, so that `UploadRackNumberView` can count it toward
-    `skipped_count` (REQ-RACK-006a treats it the same as an "Order not
-    found" skip) rather than it silently vanishing from both
-    `matched_count` and `skipped_count` (bug fix, breaks AC-RACK-007
-    otherwise). The rack_number value is NOT required — an empty string is
-    preserved as an explicit "clear this rack_number" value rather than
-    being skipped (plan.md M3).
+    SKU is blank. A row whose order-identifier cell is itself blank/empty is
+    still included, with `order_name` set to `None` — it is NOT dropped
+    here, so that `UploadRackNumberView` can count it toward `skipped_count`
+    (REQ-RACK-006a treats it the same as an "Order not found" skip) rather
+    than it silently vanishing from both `matched_count` and
+    `skipped_count` (AC-RACK-007). The rack_number value is NOT required —
+    an empty string is preserved as an explicit "clear this rack_number"
+    value rather than being skipped (plan.md M3).
 
     Returns:
-        List of dicts: {"order_number": int | None, "sku": str, "rack_number": str}
+        List of dicts: {"order_name": str | None, "sku": str, "rack_number": str}
     """
     try:
         wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
@@ -1022,7 +1040,14 @@ def parse_rack_number_excel(file_bytes: bytes) -> list[dict]:
 
     header = [str(h).strip().lower() if h is not None else "" for h in rows[0]]
 
-    order_idx = next((i for i, h in enumerate(header) if "주문번호" in h or "order" in h), None)
+    order_idx = next(
+        (
+            i
+            for i, h in enumerate(header)
+            if "주문번호" in h or h == "name" or ("order" in h and "date" not in h)
+        ),
+        None,
+    )
     sku_idx = next((i for i, h in enumerate(header) if "sku" in h or "isbn" in h), None)
     rack_idx = next((i for i, h in enumerate(header) if "렉번호" in h or "rack" in h), None)
 
@@ -1036,12 +1061,16 @@ def parse_rack_number_excel(file_bytes: bytes) -> list[dict]:
         if len(row) <= max(order_idx, sku_idx, rack_idx):
             continue
 
-        # @MX:NOTE: [AUTO] order_number is intentionally NOT used to skip
-        # the row here (bug fix, REQ-RACK-006a/AC-RACK-007) — an unparseable
-        # order-number cell yields order_number=None and the row still
+        # @MX:NOTE: [AUTO] order_name is intentionally NOT used to skip the
+        # row here (design fix, REQ-RACK-006a/AC-RACK-007) — a blank
+        # order-identifier cell yields order_name=None and the row still
         # flows through to `results` so UploadRackNumberView can count it
-        # as skipped instead of dropping it invisibly.
-        order_number = _int_or_none(_cell(row, order_idx))
+        # as skipped instead of dropping it invisibly. The value is read
+        # verbatim (string identity, "#" preserved) since it is matched
+        # against Order.name downstream, not parsed as a number — Order.name
+        # and Order.order_number diverge for "EB"-prefixed manual orders.
+        raw_order = _cell(row, order_idx)
+        order_name = _str_or_none(raw_order)
 
         raw_sku = _cell(row, sku_idx)
         sku = str(raw_sku).strip() if raw_sku is not None else ""
@@ -1051,7 +1080,7 @@ def parse_rack_number_excel(file_bytes: bytes) -> list[dict]:
         raw_rack = _cell(row, rack_idx)
         rack_number = str(raw_rack).strip() if raw_rack is not None else ""
 
-        results.append({"order_number": order_number, "sku": sku, "rack_number": rack_number})
+        results.append({"order_name": order_name, "sku": sku, "rack_number": rack_number})
 
     return results
 
