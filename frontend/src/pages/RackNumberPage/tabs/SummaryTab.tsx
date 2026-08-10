@@ -64,6 +64,18 @@ function RackNumberSummaryGroupSection({ group }: { group: RackNumberSummaryGrou
   // toggled independently — no shared/cross-group state.
   const [expanded, setExpanded] = useState(false)
 
+  // Alternate row shading whenever order_name changes vs. the previous row,
+  // so visually adjacent line items from different orders are distinguishable.
+  let previousOrderName: string | null = null
+  let shadeToggle = false
+  const rows = group.line_items.map((item) => {
+    if (item.order_name !== previousOrderName) {
+      shadeToggle = !shadeToggle
+      previousOrderName = item.order_name
+    }
+    return { item, shaded: shadeToggle }
+  })
+
   return (
     <div className="space-y-2">
       <button
@@ -97,8 +109,11 @@ function RackNumberSummaryGroupSection({ group }: { group: RackNumberSummaryGrou
               </tr>
             </thead>
             <tbody>
-              {group.line_items.map((item) => (
-                <tr key={item.id} className="border-b last:border-0 hover:bg-muted/30">
+              {rows.map(({ item, shaded }) => (
+                <tr
+                  key={item.id}
+                  className={cn('border-b last:border-0 hover:bg-muted/30', shaded && 'bg-muted/50')}
+                >
                   <td className="py-2 px-3">{item.order_name ?? '-'}</td>
                   <td className="py-2 px-3 font-mono text-xs">{item.sku}</td>
                   <td className="py-2 px-3 max-w-xs truncate" title={item.title ?? undefined}>
