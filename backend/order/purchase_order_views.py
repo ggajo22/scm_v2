@@ -1899,21 +1899,215 @@ class UploadVendorShipmentView(APIView):
         )
 
 
+def _process_warehouse_receipt_rows(rows: list[dict]) -> dict:
+    """
+    SPEC-ORDER-011 REQ-LOGI-015: match, judge and apply warehouse-receiving
+    quantities for a batch of rows, atomically. Mirrors
+    `_process_outbound_rows` (SPEC-ORDER-015) closely — rows shaped
+    {"name": str, "sku": str, "total": int | None} (see
+    `excel_utils.parse_warehouse_receipt_excel`, which now delegates to
+    `parse_outbound_excel`) — with `received_quantity` / `received_at` /
+    logistics_status="received" in place of `shipped_quantity` /
+    `shipped_at` / "shipped".
+
+    Deliberately WITHOUT the outbound function's "total == 0 as a
+    US-warehouse completion signal" special case (REQ-OUTBOUND-009-area) —
+    there is no warehouse-receiving equivalent of "already sitting in the
+    destination warehouse", so a total of exactly 0 is rejected as
+    `invalid_total` the same as a negative or unreadable one (REQ-LOGI-015b).
+
+    Eligibility gate is unchanged from the pre-quantity-model behavior:
+    logistics_status IN ("not_shipped", "shipment_confirmed") — this is what
+    allows the direct 미입고 -> 입고 path when a vendor never sent a
+    shipment-confirmation upload, and it stays satisfied across multiple
+    partial-receipt uploads because logistics_status is left untouched below
+    the completion threshold (REQ-LOGI-015a).
+
+    Returns a dict with `matched` / `unmatched` / `quantity_exceeded` item
+    lists, their `*_count` totals, and `affected_order_ids` (only orders
+    whose LineItem was actually written, for the caller to pass to
+    `_recompute_order_aggregates()`). `UploadWarehouseReceiptView` collapses
+    this into the pre-existing {"matched_count", "skipped_count"} response
+    shape — the detailed categorization here is internal only.
+    """
+    matched: list[dict] = []
+    unmatched: list[dict] = []
+    quantity_exceeded: list[dict] = []
+    affected_order_ids: set[int] = set()
+
+    # REQ-LOGI-015: rows sharing an (order name, sku) key are SUMMED into one
+    # combined quantity before any matching or quantity judgement — same
+    # design decision as REQ-OUTBOUND-007.
+    grouped: dict[tuple[str, str], int] = {}
+    for row in rows:
+        order_name = str(row.get("name") or "").strip()
+        sku = str(row.get("sku") or "").strip()
+        total, total_ok = _parse_total(row.get("total"))
+
+        # REQ-LOGI-015b: a negative, unreadable, OR exactly-zero total is all
+        # rejected identically here, strictly pre-grouping — a genuine 0
+        # carries no completion meaning on the received side (unlike
+        # _process_outbound_rows' US-warehouse case), so it needs no
+        # post-matching special-casing.
+        if not total_ok or total <= 0:
+            unmatched.append(
+                {
+                    "name": order_name,
+                    "sku": sku,
+                    "total": total,
+                    "reason": "invalid_total",
+                }
+            )
+            continue
+
+        key = (order_name, sku)
+        grouped[key] = grouped.get(key, 0) + total
+
+    # One transaction for the whole batch, so a failure part-way through
+    # leaves no partially-applied rows behind.
+    with transaction.atomic():
+        orders_by_name: dict[str, Order] = {}
+        if grouped:
+            name_matches = Order.objects.filter(
+                name__in={name for name, _ in grouped}
+            ).order_by("pk")
+            for candidate in name_matches:
+                orders_by_name.setdefault(candidate.name, candidate)
+
+        # REQ-LOGI-005b safety fix carries over: eligibility is gated by
+        # logistics_status here (unlike outbound, which has none), scoped to
+        # the resolved orders/skus in one query.
+        line_items_by_key: dict[tuple[int, str], list[LineItem]] = {}
+        if orders_by_name:
+            sku_matches = LineItem.objects.filter(
+                logistics_status__in=["not_shipped", "shipment_confirmed"],
+                order_id__in=[o.id for o in orders_by_name.values()],
+                sku__in={sku for _, sku in grouped},
+            ).order_by("pk")
+            for candidate_item in sku_matches:
+                line_items_by_key.setdefault(
+                    (candidate_item.order_id, candidate_item.sku), []
+                ).append(candidate_item)
+
+        to_update: list[LineItem] = []
+
+        for (order_name, sku), total in grouped.items():
+            order = orders_by_name.get(order_name)
+            if order is None:
+                unmatched.append(
+                    {"name": order_name, "sku": sku, "total": total, "reason": "order_not_found"}
+                )
+                continue
+
+            # Only an exact single match is actionable — zero matches and 2+
+            # matches are both reported unmatched, same as
+            # _process_outbound_rows (no rule for splitting a quantity across
+            # ambiguous candidates).
+            candidates = line_items_by_key.get((order.id, sku), [])
+            if len(candidates) != 1:
+                unmatched.append(
+                    {
+                        "name": order_name,
+                        "sku": sku,
+                        "total": total,
+                        "reason": (
+                            "line_item_not_found" if not candidates else "multiple_line_items"
+                        ),
+                    }
+                )
+                continue
+
+            line_item = candidates[0]
+            # NULL quantity == 0 capacity, same convention as REQ-OUTBOUND-009.
+            effective_quantity = line_item.quantity or 0
+
+            if line_item.received_quantity + total > effective_quantity:
+                quantity_exceeded.append(
+                    {
+                        "name": order_name,
+                        "sku": sku,
+                        "total": total,
+                        "line_item_id": line_item.id,
+                        "received_quantity": line_item.received_quantity,
+                        "quantity": line_item.quantity,
+                        "reason": "quantity_exceeded",
+                    }
+                )
+                continue
+
+            # REQ-LOGI-015: accumulate and stamp the processing time.
+            line_item.received_quantity += total
+            line_item.received_at = timezone.now()
+
+            # Advance to "received" only once the cumulative quantity reaches
+            # `quantity`; below that threshold logistics_status is left
+            # exactly as it was (so the eligibility filter above still
+            # matches it on a later partial-completing upload).
+            if line_item.received_quantity >= effective_quantity:
+                line_item.logistics_status = "received"
+
+            to_update.append(line_item)
+            affected_order_ids.add(order.id)
+            matched.append(
+                {
+                    "name": order_name,
+                    "sku": sku,
+                    "total": total,
+                    "line_item_id": line_item.id,
+                    "received_quantity": line_item.received_quantity,
+                    "quantity": line_item.quantity,
+                    "logistics_status": line_item.logistics_status,
+                }
+            )
+
+        if to_update:
+            LineItem.objects.bulk_update(
+                to_update, ["received_quantity", "received_at", "logistics_status"]
+            )
+
+    return {
+        "matched": matched,
+        "unmatched": unmatched,
+        "quantity_exceeded": quantity_exceeded,
+        "matched_count": len(matched),
+        "unmatched_count": len(unmatched),
+        "quantity_exceeded_count": len(quantity_exceeded),
+        "affected_order_ids": affected_order_ids,
+    }
+
+
 class UploadWarehouseReceiptView(APIView):
     """
     POST /api/purchase-orders/upload-warehouse-receipt/
 
     Multipart: file (.xlsx)
-    REQ-LOGI-005/006: parses a warehouse-receiving-results Excel file
-    ((order_name, SKU) schema — see excel_utils.parse_warehouse_receipt_excel)
-    and transitions matching LineItems' logistics_status to "received".
-    Matching rule: (Order.name, sku) exact match AND logistics_status IN
-    ("not_shipped", "shipment_confirmed") — allows the direct 미입고 -> 입고
-    path when the vendor never sent a shipment confirmation (Decision C).
-    REQ-LOGI-005b safety fix: SKU alone previously matched every order
-    sharing that SKU; same-name collisions resolve oldest-Order-wins.
-    Never touches WarehouseStock.quantity (Decision B / REQ-LOGI-006) — this
-    transition is a pure LineItem status flag, not an inventory event.
+    REQ-LOGI-015: parses a warehouse-receiving-results Excel file (order
+    name / SKU / quantity schema — see
+    excel_utils.parse_warehouse_receipt_excel, which now delegates to
+    parse_outbound_excel) and ACCUMULATES each row's quantity into
+    LineItem.received_quantity (SPEC-ORDER-015-style quantity model, see
+    _process_warehouse_receipt_rows), stamping received_at on every matched
+    row. logistics_status only advances to "received" once received_quantity
+    reaches quantity — a partial receipt leaves logistics_status untouched,
+    so a later upload can complete it (REQ-LOGI-015a). Matching rule:
+    (Order.name, sku) exact match AND logistics_status IN ("not_shipped",
+    "shipment_confirmed") — allows the direct 미입고 -> 입고 path when the
+    vendor never sent a shipment confirmation (Decision C, unchanged from
+    REQ-LOGI-005). REQ-LOGI-005b safety fix still applies: SKU alone would
+    match every order sharing that SKU; same-name collisions resolve
+    oldest-Order-wins. A total that would push received_quantity past
+    quantity is rejected as quantity_exceeded with no partial write; a
+    negative, unreadable, or exactly-zero total is rejected as invalid_total
+    before matching (REQ-LOGI-015b). Never touches WarehouseStock.quantity
+    (Decision B / REQ-LOGI-006) — this remains a pure LineItem field, not an
+    inventory event.
+
+    Response shape is unchanged from the pre-quantity-model version:
+    {"matched_count": int, "skipped_count": int}. matched_count counts
+    distinct (name, sku) pairs that accumulated some quantity this call
+    (whether or not that crossed the "received" threshold); skipped_count
+    folds every unmatched (any reason) and quantity_exceeded outcome into
+    one count — same per-pair counting convention as REQ-LOGI-004.
     """
 
     authentication_classes = [JWTAuthentication]
@@ -1939,13 +2133,8 @@ class UploadWarehouseReceiptView(APIView):
 
         try:
             with transaction.atomic():
-                eligibility_filter = Q(
-                    logistics_status__in=["not_shipped", "shipment_confirmed"]
-                )
-                matched_count, skipped_count, affected_order_ids = _apply_logistics_transition(
-                    parsed_rows, eligibility_filter, "received"
-                )
-                _recompute_order_aggregates(affected_order_ids)
+                result = _process_warehouse_receipt_rows(parsed_rows)
+                _recompute_order_aggregates(result["affected_order_ids"])
         except Exception as exc:
             # REQ-LOGI-005a: same all-or-nothing behavior as REQ-LOGI-003b
             return Response(
@@ -1954,7 +2143,10 @@ class UploadWarehouseReceiptView(APIView):
             )
 
         return Response(
-            {"matched_count": matched_count, "skipped_count": skipped_count},
+            {
+                "matched_count": result["matched_count"],
+                "skipped_count": result["unmatched_count"] + result["quantity_exceeded_count"],
+            },
             status=status.HTTP_200_OK,
         )
 

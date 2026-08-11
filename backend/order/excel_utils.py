@@ -1202,7 +1202,18 @@ def parse_vendor_shipment_excel(file_bytes: bytes) -> list[dict]:
 
 def parse_warehouse_receipt_excel(file_bytes: bytes) -> list[dict]:
     """
-    SPEC-ORDER-011 REQ-LOGI-005/005b: parse an uploaded warehouse-receiving-
-    results file. (order_name, SKU) schema — see _parse_name_sku_xlsx.
+    SPEC-ORDER-011 REQ-LOGI-005c: parse an uploaded warehouse-receiving-
+    results file. `UploadWarehouseReceiptView` now accumulates a per-row
+    quantity into `LineItem.received_quantity` (REQ-LOGI-015, same model as
+    SPEC-ORDER-015's outbound quantity accumulation) instead of doing a
+    boolean status flip, so the required column set — order name / SKU /
+    quantity — is now IDENTICAL to `parse_outbound_excel`'s contract.
+    Delegates directly rather than duplicating that parsing logic; the two
+    parsers are free to diverge again later if the two upload formats ever
+    need different columns.
+
+    Returns:
+        List of dicts: {"name": str, "sku": str, "total": int | None} — see
+        `parse_outbound_excel` for the exact per-cell parsing rules.
     """
-    return _parse_name_sku_xlsx(file_bytes)
+    return parse_outbound_excel(file_bytes)
