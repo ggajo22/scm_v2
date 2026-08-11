@@ -138,6 +138,7 @@ Shopify 연동 도서 재고 및 주문 관리 관리자 애플리케이션
   - 3분류 결과 시각화 + "다시 처리하기" 리셋 버튼
 - **사이드바 메뉴** — "출고 처리" 항목 추가
 - **기존 기능 무변경** — book.Info.qty / order.WarehouseStock / LineItem.fulfillment_status / order.order_number 유지
+- **성능 최적화** — Order.name 인덱스 추가로 테이블 스캔 제거 (EXPLAIN: 3094행 검사 → 1행 검사), 배치 쿼리로 N+1 제거 (쿼리 수 3N → 3 고정, 50행 처리 시 ~19.5초 → ~0.4초)
 - 테스트 커버리지: 백엔드 82개 pytest, 프론트엔드 79개 vitest, 회귀 테스트 769개(754+15) 통과
 
 ---

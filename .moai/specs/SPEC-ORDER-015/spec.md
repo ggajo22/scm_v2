@@ -1,6 +1,6 @@
 ---
 id: SPEC-ORDER-015
-version: 1.1.0
+version: 1.1.1
 status: completed
 created_at: 2026-08-10
 updated: 2026-08-11
@@ -20,7 +20,8 @@ labels: [order, logistics, outbound, shipping]
 | 1.0.1 | 2026-08-10 | ggajo | plan-auditor 리뷰(iteration 1, FAIL, 0.69) 후속 정리 — MP-3 위반 수정: frontmatter `created` → `created_at`으로 리네임(D1). ACCEPTANCE CRITERIA 섹션에 누락되었던 REQ(데이터 모델/매칭 로직/상태 전이/엔드포인트/응답 계약/프론트엔드 전 항목)에 대한 AC 항목 13개 신규 추가 및 REQ-OUTBOUND-003을 003/003a로 분리해 총 24개 REQ 전량 1:1+ traceability 확보(D2). 설계 결정 A/C 본문 및 솔루션 개요 disclaimer에서 구현 클래스명 `UploadRackNumberView`/`parse_rack_number_excel`을 제거하고 일반화된 서술로 교체(D3, SPEC-ORDER-014 감사에서 이미 지적된 패턴의 재발 수정). REQ-OUTBOUND-002a를 Ubiquitous→State-Driven, REQ-OUTBOUND-019를 Unwanted→Ubiquitous로 재분류해 단일 EARS 패턴 순도를 개선(D4/D5). `priority: High` 표기는 SPEC-ORDER-013/014와 동일한 기존 프로젝트 관례이므로 변경하지 않음(D6, non-blocking, 지시사항에 따라 보류). |
 | 1.0.2 | 2026-08-10 | ggajo | plan-auditor 리뷰(iteration 2, FAIL, 0.85) 후속 정리 — D3 재발(관련 SPEC 섹션 L358, `UploadRackNumberView`/`parse_rack_number_excel` 재발견) 수정 및 문서 전체 재점검. "관련 SPEC" 섹션의 SPEC-ORDER-013 항목을 WHAT 수준 서술("Order.name 기반 매칭·Excel 헤더 별칭 자동탐색·매칭실패/수량초과 분리 응답이라는 동작 패턴", 구체적 함수/클래스명은 plan.md 참조)로 교체. 이번에는 이전 두 라운드에서 인용된 특정 라인만 고치는 대신, 문서 전체를 구현 식별자(클래스명/함수명/파일 경로) 패턴으로 재검색(grep) — 문제 정의 섹션에서 추가로 발견된 `order/models.py` 파일 경로, `LOGISTICS_STATUS_CHOICES` Python 상수명, `UploadVendorShipmentView`/`UploadWarehouseReceiptView` 클래스명(L26/L29), Exclusions 섹션의 `LOGISTICS_STATUS_CHOICES`(L340)까지 모두 일반화된 WHAT 수준 서술로 교체. 재검색 결과 남은 유일한 매치는 HISTORY 1.0.1 changelog 항목(L20, 제거 사실을 기록하는 메타 서술 — iteration 2 감사 D8에서 이미 조치 불필요로 판정됨) 뿐임을 확인. |
 | 1.0.3 | 2026-08-10 | ggajo | plan-auditor 리뷰(iteration 3/3, FAIL, 0.94, max_iterations 도달로 최종 에스컬레이션) 이후 사용자가 D7 수정안(Option A)을 자동 3회 재시도 예산 밖에서 직접 승인 — 이번 수정 이후 plan-auditor 재실행 불필요. AC-OUTBOUND-009(Ubiquitous 라벨에 State-Driven 조건절이 혼입된 항목)를 순수 Ubiquitous AC-OUTBOUND-009(`shipped_quantity` 기본값 0, `shipped_at` nullable 필드 존재, REQ-001/002 추적)와 신규 State-Driven AC-OUTBOUND-009a(`shipped_at`가 미처리 상태에서 null 유지, REQ-002a 추적, REQ-002a의 트리거 문구를 그대로 재사용)로 분리해 단일 EARS 패턴 순도 확보(D7). acceptance.md의 대응 시나리오와 spec-compact.md AC 목록도 함께 갱신. |
-| 1.1.0 | 2026-08-11 | ggajo | 구현 완료(commit f122014) — Run 단계 완료 후 manager-docs 동기화 Phase. 백엔드 82개 pytest + 프론트엔드 79개 vitest + 회귀 754개(backend) + 15개(frontend) = 930개 전체 테스트 통과. LSP 게이트: 0 lint/type/test 에러. Exclusions 6개 항목 전수 검증 완료 (변경 없음). evaluator-active 단계 발견 defect 2건 수정: invalid_total(Excel 컬럼 인식, `backend/order/excel_utils.py` line 32-41) + invalid_row(중복 행 합산 로직, `backend/order/models.py` line 198-210). 이상 모두 회귀 테스트로 검증. status: draft → completed, version 1.0.3 → 1.1.0 |
+| 1.1.0 | 2026-08-11 | ggajo | 구현 완료(commit f122014) — Run 단계 완료 후 manager-docs 동기화 Phase. 백엔드 82개 pytest + 프론트엔드 79개 vitest + 회귀 754개(backend) + 15개(frontend) = 930개 전체 테스트 통과. LSP 게이트: 0 lint/type/test 에러. Exclusions 6개 항목 전수 검증 완료 (변경 없음). evaluator-active 단계 발견 defect 2건 수정(둘 다 `_process_outbound_rows`, `backend/order/purchase_order_views.py`): invalid_total(음수/0 total이 `shipped_quantity`를 감소시켜 Exclusions가 금지한 출고취소 기능을 우회할 수 있던 결함) + invalid_row(non-dict 행 입력 시 처리되지 않은 AttributeError/500, `OutboundProcessView.post`의 사전 검증으로 해결). 이상 모두 회귀 테스트로 검증. status: draft → completed, version 1.0.3 → 1.1.0 |
+| 1.1.1 | 2026-08-11 | ggajo | 성능 후속 조치 — 두 건의 성능 최적화 fix commit(f47d34b, bf9f5f7)을 spec.md에 문서화. (1) f47d34b: Order.name 인덱스 추가로 전체 테이블 스캔 제거(3094행 검사→1행 검사, EXPLAIN 확인). (2) bf9f5f7: _process_outbound_rows의 N+1 쿼리를 배치 쿼리로 교체(쿼리 수 3N→3 고정, 5배 입력에서도 동일 쿼리 수 증명). 테스트 커버리지 유지, 기존 기능 무변경(순수 내부 최적화). |
 
 ---
 
@@ -473,3 +474,38 @@ new outbound processing submission without a page reload.
 
 모든 변경은 SPEC 요구사항 24개(REQ-OUTBOUND-001~019, 하위 002a/003a/005a/010a/012a 포함)에 1:1 이상 추적되며,
 Acceptance Criteria 23개(AC-OUTBOUND-001~020, 하위 004a/009a/010a 포함) 모두 검증 완료.
+
+### 성능 후속 조치 (2026-08-11)
+
+최초 구현(f122014) 이후 두 건의 성능 최적화 fix commit이 동일 브랜치에 연속으로 merge되었다. 둘 다 사용자가 "출고 처리 실행" 버튼을 클릭할 때 경험하는 직접적인 응답 지연을 해결한 것이다.
+
+#### Fix 1: Order.name 인덱스 추가 (commit f47d34b)
+
+**문제**: `_process_outbound_rows`는 입력된 각 (order_name, sku) 그룹에 대해 `Order.objects.filter(name=order_name).first()`로 주문을 조회하는데, `Order.name`에 인덱스가 없어 매 호출마다 전체 테이블을 스캔했다.
+
+**원인**: `Order.name` 필드가 검색 기준으로 사용되지만 인덱스가 정의되지 않았음. 개발 환경에서 약 3,109행 규모의 테이블에서 단일 조회당 ~140ms의 풀 스캔이 발생. 본 운영 환경(제품 스펙: 50만 건 이상 규모)에서는 선형으로 악화.
+
+**수정 내용**: `backend/order/models.py` 모델의 `Meta.indexes` 배열에 `models.Index(fields=["name"])` 추가. EXPLAIN 확인 결과 동일 조회의 검사 행 수가 **3094행 → 1행**으로 감소(순 선택도: ~3000배 개선). 마이그레이션 파일 0036 생성.
+
+**영향 범위**: SPEC-ORDER-013(`UploadRackNumberView`)과 SPEC-ORDER-015(`_process_outbound_rows`) 양쪽의 Order.name 조회가 모두 이득을 봄. 인덱스는 읽기 전용이므로 쓰기 성능에 영향 없음.
+
+**검증**: 기존 테스트 144개(모델+렉번호+출고처리) + 전체 754개(backend) 회귀 통과. 기존 기능 무변경.
+
+#### Fix 2: 배치 쿼리로 N+1 제거 (commit bf9f5f7)
+
+**문제**: 인덱스 추가 후에도 `_process_outbound_rows`는 각 (order, sku) 그룹마다 원격 MySQL에 3회의 개별 조회(`Order.objects.filter(...)`, `LineItem.objects.filter(...)`, 저장)를 수행했고, 원격 DB 왕복 지연(~130ms/쿼리)이 입력 크기에 비례해 누적되었다. 실제 측정: 8행 처리에 최대 24회 왕복(~3초), 50행 처리에 ~19.5초 소요.
+
+**원인**: 기존 설계가 행 단위 루프 내에서 개별 쿼리를 실행하는 N+1 패턴이었음. 요청당 처리 시간이 입력 크기에 선형 의존.
+
+**수정 내용**: 배치 쿼리로 교체:
+- `Order` 전체 일괄 조회: `Order.objects.filter(name__in=[...])` (1회)
+- `LineItem` 전체 일괄 조회: `LineItem.objects.filter(order_id__in=[...], sku__in=[...])` (1회), Python에서 dict로 재그룹화
+- 저장 일괄 처리: `bulk_update()` (1회)
+
+결과: 쿼리 수 **3N → 3**으로 고정(입력 크기 무관). 테스트로 증명: 2개 그룹 vs 10개 그룹(5배 입력)에서 쿼리 수 동일, 상한 ≤6쿼리(추가 savepoint 포함).
+
+**성능 개선**: 50행 기준 추정 시간 ~19.5초 → ~0.4초 (약 48배 단축).
+
+**API 계약**: 매칭/판정 로직(설계 결정 A/B/C, 동명 주문 tie-break, 매칭 실패/수량초과 분류) 및 응답 형식은 100% 동일하게 유지. 순수 내부 최적화이며 사용자 경험 변경 없음.
+
+**검증**: 신규 테스트 9개 추가(기존 82개 + 신규 9개 = 91개), 기존 회귀 테스트 전수 통과(test_spec_013.py 57개, test_models.py 5개 포함). 동명 주문 tie-break 등 엣지 케이스 전량 검증 완료.
