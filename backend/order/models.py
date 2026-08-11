@@ -97,6 +97,15 @@ class Order(models.Model):
             models.Index(fields=["financial_status"]),
             models.Index(fields=["fulfillment_status"]),
             models.Index(fields=["shopify_created_at"]),
+            # @MX:NOTE: [AUTO] SPEC-ORDER-013 (UploadRackNumberView,
+            # LineItemBulkRackNumberUpdateView) and SPEC-ORDER-015
+            # (_process_outbound_rows) both use Order.name as the sole
+            # exact-match lookup key, in SPEC-ORDER-015's case once per
+            # (order_name, sku) group in a loop. Without this index, each
+            # lookup was a full table scan (~140ms at 3,109 rows in dev;
+            # much worse at product.md's stated 500k+ row production
+            # scale). See performance fix following SPEC-ORDER-015.
+            models.Index(fields=["name"]),
         ]
 
 
