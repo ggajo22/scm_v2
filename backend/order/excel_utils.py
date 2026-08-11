@@ -746,7 +746,7 @@ def parse_daily_review_excel(file_bytes: bytes) -> list[dict]:
 
     Returns:
         List of dicts:
-            sku, distributor, note_type, note,
+            sku, name, distributor, note_type, note,
             bs_price, ky_price, yes24_price (always present, value None when
                 the cell/column is unset — safe because callers only act on
                 these when not None),
@@ -802,6 +802,23 @@ def parse_daily_review_excel(file_bytes: bytes) -> list[dict]:
     selected_idx = header.index("선택")
     is_new_template = sku_header_name == "Lineitem sku"
 
+    # REQ-PO8-018: order-name column, required so Part A (CS/warehouse/
+    # non-warehouse confirmation) can resolve each row against its own
+    # Order instead of collapsing rows by SKU alone (SPEC-ORDER-DAILY-
+    # REVIEW-BUG bugfix). The new template's Shopify-derived export uses
+    # "Name" (e.g. "#37893"); the legacy self-generated format uses
+    # "주문번호" (see _DAILY_REVIEW_HEADERS). Required exactly like sku_idx/
+    # selected_idx above — a file missing this column is rejected the same
+    # way a missing SKU/선택 column is.
+    if "Name" in header:
+        name_idx = header.index("Name")
+    elif "주문번호" in header:
+        name_idx = header.index("주문번호")
+    else:
+        raise ValueError(
+            "올바른 Daily Review 형식의 파일이 아닙니다 (Name 또는 주문번호 컬럼 필요)."
+        )
+
     if is_new_template:
         note_idx = header.index("Status") if "Status" in header else None
     else:
@@ -844,6 +861,14 @@ def parse_daily_review_excel(file_bytes: bytes) -> list[dict]:
         if not sku:
             continue
 
+        # REQ-PO8-018: same "raw whitespace-stripped string, no '#' stripping,
+        # no int conversion" convention as _parse_name_sku_xlsx/
+        # parse_outbound_excel — matches Order.name exactly. Always present
+        # (empty string when blank) so the view can count a blank/unmatched
+        # name as skipped rather than crashing on a missing key.
+        raw_name = _cell(row, name_idx)
+        name = str(raw_name).strip() if raw_name is not None else ""
+
         selected_label = _str_or_none(_cell(row, selected_idx)) or ""
 
         distributor_code = _DISTRIBUTOR_LABEL_MAP.get(selected_label) if selected_label else None
@@ -880,6 +905,7 @@ def parse_daily_review_excel(file_bytes: bytes) -> list[dict]:
 
         result = {
             "sku": sku,
+            "name": name,
             "distributor": distributor_code,
             "note_type": note_type,
             "note": note,
@@ -928,30 +954,32 @@ def parse_daily_review_excel(file_bytes: bytes) -> list[dict]:
 
 # ---------------------------------------------------------------------------
 # SPEC-ORDER-011: logistics_status uploads (vendor-shipment-confirmation,
-# warehouse-receiving-results) — PLACEHOLDER SKU-only schema.
+# warehouse-receiving-results).
 #
-# No real vendor/warehouse template exists yet for either upload (spec.md
-# "확인이 필요한 가정"). Both files are parsed with a minimal SKU-only schema:
-# a single required column whose header contains "sku" or "isbn"
-# (case-insensitive, first match wins) — every other column is ignored.
-# Replace this parser (and the column-matching rule) once the real templates
-# are available; the calling views (UploadVendorShipmentView /
-# UploadWarehouseReceiptView) only depend on each parsed row exposing a
-# "sku" key, so swapping the parser body will not require view changes.
+# Safety fix (mirrors the SPEC-ORDER-015 outbound bug): matching by SKU
+# alone let a shipment/receipt upload for ONE order flip the logistics_status
+# of every LineItem across every order sharing that SKU. Both files now
+# require an order-name column in addition to SKU/ISBN, matched against
+# `Order.name` exactly like parse_outbound_excel — see _parse_name_sku_xlsx.
 # ---------------------------------------------------------------------------
 
 
-def _parse_sku_only_xlsx(file_bytes: bytes) -> list[dict]:
+def _parse_name_sku_xlsx(file_bytes: bytes) -> list[dict]:
     """
-    Shared placeholder parser for parse_vendor_shipment_excel() and
-    parse_warehouse_receipt_excel(). Mirrors _parse_generic_xlsx's
-    header-name detection, but the SKU/ISBN column is REQUIRED (raises
-    ValueError when no header matches, unlike _parse_generic_xlsx's
-    positional fallback) since this is the only column consumed.
+    Shared parser for parse_vendor_shipment_excel() and
+    parse_warehouse_receipt_excel(). Requires two columns — order name and
+    SKU/ISBN — using the same case-insensitive substring convention as
+    parse_outbound_excel (REQ-LOGI-003b/REQ-LOGI-005b). Raises ValueError
+    when either column cannot be located.
 
-    Blank-SKU rows are skipped uncounted (never added to the returned list)
-    — the calling view's skipped_count only reflects SKUs that failed to
-    match a LineItem, not blank rows in the source file.
+    Order-name cell values are read as a raw whitespace-stripped string with
+    no "#" stripping and no int conversion — matched against `Order.name`
+    ("#37349", "#EB10011778") downstream, never against `Order.order_number`
+    (same convention as parse_outbound_excel / parse_rack_number_excel).
+
+    Data rows with a blank SKU are skipped uncounted. A row with a blank
+    order-name but a valid SKU is still included (name=""), so the caller
+    can count it toward skipped_count instead of losing it silently.
     """
     try:
         wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
@@ -964,28 +992,30 @@ def _parse_sku_only_xlsx(file_bytes: bytes) -> list[dict]:
         raise ValueError("Empty file")
 
     header = [str(h).strip().lower() if h is not None else "" for h in rows[0]]
+    name_idx = next((i for i, h in enumerate(header) if "name" in h or "주문번호" in h), None)
     sku_idx = next((i for i, h in enumerate(header) if "sku" in h or "isbn" in h), None)
-    if sku_idx is None:
-        raise ValueError("No SKU/ISBN column found in header")
+
+    if name_idx is None or sku_idx is None:
+        raise ValueError("필수 컬럼(주문번호/SKU)을 찾을 수 없습니다.")
 
     results = []
     for row in rows[1:]:
-        if len(row) <= sku_idx:
-            continue
-
-        raw_sku = row[sku_idx]
+        raw_sku = _cell(row, sku_idx)
         sku = str(raw_sku).strip() if raw_sku is not None else ""
         if not sku:
             continue
 
-        results.append({"sku": sku})
+        raw_name = _cell(row, name_idx)
+        name = str(raw_name).strip() if raw_name is not None else ""
+
+        results.append({"name": name, "sku": sku})
 
     return results
 
 
 # @MX:NOTE: [AUTO] Column alias lists ("주문번호"/"order", "sku"/"isbn",
 # "렉번호"/"rack") intentionally mirror the case-insensitive substring
-# convention already used by _parse_sku_only_xlsx above, extended from 1 to
+# convention already used by _parse_name_sku_xlsx above, extended from 2 to
 # 3 required columns (SPEC-ORDER-013 결정 D). The order-number alias also
 # accepts an exact "name" header match (Shopify's bare "Name" column) and
 # excludes any header containing "date" from the loose "order" substring
@@ -1164,15 +1194,15 @@ def parse_outbound_excel(file_bytes: bytes) -> list[dict]:
 
 def parse_vendor_shipment_excel(file_bytes: bytes) -> list[dict]:
     """
-    SPEC-ORDER-011 REQ-LOGI-003: parse an uploaded vendor-shipment-
-    confirmation file. PLACEHOLDER schema — see _parse_sku_only_xlsx.
+    SPEC-ORDER-011 REQ-LOGI-003/003b: parse an uploaded vendor-shipment-
+    confirmation file. (order_name, SKU) schema — see _parse_name_sku_xlsx.
     """
-    return _parse_sku_only_xlsx(file_bytes)
+    return _parse_name_sku_xlsx(file_bytes)
 
 
 def parse_warehouse_receipt_excel(file_bytes: bytes) -> list[dict]:
     """
-    SPEC-ORDER-011 REQ-LOGI-005: parse an uploaded warehouse-receiving-
-    results file. PLACEHOLDER schema — see _parse_sku_only_xlsx.
+    SPEC-ORDER-011 REQ-LOGI-005/005b: parse an uploaded warehouse-receiving-
+    results file. (order_name, SKU) schema — see _parse_name_sku_xlsx.
     """
-    return _parse_sku_only_xlsx(file_bytes)
+    return _parse_name_sku_xlsx(file_bytes)

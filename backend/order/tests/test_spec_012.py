@@ -76,12 +76,15 @@ def _make_line_item(
     )
 
 
-def _make_sku_only_excel(skus: list, header=("SKU", "기타컬럼")) -> bytes:
+def _make_name_sku_excel(rows: list, header=("주문번호", "SKU", "기타컬럼")) -> bytes:
+    """Build an (order_name, SKU) .xlsx file — both upload endpoints now
+    require the order-name column (SPEC-ORDER-011 REQ-LOGI-003b/005b safety
+    fix). `rows` is a list of (name, sku) tuples."""
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.append(list(header))
-    for sku in skus:
-        ws.append([sku, "ignored"])
+    for name, sku in rows:
+        ws.append([name, sku, "ignored"])
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
@@ -295,11 +298,11 @@ class TestExistingWritePathsRecomputeReadyToShip:
     """AC-RTS-003 — 시나리오5."""
 
     def test_upload_vendor_shipment_recomputes_ready_to_ship(self, auth_client):
-        order = _make_order(shopify_order_id=200301)
+        order = _make_order(shopify_order_id=200301, name="#200301")
         _make_line_item(
             order, shopify_line_item_id=1, sku="SKU-RTS-UV", purchase_status="in_stock"
         )
-        file_bytes = _make_sku_only_excel(["SKU-RTS-UV"])
+        file_bytes = _make_name_sku_excel([("#200301", "SKU-RTS-UV")])
         res = auth_client.post(
             UPLOAD_VENDOR_SHIPMENT_URL, data={"file": _file_obj(file_bytes)}, format="multipart"
         )
@@ -308,9 +311,9 @@ class TestExistingWritePathsRecomputeReadyToShip:
         assert order.ready_to_ship is True
 
     def test_upload_warehouse_receipt_recomputes_ready_to_ship(self, auth_client):
-        order = _make_order(shopify_order_id=200302)
+        order = _make_order(shopify_order_id=200302, name="#200302")
         _make_line_item(order, shopify_line_item_id=1, sku="SKU-RTS-UW")
-        file_bytes = _make_sku_only_excel(["SKU-RTS-UW"])
+        file_bytes = _make_name_sku_excel([("#200302", "SKU-RTS-UW")])
         res = auth_client.post(
             UPLOAD_WAREHOUSE_RECEIPT_URL, data={"file": _file_obj(file_bytes)}, format="multipart"
         )

@@ -94,7 +94,11 @@ def _make_daily_review_excel(rows: list[dict]) -> bytes:
     ])
     for row in rows:
         ws.append([
-            row.get("order_name", ""),
+            # REQ-PO8-018: default matches _make_order()'s default name
+            # ("#8001") so existing single-order tests that never pass
+            # order_name still exercise the same LineItem/order pairing
+            # they did before the (order_name, sku) fix.
+            row.get("order_name", "#8001"),
             row.get("isbn", ""),
             row.get("title", ""),
             row.get("quantity", 1),
@@ -128,7 +132,8 @@ def _make_legacy_daily_review_excel(rows: list[dict]) -> bytes:
     ])
     for row in rows:
         ws.append([
-            row.get("order_name", ""),
+            # REQ-PO8-018: same default-name rationale as _make_daily_review_excel.
+            row.get("order_name", "#8001"),
             row.get("isbn", ""),
             row.get("title", ""),
             row.get("quantity", 1),
@@ -780,6 +785,11 @@ def _make_new_template_excel(
         def set_col(name: str, value) -> None:
             data[header.index(name)] = value
 
+        # REQ-PO8-018: default matches _make_order()'s default name
+        # ("#8001") so existing single-order tests that never pass
+        # order_name still exercise the same LineItem/order pairing they
+        # did before the (order_name, sku) fix.
+        set_col("Name", row.get("order_name", "#8001"))
         set_col("Lineitem sku", row.get("sku", ""))
         set_col("Status", row.get("status", ""))
         set_col("선택", row.get("selected", ""))
@@ -889,8 +899,8 @@ class TestParseDailyReviewHeaderAutoDetection:
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.append(["선택", "참고용 안내"])  # false positive: has '선택' text, no SKU column
-        ws.append(["Lineitem sku", "선택"])  # real header
-        ws.append(["9791124591055", "BOOXEN"])
+        ws.append(["Lineitem sku", "Name", "선택"])  # real header (REQ-PO8-018: Name required)
+        ws.append(["9791124591055", "#1234", "BOOXEN"])
         buf = io.BytesIO()
         wb.save(buf)
 
@@ -1327,6 +1337,25 @@ class TestUploadNewTemplateBooxenAndVendorUpsert:
         assert BooxenData.objects.filter(sku=sku).exists()
         assert KyoboData.objects.filter(sku=sku).exists()
         assert Yes24Data.objects.filter(sku=sku).exists()
+
+    def test_daily_review_upload_creates_po_with_confirmed_status(self, auth_client):
+        """Daily Review upload reflects the distributor's actual confirmed
+        response, so the PurchaseOrder it creates starts status="confirmed"
+        (unlike ConfirmOrderView's status="pending" staging step)."""
+        sku = "9791124591099"
+        order = _make_order(shopify_order_id=90099)
+        _make_line_item(order, sku=sku, quantity=1, shopify_line_item_id=1)
+
+        file_bytes = _make_new_template_excel([
+            {"sku": sku, "selected": "BOOXEN", "status": "정상", "bs_price": 9000},
+        ])
+        file_obj = io.BytesIO(file_bytes)
+        file_obj.name = "daily_review.xlsx"
+        res = auth_client.post(UPLOAD_DAILY_URL, data={"file": file_obj}, format="multipart")
+        assert res.status_code == 201
+
+        po = PurchaseOrder.objects.get(sku=sku)
+        assert po.status == "confirmed"
 
 
 @pytest.mark.django_db
@@ -2003,7 +2032,9 @@ _FILLER_SELECTS = ["", "합계"]
 _N_FILLER = 6
 
 
-def _make_bulk_daily_review_fixture(total_rows: int, sku_seed: str) -> tuple[bytes, list[str]]:
+def _make_bulk_daily_review_fixture(
+    total_rows: int, sku_seed: str, order_name: str = "#8001"
+) -> tuple[bytes, list[str]]:
     """
     Build a synthetic "Daily Order Review Template" upload with `total_rows`
     rows, for the REQ-PO9-010 query-count ceiling test.
@@ -2067,6 +2098,12 @@ def _make_bulk_daily_review_fixture(total_rows: int, sku_seed: str) -> tuple[byt
         selected = _FILLER_SELECTS[i % len(_FILLER_SELECTS)]
         rows.append({"sku": f"PERF{sku_seed}F{i}", "selected": selected, "status": ""})
 
+    # REQ-PO8-018: every row must name the Order it belongs to — applied
+    # uniformly here since this fixture only ever seeds a single order (see
+    # _seed_actionable_line_items below).
+    for row in rows:
+        row["order_name"] = order_name
+
     file_bytes = _make_new_template_excel(rows)
     return file_bytes, actionable_skus
 
@@ -2091,7 +2128,9 @@ class TestUploadDailyReviewQueryCountCeiling:
         from django.db import connection
         from django.test.utils import CaptureQueriesContext
 
-        file_bytes, actionable_skus = _make_bulk_daily_review_fixture(total_rows, sku_seed)
+        file_bytes, actionable_skus = _make_bulk_daily_review_fixture(
+            total_rows, sku_seed, order_name=f"#{order_id}"
+        )
         self._seed_actionable_line_items(actionable_skus, order_id)
 
         file_obj = io.BytesIO(file_bytes)
@@ -2165,7 +2204,7 @@ class TestUploadPurchaseOrderLineItemsM2MCorrectness:
                 li_counter += 1
                 _make_line_item(order, sku=sku, quantity=1, shopify_line_item_id=li_counter)
             distributor = distributors[i % 3]
-            row = {"sku": sku, "selected": distributor, "status": "정상"}
+            row = {"sku": sku, "selected": distributor, "status": "정상", "order_name": "#98001"}
             if distributor == "BOOXEN":
                 row["bs_price"] = 9000
             elif distributor == "교보":
@@ -2191,3 +2230,131 @@ class TestUploadPurchaseOrderLineItemsM2MCorrectness:
                 f"PurchaseOrder for {sku} expected {expected_count} line items, "
                 f"got {po.line_items.count()}"
             )
+
+
+# ===========================================================================
+# REQ-PO8-018 (bugfix)
+#
+# Real production data (Daily Order Review Template 20260810.xlsx, SKU
+# 9788998441012): order #37893 selected 재고/Fullerton재고 (warehouse) and
+# order #37918 selected BOOXEN, for the SAME SKU. Because Part A previously
+# collapsed rows by SKU alone, the later row (#37918/BOOXEN) silently won,
+# and BOTH orders' LineItems ended up linked to the SAME PurchaseOrder.
+#
+# Covers:
+#   AC-018-1  two orders sharing one SKU with DIFFERENT '선택' decisions no
+#             longer collapse into one — each order's own decision applies
+#             only to its own LineItem.
+#   AC-018-2  two orders sharing one SKU with the SAME distributor still
+#             batch into one PurchaseOrder with combined quantity (the
+#             cross-order batching behavior must not regress).
+# ===========================================================================
+
+
+@pytest.mark.django_db
+class TestUploadDailyReviewCrossOrderSameSku:
+    """AC-018-1/AC-018-2: Part A resolves independently per (order_name,
+    sku) — different decisions for the same SKU across different orders no
+    longer collide, while same-distributor batching across orders is
+    preserved."""
+
+    def test_different_decisions_for_same_sku_across_orders_do_not_collide(self, auth_client):
+        """AC-018-1: reproduces the real-world bug. order_a picks a
+        warehouse code, order_b picks a real distributor, for the SAME SKU
+        in the SAME upload — each LineItem must land in its own, independent
+        outcome."""
+        sku = "9788998441012"
+        order_a = _make_order(shopify_order_id=37893, name="#A1")
+        order_b = _make_order(shopify_order_id=37918, name="#A2")
+        li_a = _make_line_item(order_a, sku=sku, quantity=1, shopify_line_item_id=1)
+        li_b = _make_line_item(order_b, sku=sku, quantity=2, shopify_line_item_id=2)
+
+        file_bytes = _make_new_template_excel([
+            {
+                "sku": sku, "selected": "재고", "status": "Fullerton재고",
+                "order_name": "#A1",
+            },
+            {
+                "sku": sku, "selected": "BOOXEN", "status": "",
+                "order_name": "#A2", "bs_price": 9000,
+            },
+        ])
+        file_obj = io.BytesIO(file_bytes)
+        file_obj.name = "daily_review.xlsx"
+        res = auth_client.post(UPLOAD_DAILY_URL, data={"file": file_obj}, format="multipart")
+        assert res.status_code == 201
+        assert res.data["confirmed_count"] == 2
+
+        li_a.refresh_from_db()
+        li_b.refresh_from_db()
+
+        # order_a: warehouse branch — in_stock, NOT linked to any PurchaseOrder.
+        assert li_a.purchase_status == "in_stock"
+        assert li_a.confirmed_distributor == "warehouse_ca"
+        assert li_a.purchase_orders.count() == 0
+
+        # order_b: non-warehouse branch — linked to exactly one PurchaseOrder,
+        # and that PO must NOT include order_a's LineItem.
+        assert li_b.purchase_orders.count() == 1
+        po = li_b.purchase_orders.get()
+        assert po.distributor == "booxen"
+        linked_lis = list(po.line_items.all())
+        assert linked_lis == [li_b]
+        assert li_a not in linked_lis
+
+    def test_same_distributor_across_orders_still_batches_into_one_po(self, auth_client):
+        """AC-018-2: two different orders selecting the SAME distributor for
+        the SAME SKU must still merge into one PurchaseOrder with combined
+        quantity — the pre-existing batching behavior is not a regression
+        target of the (order_name, sku) fix."""
+        sku = "9788998441099"
+        order_a = _make_order(shopify_order_id=37920, name="#B1")
+        order_b = _make_order(shopify_order_id=37921, name="#B2")
+        li_a = _make_line_item(order_a, sku=sku, quantity=3, shopify_line_item_id=1)
+        li_b = _make_line_item(order_b, sku=sku, quantity=5, shopify_line_item_id=2)
+
+        file_bytes = _make_new_template_excel([
+            {
+                "sku": sku, "selected": "BOOXEN", "status": "",
+                "order_name": "#B1", "bs_price": 9000,
+            },
+            {
+                "sku": sku, "selected": "BOOXEN", "status": "",
+                "order_name": "#B2", "bs_price": 9000,
+            },
+        ])
+        file_obj = io.BytesIO(file_bytes)
+        file_obj.name = "daily_review.xlsx"
+        res = auth_client.post(UPLOAD_DAILY_URL, data={"file": file_obj}, format="multipart")
+        assert res.status_code == 201
+        assert res.data["confirmed_count"] == 2
+
+        pos = list(PurchaseOrder.objects.filter(sku=sku))
+        assert len(pos) == 1, f"expected exactly one PurchaseOrder for {sku}, got {len(pos)}"
+        po = pos[0]
+        assert po.distributor == "booxen"
+        assert po.quantity == 8  # 3 (order_a) + 5 (order_b)
+
+        linked_lis = set(po.line_items.all())
+        assert linked_lis == {li_a, li_b}
+
+
+class TestParseDailyReviewMissingNameColumnRejected:
+    """AC-018-3: a file missing the order-name column (Name / 주문번호) is
+    rejected the same way a file missing the SKU column is (REQ-PO8-018)."""
+
+    def test_missing_name_column_raises_value_error(self):
+        from order.excel_utils import parse_daily_review_excel
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        # New-template-style header WITHOUT a "Name" column.
+        ws.append(["Lineitem sku", "선택"])
+        ws.append(["9791124591055", "BOOXEN"])
+        buf = io.BytesIO()
+        wb.save(buf)
+
+        with pytest.raises(ValueError) as exc_info:
+            parse_daily_review_excel(buf.getvalue())
+        assert "Name" in str(exc_info.value)
+        assert "주문번호" in str(exc_info.value)
