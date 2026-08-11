@@ -2360,6 +2360,18 @@ def _to_int(value, default: int = 0) -> int:
 #   summation. shipped_quantity must never decrease: 출고 취소/되돌리기(undo)
 #   is explicitly out of scope, and a negative total would otherwise reach
 #   that excluded capability through ordinary input.
+# @MX:NOTE: [AUTO] All database access is BATCHED into a fixed number of
+# queries — 1 Order fetch + 1 LineItem fetch + 1 bulk_update — regardless of
+# how many (order name, sku) groups the request carries. The original
+# implementation ran those three queries once PER GROUP, so an 8-row upload
+# cost ~24 round trips and a 50-row upload ~150. Against the remote MySQL
+# instance this project uses (~130ms round-trip latency) that made response
+# time scale linearly with input size (~3s at 8 rows, ~19s at 50). The cost
+# here is dominated by the NUMBER of queries, not the work inside them, so
+# every new lookup added below must be batched too. Matching, quantity
+# judgement and status transition are deliberately pure-Python passes over the
+# already-fetched objects. Pinned by test_spec_015.py T8, which asserts the
+# query count is IDENTICAL for a 2-group and a 10-group batch.
 # @MX:WARN: [AUTO] LineItems are read and updated without select_for_update()
 # locking — two concurrent outbound requests targeting the same LineItem can
 # both pass the over-capacity check against the same stale shipped_quantity
@@ -2431,13 +2443,53 @@ def _process_outbound_rows(rows: list[dict]) -> dict:
     # REQ-OUTBOUND-011/013: one transaction for the whole batch, so a failure
     # part-way through leaves no partially-applied rows behind.
     with transaction.atomic():
+        # REQ-OUTBOUND-003/003a: matched on `Order.name` exact string
+        # equality ("#37349", "#EB10011778"). The `order_number` column is
+        # deliberately never consulted — the two diverge for manually-entered
+        # "EB"-prefixed orders, which is exactly why SPEC-ORDER-013 abandoned
+        # it as a matching key.
+        #
+        # `Order.name` carries no uniqueness constraint (unique_together is
+        # (shopify_order_id, store_type)), so several orders may share a name.
+        # The per-group `.filter(name=X).first()` this replaces resolved that
+        # collision via Django's implicit `ORDER BY pk` fallback on an
+        # unordered queryset, i.e. oldest-wins. `.order_by("pk")` + setdefault
+        # reproduces that tie-break exactly rather than inheriting whatever
+        # order MySQL happens to return rows in.
+        orders_by_name: dict[str, Order] = {}
+        if grouped:
+            name_matches = Order.objects.filter(
+                name__in={name for name, _ in grouped}
+            ).order_by("pk")
+            for candidate in name_matches:
+                orders_by_name.setdefault(candidate.name, candidate)
+
+        # One fetch for every LineItem that could satisfy any group, keyed by
+        # (order id, sku) so the 0 / 1 / 2+ branching below is a dict lookup.
+        # `order_id__in` and `sku__in` are independent filters, so this also
+        # drags in pairs nobody requested (order A holding a sku that only
+        # another group asked for). That is harmless precisely because the
+        # loop below only ever looks up keys built from `grouped` — the
+        # cross-product entries are never reachable.
+        # REQ-OUTBOUND-006: no logistics_status filter here on purpose — a
+        # LineItem in any pipeline state is eligible for outbound.
+        line_items_by_key: dict[tuple[int, str], list[LineItem]] = {}
+        if orders_by_name:
+            sku_matches = LineItem.objects.filter(
+                order_id__in=[o.id for o in orders_by_name.values()],
+                sku__in={sku for _, sku in grouped},
+            ).order_by("pk")
+            for candidate_item in sku_matches:
+                line_items_by_key.setdefault(
+                    (candidate_item.order_id, candidate_item.sku), []
+                ).append(candidate_item)
+
+        # Every LineItem the judgement pass decides to write, flushed in one
+        # bulk_update after the loop.
+        to_update: list[LineItem] = []
+
         for (order_name, sku), total in grouped.items():
-            # REQ-OUTBOUND-003/003a: matched on `Order.name` exact string
-            # equality ("#37349", "#EB10011778"). `Order.order_number` is
-            # deliberately never consulted — the two diverge for manually-
-            # entered "EB"-prefixed orders, which is exactly why
-            # SPEC-ORDER-013 abandoned it as a matching key.
-            order = Order.objects.filter(name=order_name).first()
+            order = orders_by_name.get(order_name)
             if order is None:
                 unmatched.append(
                     {
@@ -2453,11 +2505,8 @@ def _process_outbound_rows(rows: list[dict]) -> dict:
             # match is actionable. Zero matches and 2+ matches are BOTH
             # reported as unmatched — there is no rule for splitting a
             # quantity across ambiguous candidates, so nothing is written
-            # rather than guessing. The [:2] slice is enough to tell those
-            # three cases apart without fetching every duplicate.
-            # REQ-OUTBOUND-006: no logistics_status filter here on purpose —
-            # a LineItem in any pipeline state is eligible for outbound.
-            candidates = list(LineItem.objects.filter(order=order, sku=sku)[:2])
+            # rather than guessing.
+            candidates = line_items_by_key.get((order.id, sku), [])
             if len(candidates) != 1:
                 unmatched.append(
                     {
@@ -2491,18 +2540,21 @@ def _process_outbound_rows(rows: list[dict]) -> dict:
             # REQ-OUTBOUND-008: accumulate and stamp the processing time.
             line_item.shipped_quantity += total
             line_item.shipped_at = timezone.now()
-            update_fields = ["shipped_quantity", "shipped_at"]
 
             # REQ-OUTBOUND-010/010a: advance to "shipped" only once the
             # cumulative quantity reaches `quantity`; below that threshold
             # logistics_status is left exactly as it was. This only ever
             # writes the pre-existing "shipped" choice — SPEC-ORDER-015 adds
             # no new LOGISTICS_STATUS_CHOICES value.
+            # Note that the bulk write below always includes logistics_status
+            # in its column list, so a below-threshold match rewrites the
+            # field with the value it was loaded with. That is a deliberate
+            # no-op, not a reset: the object still carries its own current
+            # status here because this branch did not touch it.
             if line_item.shipped_quantity >= effective_quantity:
                 line_item.logistics_status = "shipped"
-                update_fields.append("logistics_status")
 
-            line_item.save(update_fields=update_fields)
+            to_update.append(line_item)
             matched.append(
                 {
                     "name": order_name,
@@ -2513,6 +2565,16 @@ def _process_outbound_rows(rows: list[dict]) -> dict:
                     "quantity": line_item.quantity,
                     "logistics_status": line_item.logistics_status,
                 }
+            )
+
+        # One write for the whole batch instead of one save() per matched row.
+        # bulk_update writes every listed column for every object, unlike the
+        # conditional update_fields this replaces — safe here because each
+        # object already carries its intended final value for all three
+        # columns by the time it lands in `to_update`.
+        if to_update:
+            LineItem.objects.bulk_update(
+                to_update, ["shipped_quantity", "shipped_at", "logistics_status"]
             )
 
     # REQ-OUTBOUND-014: three categories, each with its item list and count.

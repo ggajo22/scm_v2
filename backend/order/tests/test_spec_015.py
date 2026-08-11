@@ -19,6 +19,8 @@ Coverage targets:
   T6  OutboundProcessView / UploadOutboundView + URL registration
       (REQ-OUTBOUND-011/013/014, AC-OUTBOUND-014/016)
   T7  LineItemDetailSerializer exposes shipped_quantity / shipped_at
+  T8  batched-query performance: DB round trips are O(1), not O(groups)
+      (no new REQ — pure internal optimisation, behaviour must be identical)
 """
 
 import inspect
@@ -28,6 +30,8 @@ from unittest.mock import patch
 import openpyxl
 import pytest
 from django.contrib.auth import get_user_model
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from freezegun import freeze_time
 from rest_framework.test import APIClient
@@ -446,22 +450,34 @@ class TestOutboundQuantityAndStatusTransition:
         assert li.shipped_at.strftime("%Y-%m-%d %H:%M:%S") == "2026-08-10 12:34:56"
 
     def test_processing_is_atomic_so_a_mid_run_failure_rolls_everything_back(self):
-        """REQ-OUTBOUND-011/013: the whole run is one transaction — a failure
-        on the second row must undo the already-applied first row."""
+        """REQ-OUTBOUND-011/013: the whole run is one transaction — rows that
+        were already written must be undone if the run fails before commit.
+
+        The failure is injected at `bulk_update`, the batched write path the
+        implementation now uses. (It previously hooked the per-row `save()`
+        that path replaced; only the injection point moved, the requirement
+        under test is unchanged.)
+
+        The patch performs the REAL write first, reads the value back inside
+        the transaction to prove it actually reached the database, and only
+        then raises. Without that mid-transaction read the assertions below
+        would also pass for an implementation that never wrote anything at
+        all, which would not demonstrate rollback.
+        """
         order = _make_order(name="#37349")
         li_a = _make_line_item(order, shopify_line_item_id=1, sku="ISBN001", quantity=10)
         li_b = _make_line_item(order, shopify_line_item_id=2, sku="ISBN002", quantity=10)
 
-        real_save = LineItem.save
-        calls = {"n": 0}
+        real_bulk_update = LineItem.objects.bulk_update
+        observed: dict[str, int] = {}
 
-        def flaky_save(self, *args, **kwargs):
-            calls["n"] += 1
-            if calls["n"] == 2:
-                raise RuntimeError("simulated failure on the second row")
-            return real_save(self, *args, **kwargs)
+        def flaky_bulk_update(objs, fields, **kwargs):
+            real_bulk_update(objs, fields, **kwargs)
+            observed["a"] = LineItem.objects.get(pk=li_a.pk).shipped_quantity
+            observed["b"] = LineItem.objects.get(pk=li_b.pk).shipped_quantity
+            raise RuntimeError("simulated failure after the batch was written")
 
-        with patch.object(LineItem, "save", flaky_save):
+        with patch.object(LineItem.objects, "bulk_update", flaky_bulk_update):
             with pytest.raises(RuntimeError):
                 _process_outbound_rows(
                     [
@@ -469,6 +485,8 @@ class TestOutboundQuantityAndStatusTransition:
                         {"name": "#37349", "sku": "ISBN002", "total": 4},
                     ]
                 )
+
+        assert observed == {"a": 3, "b": 4}, "the batch never reached the database"
 
         li_a.refresh_from_db()
         li_b.refresh_from_db()
@@ -1048,3 +1066,191 @@ class TestOutboundViewErrorHandling:
 
         assert response.status_code == 500
         assert "detail" in response.data
+
+
+# ---------------------------------------------------------------------------
+# T8 — batched DB access (performance; no behaviour change)
+#
+# The dev/prod database is a remote MySQL instance with ~130ms round-trip
+# latency, so the wall-clock cost of this endpoint is dominated by the NUMBER
+# of queries, not by the work each query does. The original implementation ran
+# 3 queries per (order name, sku) group — Order lookup, LineItem lookup, save —
+# so an 8-row upload cost ~24 round trips (~3s) and a 50-row upload ~150 round
+# trips (~19s). These tests pin the query count as an O(1) contract.
+# ---------------------------------------------------------------------------
+
+
+def _seed_outbound_groups(n: int, offset: int = 0) -> list[dict]:
+    """Create `n` orders, each with exactly one matching LineItem, and return
+    the request rows that target them (one distinct group per order)."""
+    rows = []
+    for i in range(n):
+        seq = offset + i
+        name = f"#Q{seq:05d}"
+        sku = f"ISBNQ{seq:05d}"
+        order = _make_order(shopify_order_id=900000 + seq, name=name)
+        _make_line_item(order, shopify_line_item_id=900000 + seq, sku=sku, quantity=10)
+        rows.append({"name": name, "sku": sku, "total": 1})
+    return rows
+
+
+def _count_queries(rows: list[dict]) -> int:
+    with CaptureQueriesContext(connection) as ctx:
+        _process_outbound_rows(rows)
+    return len(ctx.captured_queries)
+
+
+@pytest.mark.django_db
+class TestOutboundQueryCountIsIndependentOfRowCount:
+    """Response time must not scale with the number of uploaded rows.
+
+    The discriminating assertion is the EQUALITY between a 2-group batch and a
+    10-group batch: any per-group query at all makes those two numbers differ,
+    regardless of what the absolute constant happens to be on a given backend.
+    """
+
+    def test_query_count_is_identical_for_2_and_for_10_groups(self):
+        """The strongest proof of O(1): 5x the input, same number of queries."""
+        two = _count_queries(_seed_outbound_groups(2, offset=0))
+        ten = _count_queries(_seed_outbound_groups(10, offset=100))
+
+        assert two == ten, (
+            f"query count scales with input size: 2 groups -> {two} queries, "
+            f"10 groups -> {ten} queries"
+        )
+
+    def test_query_count_stays_within_a_small_fixed_bound(self):
+        """Absolute ceiling: Order fetch + LineItem fetch + bulk_update, plus
+        the savepoint statements `transaction.atomic()` emits inside the test's
+        own wrapping transaction."""
+        assert _count_queries(_seed_outbound_groups(10, offset=200)) <= 6
+
+    def test_a_batch_that_writes_nothing_issues_no_write_query(self):
+        """All-unmatched batches must not emit a bulk_update at all."""
+        rows = [{"name": f"#MISSING{i}", "sku": "ISBN001", "total": 1} for i in range(10)]
+
+        assert _count_queries(rows) <= 4
+
+    def test_an_empty_batch_touches_the_database_at_most_for_the_transaction(self):
+        """Nothing to look up means nothing to query."""
+        assert _count_queries([]) <= 2
+
+
+@pytest.mark.django_db
+class TestOutboundBatchingPreservesMatchingSemantics:
+    """Behavioural parity guards for the batched lookup. Each of these passes
+    identically against the original per-group implementation — they exist to
+    pin the semantics a batched rewrite could plausibly break."""
+
+    def test_duplicate_order_names_resolve_to_the_lowest_pk_order(self):
+        """`Order.name` carries no uniqueness constraint (unique_together is
+        (shopify_order_id, store_type)), so colliding names are legal.
+
+        `.filter(name=X).first()` on an unordered queryset falls back to
+        `ORDER BY pk` in Django, i.e. the OLDEST order wins. A batched
+        `name__in` fetch must reproduce that tie-break exactly, not whatever
+        order MySQL happens to return rows in.
+        """
+        first = _make_order(shopify_order_id=910001, name="#DUPNAME")
+        second = _make_order(shopify_order_id=910002, name="#DUPNAME")
+        first_li = _make_line_item(first, shopify_line_item_id=1, sku="ISBN001", quantity=10)
+        second_li = _make_line_item(second, shopify_line_item_id=2, sku="ISBN001", quantity=10)
+
+        result = _process_outbound_rows([{"name": "#DUPNAME", "sku": "ISBN001", "total": 3}])
+
+        first_li.refresh_from_db()
+        second_li.refresh_from_db()
+        assert first_li.shipped_quantity == 3
+        assert second_li.shipped_quantity == 0
+        assert result["matched"][0]["line_item_id"] == first_li.id
+
+    def test_duplicate_order_names_do_not_turn_into_a_multiple_line_items_verdict(self):
+        """Two same-named orders each holding one matching SKU is still a
+        single match against the winning order — not an ambiguous 2-candidate
+        rejection (설계 결정 A applies per order, not across orders)."""
+        first = _make_order(shopify_order_id=911001, name="#DUPNAME2")
+        _make_order(shopify_order_id=911002, name="#DUPNAME2")
+        _make_line_item(first, shopify_line_item_id=1, sku="ISBN001", quantity=10)
+
+        result = _process_outbound_rows([{"name": "#DUPNAME2", "sku": "ISBN001", "total": 3}])
+
+        assert result["matched_count"] == 1
+        assert result["unmatched"] == []
+
+    def test_a_sku_belonging_to_another_order_is_not_borrowed_across_groups(self):
+        """Cross-product guard.
+
+        A batched fetch keyed on `order__in` AND `sku__in` independently also
+        returns pairs nobody asked for. Requesting (order A, sku B) — where
+        sku B only exists under order B — must stay `line_item_not_found`, and
+        order B's LineItem must not be touched.
+        """
+        order_a = _make_order(shopify_order_id=912001, name="#XPROD_A")
+        order_b = _make_order(shopify_order_id=912002, name="#XPROD_B")
+        li_a = _make_line_item(order_a, shopify_line_item_id=1, sku="SKU_A", quantity=10)
+        li_b = _make_line_item(order_b, shopify_line_item_id=2, sku="SKU_B", quantity=10)
+
+        result = _process_outbound_rows(
+            [
+                {"name": "#XPROD_A", "sku": "SKU_A", "total": 2},
+                {"name": "#XPROD_A", "sku": "SKU_B", "total": 3},
+            ]
+        )
+
+        li_a.refresh_from_db()
+        li_b.refresh_from_db()
+        assert li_a.shipped_quantity == 2
+        assert li_b.shipped_quantity == 0
+        assert result["matched_count"] == 1
+        assert result["unmatched"][0]["reason"] == "line_item_not_found"
+
+    def test_result_lists_keep_their_original_first_seen_row_ordering(self):
+        """Grouping is insertion-ordered, so the response lists must follow the
+        order the keys first appeared in the request — a batched rewrite that
+        iterates a lookup dict instead would silently reshuffle them."""
+        order = _make_order(shopify_order_id=913001, name="#ORDERING")
+        _make_line_item(order, shopify_line_item_id=1, sku="SKU_1", quantity=10)
+        _make_line_item(order, shopify_line_item_id=2, sku="SKU_2", quantity=10)
+        _make_line_item(order, shopify_line_item_id=3, sku="SKU_3", quantity=10)
+
+        result = _process_outbound_rows(
+            [
+                {"name": "#ORDERING", "sku": "SKU_3", "total": 1},
+                {"name": "#ORDERING", "sku": "SKU_1", "total": 1},
+                {"name": "#ORDERING", "sku": "SKU_2", "total": 1},
+            ]
+        )
+
+        assert [m["sku"] for m in result["matched"]] == ["SKU_3", "SKU_1", "SKU_2"]
+
+    def test_below_threshold_match_does_not_advance_logistics_status_via_batch_write(self):
+        """The batched write lists `logistics_status` unconditionally, so a
+        below-threshold match rewrites the field with its own existing value.
+        That must be a no-op, never a reset to the model default."""
+        order = _make_order(shopify_order_id=914001, name="#KEEPSTATUS")
+        li_keep = _make_line_item(
+            order,
+            shopify_line_item_id=1,
+            sku="SKU_KEEP",
+            quantity=10,
+            logistics_status="received",
+        )
+        li_advance = _make_line_item(
+            order,
+            shopify_line_item_id=2,
+            sku="SKU_ADVANCE",
+            quantity=4,
+            logistics_status="outbound_scheduled",
+        )
+
+        _process_outbound_rows(
+            [
+                {"name": "#KEEPSTATUS", "sku": "SKU_KEEP", "total": 1},
+                {"name": "#KEEPSTATUS", "sku": "SKU_ADVANCE", "total": 4},
+            ]
+        )
+
+        li_keep.refresh_from_db()
+        li_advance.refresh_from_db()
+        assert li_keep.logistics_status == "received"
+        assert li_advance.logistics_status == "shipped"

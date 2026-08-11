@@ -100,11 +100,13 @@ class Order(models.Model):
             # @MX:NOTE: [AUTO] SPEC-ORDER-013 (UploadRackNumberView,
             # LineItemBulkRackNumberUpdateView) and SPEC-ORDER-015
             # (_process_outbound_rows) both use Order.name as the sole
-            # exact-match lookup key, in SPEC-ORDER-015's case once per
-            # (order_name, sku) group in a loop. Without this index, each
-            # lookup was a full table scan (~140ms at 3,109 rows in dev;
-            # much worse at product.md's stated 500k+ row production
-            # scale). See performance fix following SPEC-ORDER-015.
+            # exact-match lookup key — SPEC-ORDER-015 as a single batched
+            # `name__in` fetch covering every (order_name, sku) group in the
+            # request. Without this index the lookup is a full table scan
+            # (~140ms at 3,109 rows in dev; much worse at product.md's stated
+            # 500k+ row production scale), and batching does not remove that
+            # cost — it just stops paying it once per group.
+            # See performance fixes following SPEC-ORDER-015.
             models.Index(fields=["name"]),
         ]
 
