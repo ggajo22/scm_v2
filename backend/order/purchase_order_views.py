@@ -1488,8 +1488,19 @@ class UploadDailyReviewView(APIView):
                             if loc is None:
                                 skipped_count += 1
                                 continue
+                            # The generic 'warehouse' code carries no location, so
+                            # persist the resolved, location-suffixed code instead —
+                            # otherwise confirmed_distributor loses the location and
+                            # the frontend's 창고(한국)/창고(CA)/창고(NJ) labels (keyed
+                            # on warehouse_korea/warehouse_ca/warehouse_nj) are
+                            # unreachable. Only the LineItem field write uses this;
+                            # stock deduction, note assignee and the response summary
+                            # keep using `loc` / the original `distributor_code`.
+                            resolved_distributor_code = f"warehouse_{loc}"
                         else:
                             loc = _WAREHOUSE_LOCATION_MAP[distributor_code]
+                            # Already location-suffixed (legacy Excel input) — as-is.
+                            resolved_distributor_code = distributor_code
 
                         # Deferred atomic stock deduction (floor at 0) — see
                         # REQ-PO9-006 investigation note below the loop.
@@ -1498,7 +1509,7 @@ class UploadDailyReviewView(APIView):
                         # REQ-PO5-005: Set purchase_status = "in_stock"
                         for li in unordered_lis:
                             li.purchase_status = "in_stock"
-                            li.confirmed_distributor = distributor_code
+                            li.confirmed_distributor = resolved_distributor_code
                         warehouse_li_updates.extend(unordered_lis)
                         if note is not None:
                             # REQ-PO8-009: assignee determined by resolved location
