@@ -13,10 +13,12 @@ from .purchase_order_views import (
     LineItemRackNumberSummaryView,
     LineItemRackNumberUpdateView,
     LineItemStatusUpdateView,
+    OutboundProcessView,
     PurchaseOrderListView,
     RunComparisonView,
     UnorderedItemsView,
     UploadDailyReviewView,
+    UploadOutboundView,
     UploadRackNumberView,
     UploadVendorFileView,
     UploadVendorShipmentView,
@@ -101,6 +103,20 @@ urlpatterns = [
         "purchase-orders/line-items/rack-number-summary/",
         LineItemRackNumberSummaryView.as_view(),
         name="po-line-item-rack-number-summary",
+    ),
+    # SPEC-ORDER-015: outbound processing. Both paths are fully static (no
+    # <int:pk> segment), so the line-items/<int:pk>/... patterns above cannot
+    # shadow them — "outbound-process" is not an int and never matches <int:pk>
+    # (same reasoning as the SPEC-ORDER-014 rack-number-summary path).
+    path(
+        "purchase-orders/line-items/outbound-process/",
+        OutboundProcessView.as_view(),
+        name="po-line-item-outbound-process",
+    ),
+    path(
+        "purchase-orders/upload-outbound/",
+        UploadOutboundView.as_view(),
+        name="po-upload-outbound",
     ),
     path(
         "purchase-orders/upload-vendor-shipment/",

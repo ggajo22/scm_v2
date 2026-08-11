@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link, useNavigate, useLocation } from 'react-router-dom'
-import { Users, LogOut, BookOpen, ChevronDown, ShoppingCart, Package, Warehouse, StickyNote, Tag, MapPin } from 'lucide-react'
+import { Users, LogOut, BookOpen, ChevronDown, ShoppingCart, Package, Warehouse, StickyNote, Tag, MapPin, Truck } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useAuthStore } from '@/store/authStore'
 import { cn } from '@/lib/utils'
@@ -64,6 +64,13 @@ const flatNavItems: FlatNavItem[] = [
     label: '렉번호 관리',
     href: '/rack-number',
     icon: MapPin,
+  },
+  {
+    // SPEC-ORDER-015 REQ-OUTBOUND-015: standalone outbound page, placed next
+    // to 렉번호 관리 as the adjacent warehouse-floor workflow.
+    label: '출고 처리',
+    href: '/outbound',
+    icon: Truck,
   },
   {
     label: 'SKU 세트 매핑',

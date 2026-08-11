@@ -30,3 +30,21 @@ def test_customer_unique_shopify_id():
 def test_order_customer_fk_nullable():
     order = Order.objects.create(shopify_order_id=2001, store_type="gimssine", customer=None)
     assert order.customer is None
+
+
+def test_order_name_field_has_db_index():
+    """Order.name is used as the sole exact-match lookup key by
+    UploadRackNumberView, LineItemBulkRackNumberUpdateView (SPEC-ORDER-013)
+    and _process_outbound_rows (SPEC-ORDER-015). Without an index, every
+    lookup performs a full table scan, which is measured to take ~140ms on
+    a dev DB with only 3,109 rows and degrades further at production scale
+    (500k+ rows per product.md). This test asserts a db-level index exists
+    on Order.name so the query planner can use it, independent of any
+    specific backend's EXPLAIN output (portable across SQLite/MySQL/CI).
+    """
+    indexed_field_sets = [tuple(index.fields) for index in Order._meta.indexes]
+    assert ("name",) in indexed_field_sets, (
+        "Order.name must be covered by a db index (models.Index(fields=['name'])) "
+        "to avoid full table scans on the exact-match lookups performed by "
+        "SPEC-ORDER-013 and SPEC-ORDER-015 views."
+    )

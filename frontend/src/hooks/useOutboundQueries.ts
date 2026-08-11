@@ -1,0 +1,46 @@
+import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { toast } from 'sonner'
+import { processOutboundManual, uploadOutbound } from '@/services/outboundApi'
+import type { OutboundProcessResponse } from '@/services/outboundApi'
+import { ORDER_DETAIL_QUERY_KEY } from '@/features/order/hooks/useOrderDetail'
+
+// ---------------------------------------------------------------------------
+// SPEC-ORDER-015: outbound processing mutation hooks (REQ-OUTBOUND-016)
+// ---------------------------------------------------------------------------
+
+// REQ-OUTBOUND-014/017: a single toast line covering all three response
+// categories — the page renders the per-item detail, the toast only has to
+// tell the user at a glance whether anything needs attention.
+export function buildOutboundSummary(result: OutboundProcessResponse): string {
+  return `출고 처리 완료: 성공 ${result.matched_count}건, 매칭 실패 ${result.unmatched_count}건, 수량초과 ${result.quantity_exceeded_count}건`
+}
+
+// Outbound writes shipped_quantity/shipped_at/logistics_status on LineItems,
+// so any order-detail view already in cache is stale afterwards.
+function useOutboundMutation<TVars>(
+  mutationFn: (vars: TVars) => Promise<OutboundProcessResponse>,
+  errorMessage: string
+) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn,
+    onSuccess: (result) => {
+      void queryClient.invalidateQueries({ queryKey: ORDER_DETAIL_QUERY_KEY })
+      toast.success(buildOutboundSummary(result))
+    },
+    onError: () => {
+      toast.error(errorMessage)
+    },
+  })
+}
+
+// REQ-OUTBOUND-011/016: manual bulk entry submit.
+export function useProcessOutboundManual() {
+  return useOutboundMutation(processOutboundManual, '출고 처리에 실패했습니다.')
+}
+
+// REQ-OUTBOUND-013/016: Excel upload submit. A header the backend parser
+// cannot resolve comes back as HTTP 422 and lands in onError.
+export function useUploadOutbound() {
+  return useOutboundMutation(uploadOutbound, '출고 파일 업로드에 실패했습니다.')
+}

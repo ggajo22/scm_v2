@@ -115,6 +115,11 @@ class LineItemDetailSerializer(serializers.ModelSerializer):
             # SPEC-ORDER-011 T11: expose logistics_status so the frontend has
             # a data source for the LineItem-level logistics badge column.
             "logistics_status",
+            # SPEC-ORDER-015 T7: cumulative outbound quantity and last
+            # outbound timestamp, so an order-detail view can show partial
+            # shipment progress alongside logistics_status.
+            "shipped_quantity",
+            "shipped_at",
         ]
 
 

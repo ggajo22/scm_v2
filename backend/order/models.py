@@ -97,6 +97,17 @@ class Order(models.Model):
             models.Index(fields=["financial_status"]),
             models.Index(fields=["fulfillment_status"]),
             models.Index(fields=["shopify_created_at"]),
+            # @MX:NOTE: [AUTO] SPEC-ORDER-013 (UploadRackNumberView,
+            # LineItemBulkRackNumberUpdateView) and SPEC-ORDER-015
+            # (_process_outbound_rows) both use Order.name as the sole
+            # exact-match lookup key — SPEC-ORDER-015 as a single batched
+            # `name__in` fetch covering every (order_name, sku) group in the
+            # request. Without this index the lookup is a full table scan
+            # (~140ms at 3,109 rows in dev; much worse at product.md's stated
+            # 500k+ row production scale), and batching does not remove that
+            # cost — it just stops paying it once per group.
+            # See performance fixes following SPEC-ORDER-015.
+            models.Index(fields=["name"]),
         ]
 
 
@@ -195,6 +206,20 @@ class LineItem(models.Model):
         choices=LOGISTICS_STATUS_CHOICES,
         default="not_shipped",
     )
+    # @MX:NOTE: [AUTO] SPEC-ORDER-015 REQ-OUTBOUND-001/002/002a: cumulative
+    # outbound quantity and last-processed timestamp. These fill the one
+    # missing step of the LOGISTICS_STATUS_CHOICES pipeline above —
+    # `outbound_scheduled` -> `shipped` (Korea warehouse -> US warehouse) —
+    # which had no upload/entry path, unlike `shipment_confirmed`
+    # (UploadVendorShipmentView) and `received` (UploadWarehouseReceiptView).
+    # shipped_quantity accumulates across multiple partial outbound requests
+    # and drives the automatic transition to logistics_status="shipped" once
+    # it reaches `quantity`; shipped_at stays NULL until the first outbound
+    # event actually touches the row (REQ-OUTBOUND-002a). Distinct from
+    # `fulfillment_status` (Shopify "shipped to customer", never written here)
+    # and from `book.Info.qty` / `WarehouseStock` (untouched by this SPEC).
+    shipped_quantity = models.IntegerField(default=0)
+    shipped_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         db_table = "orders_line_item"

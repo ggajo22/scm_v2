@@ -1085,6 +1085,83 @@ def parse_rack_number_excel(file_bytes: bytes) -> list[dict]:
     return results
 
 
+def parse_outbound_excel(file_bytes: bytes) -> list[dict]:
+    """
+    SPEC-ORDER-015 REQ-OUTBOUND-012/012a: parse an uploaded outbound-processing
+    Excel file. The header row (row 0) is scanned for three required columns —
+    order name, SKU, quantity — using the same case-insensitive substring
+    convention as `parse_rack_number_excel` above, so column order does not
+    matter. Raises ValueError when any of the three cannot be located
+    (REQ-OUTBOUND-012a); `UploadOutboundView` converts that into HTTP 422.
+
+    Order-name cell values are read as a raw whitespace-stripped string with
+    no "#" stripping and no int conversion — they are matched against
+    `Order.name` ("#37349", "#EB10011778") downstream, never against
+    `Order.order_number`.
+
+    Data rows with a blank SKU are skipped, which also drops the trailing
+    all-empty rows openpyxl commonly reports.
+
+    Returns:
+        List of dicts: {"name": str, "sku": str, "total": int | None} — the
+        exact row shape `_process_outbound_rows` consumes from the manual-entry
+        endpoint, so both endpoints share one contract. `total` is None when
+        the quantity cell could not be read as a whole number; that layer
+        rejects such rows as `invalid_total` rather than treating them as 0
+        (see the parse-failure note below).
+    """
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
+    except Exception as exc:
+        raise ValueError(f"Cannot read .xlsx file: {exc}") from exc
+
+    ws = wb.active
+    rows = list(ws.iter_rows(values_only=True))
+    if not rows:
+        raise ValueError("Empty file")
+
+    header = [str(h).strip().lower() if h is not None else "" for h in rows[0]]
+
+    name_idx = next((i for i, h in enumerate(header) if "name" in h or "주문번호" in h), None)
+    sku_idx = next((i for i, h in enumerate(header) if "sku" in h), None)
+    total_idx = next((i for i, h in enumerate(header) if "total" in h or "수량" in h), None)
+
+    if name_idx is None or sku_idx is None or total_idx is None:
+        raise ValueError("필수 컬럼(주문번호/SKU/수량)을 찾을 수 없습니다.")
+
+    results = []
+    for row in rows[1:]:
+        # No explicit short-row guard: openpyxl pads every row of
+        # iter_rows(values_only=True) to the sheet's max_column, and `_cell`
+        # returns None for an out-of-range index regardless, so a short row
+        # simply yields a blank SKU and is dropped just below.
+        raw_sku = _cell(row, sku_idx)
+        sku = str(raw_sku).strip() if raw_sku is not None else ""
+        if not sku:
+            continue
+
+        raw_name = _cell(row, name_idx)
+        name = str(raw_name).strip() if raw_name is not None else ""
+
+        raw_total = _cell(row, total_idx)
+        try:
+            total = int(raw_total)
+        except (TypeError, ValueError):
+            # Deliberately None, NOT 0. `_process_outbound_rows` reads a
+            # genuine 0 on a warehouse_ca / warehouse_nj LineItem as an
+            # "already in the US warehouse, mark complete" signal, so
+            # flattening an empty cell, a text cell or an Excel error value
+            # (#N/A, #REF!) to 0 here would let a data-entry accident close a
+            # shipment out. None carries the parse failure through to that
+            # layer, which rejects the row as `invalid_total` — the verdict an
+            # unreadable quantity has always received.
+            total = None
+
+        results.append({"name": name, "sku": sku, "total": total})
+
+    return results
+
+
 def parse_vendor_shipment_excel(file_bytes: bytes) -> list[dict]:
     """
     SPEC-ORDER-011 REQ-LOGI-003: parse an uploaded vendor-shipment-
