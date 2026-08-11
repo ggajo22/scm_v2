@@ -1505,6 +1505,112 @@ class TestUploadWarehouseStatusBasedLocation:
 
 
 @pytest.mark.django_db
+class TestWarehouseConfirmedDistributorLocationSuffix:
+    """Bug fix: generic 'warehouse' code must persist the *resolved* location
+    into LineItem.confirmed_distributor.
+
+    Before the fix, the note-lookup path resolved `loc` (korea/ca/nj) correctly
+    for the WarehouseStock deduction and the LineItemNote assignee, but then
+    wrote the bare, unsuffixed `distributor_code` ("warehouse") into
+    confirmed_distributor — discarding the location. The frontend
+    DISTRIBUTOR_LABELS dict already carries 창고(한국)/창고(CA)/창고(NJ) labels
+    keyed on warehouse_korea/warehouse_ca/warehouse_nj, which were therefore
+    unreachable.
+    """
+
+    def test_generic_warehouse_fullerton_sets_confirmed_distributor_ca(self, auth_client):
+        sku = "9791100000021"
+        order = _make_order(shopify_order_id=90021)
+        li = _make_line_item(order, sku=sku, quantity=1, shopify_line_item_id=1)
+        WarehouseStock.objects.create(isbn=sku, location="ca", quantity=5)
+
+        file_bytes = _make_new_template_excel([
+            {"sku": sku, "selected": "재고", "status": "Fullerton재고"},
+        ])
+        file_obj = io.BytesIO(file_bytes)
+        file_obj.name = "daily_review.xlsx"
+        res = auth_client.post(UPLOAD_DAILY_URL, data={"file": file_obj}, format="multipart")
+        assert res.status_code == 201
+
+        li.refresh_from_db()
+        assert li.confirmed_distributor == "warehouse_ca"
+
+    def test_generic_warehouse_korea_sets_confirmed_distributor_korea(self, auth_client):
+        sku = "9791100000022"
+        order = _make_order(shopify_order_id=90022)
+        li = _make_line_item(order, sku=sku, quantity=1, shopify_line_item_id=1)
+        WarehouseStock.objects.create(isbn=sku, location="korea", quantity=5)
+
+        file_bytes = _make_new_template_excel([
+            {"sku": sku, "selected": "재고", "status": "한국재고"},
+        ])
+        file_obj = io.BytesIO(file_bytes)
+        file_obj.name = "daily_review.xlsx"
+        res = auth_client.post(UPLOAD_DAILY_URL, data={"file": file_obj}, format="multipart")
+        assert res.status_code == 201
+
+        li.refresh_from_db()
+        assert li.confirmed_distributor == "warehouse_korea"
+
+    def test_generic_warehouse_nj_sets_confirmed_distributor_nj(self, auth_client):
+        sku = "9791100000023"
+        order = _make_order(shopify_order_id=90023)
+        li = _make_line_item(order, sku=sku, quantity=1, shopify_line_item_id=1)
+        WarehouseStock.objects.create(isbn=sku, location="nj", quantity=5)
+
+        file_bytes = _make_new_template_excel([
+            {"sku": sku, "selected": "재고", "status": "NJ재고"},
+        ])
+        file_obj = io.BytesIO(file_bytes)
+        file_obj.name = "daily_review.xlsx"
+        res = auth_client.post(UPLOAD_DAILY_URL, data={"file": file_obj}, format="multipart")
+        assert res.status_code == 201
+
+        li.refresh_from_db()
+        assert li.confirmed_distributor == "warehouse_nj"
+
+    def test_legacy_suffixed_code_confirmed_distributor_unchanged(self, auth_client):
+        """Regression guard: the legacy _WAREHOUSE_LOCATION_MAP path already wrote
+        the correct suffixed code and must keep writing `distributor_code` as-is."""
+        sku = "9791100000024"
+        order = _make_order(shopify_order_id=90024)
+        li = _make_line_item(order, sku=sku, quantity=1, shopify_line_item_id=1)
+        WarehouseStock.objects.create(isbn=sku, location="ca", quantity=5)
+
+        file_bytes = _make_daily_review_excel([
+            {"isbn": sku, "selected": "재고(CA)", "note": "CA 창고 확인"},
+        ])
+        file_obj = io.BytesIO(file_bytes)
+        file_obj.name = "daily_review.xlsx"
+        res = auth_client.post(UPLOAD_DAILY_URL, data={"file": file_obj}, format="multipart")
+        assert res.status_code == 201
+
+        li.refresh_from_db()
+        assert li.confirmed_distributor == "warehouse_ca"
+
+    def test_confirmed_by_distributor_summary_still_keyed_by_bare_code(self, auth_client):
+        """Regression guard: the response summary dict keys off the *original*
+        distributor_code, not the location-resolved one. Only the persisted
+        LineItem.confirmed_distributor field changes."""
+        sku = "9791100000025"
+        order = _make_order(shopify_order_id=90025)
+        _make_line_item(order, sku=sku, quantity=1, shopify_line_item_id=1)
+        WarehouseStock.objects.create(isbn=sku, location="ca", quantity=5)
+
+        file_bytes = _make_new_template_excel([
+            {"sku": sku, "selected": "재고", "status": "Fullerton재고"},
+        ])
+        file_obj = io.BytesIO(file_bytes)
+        file_obj.name = "daily_review.xlsx"
+        res = auth_client.post(UPLOAD_DAILY_URL, data={"file": file_obj}, format="multipart")
+        assert res.status_code == 201
+
+        cbd = res.data["confirmed_by_distributor"]
+        assert "warehouse" in cbd
+        assert "warehouse_ca" not in cbd
+
+
+@pytest.mark.django_db
 class TestUploadUnrecognizedSelectedSkipsButUpsertsVendorData:
     def test_ac009_summary_row_skips_po_but_upserts_vendor_tables(self, auth_client):
         """AC-009: 선택='합계' -> PO/CS/창고 미실행, 벤더 upsert는 실행."""
