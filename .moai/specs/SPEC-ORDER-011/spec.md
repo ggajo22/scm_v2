@@ -1,10 +1,10 @@
 ---
 id: SPEC-ORDER-011
-version: 1.5.0
+version: 1.6.0
 status: completed
 created: 2026-08-07
 created_at: 2026-08-07
-updated: 2026-08-08
+updated: 2026-08-11
 author: ggajo
 priority: High
 issue_number: 8
@@ -22,7 +22,8 @@ labels: [order, logistics, purchase-order]
 | 1.2.0 | 2026-08-07 | ggajo | Phase 2.3 plan-auditor 리뷰(iteration 2, FAIL — MP-2만 잔존) 반영 — AC-LOGI-008/012에서 "Given"/"After" 트리거 오용 제거하고 순수 Ubiquitous 형태로 재작성, REQ-LOGI-003/007 및 AC-LOGI-007의 "Where"(Optional 전용) 오용을 "If...then"(Unwanted)으로 교체, AC-LOGI-005를 AC-LOGI-005a/005b로 분리(단일 트리거·단일 응답 원칙), AC-LOGI-013에 객관적 검증 조건(헤더 텍스트 공통 단어 없음 + 뱃지 배경색 상이) 추가 |
 | 1.3.0 | 2026-08-07 | ggajo | Phase 2.3 plan-auditor 리뷰(iteration 3/3, FAIL — 잔여 결함 3개, 최대 반복 도달로 에스컬레이션) 반영. 사용자 승인 하에 오케스트레이터가 직접 마무리: AC-LOGI-007을 007a(Ubiquitous, 유효값 수용)/007b(Unwanted, 무효값 거부)로 분리, AC-LOGI-014를 014a(Unwanted, PurchaseOrder.status 불변)/014b(Ubiquitous, logistics_status는 PurchaseOrder.status로부터 계산되지 않음)로 분리, REQ-LOGI-014의 라벨을 "(Unwanted)"에서 "(Ubiquitous)"로 정정(트리거 없는 항상-참 불변식이므로) |
 | 1.4.0 | 2026-08-07 | ggajo | 검증 재감사(review-4)에서 동일 결함 유형이 REQUIREMENTS 섹션 3곳에 추가로 발견되어(REQ-LOGI-003/005/007) 사용자 승인 하에 오케스트레이터가 동일 패턴으로 마무리: REQ-LOGI-003을 003(Event-Driven, 전이 규칙)/003a(Unwanted, SKU 중복 dedup)/003b(Ubiquitous, 원자적 커밋)로 분리, REQ-LOGI-005에 005a(Ubiquitous, dedup/원자성 규칙 공유) 신설, REQ-LOGI-007을 007(Ubiquitous, 유효값 허용)/007a(Unwanted, 무효값 거부)로 분리(AC-LOGI-007b의 Traces를 REQ-LOGI-007a로 갱신). 새로 분리된 REQ 각각에 대응하는 AC-LOGI-003a/003b/005c 신설 및 acceptance.md에 시나리오 1c/1d/2b2 추가로 1:1 추적성 유지 |
-| 1.5.0 | 2026-08-08 | ggajo | Phase 3 문서 동기화 — Run 단계 구현 완료(commit 9c2fc33) 반영. `status: draft → completed`, 신규 섹션 `## 구현 노트` 추가(실제 구현 범위, plan.md 대비 차이, 인수기준 검증, 테스트 커버리지, 알려진 제약 기술) |
+| 1.5.0 | 2026-08-08 | ggajo | Phase 3 문서 동기화 — Run 단계 구현 완료(commit 9c2fc33) 반영. `status: draft → completed`, 신규 섹션 `## 구현 노트` 추가(실제 구현 범위, plan.md 대비 차이, 인수기준 검증, 테스트 커버리지, 알려진 제약 기술)
+| 1.6.0 | 2026-08-11 | ggajo | 프로덕션 버그 수정 및 문서 동기화 — commit d22818f (cross-order SKU 충돌 안전성 개선). REQ-LOGI-003b/005b의 (Order.name, SKU) 매칭 구현, regression 테스트 추가(test_spec_011.py, test_spec_012.py) |
 
 ---
 
