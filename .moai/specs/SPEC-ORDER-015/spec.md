@@ -1,6 +1,6 @@
 ---
 id: SPEC-ORDER-015
-version: 1.1.1
+version: 1.2.0
 status: completed
 created_at: 2026-08-10
 updated: 2026-08-11
@@ -22,6 +22,7 @@ labels: [order, logistics, outbound, shipping]
 | 1.0.3 | 2026-08-10 | ggajo | plan-auditor 리뷰(iteration 3/3, FAIL, 0.94, max_iterations 도달로 최종 에스컬레이션) 이후 사용자가 D7 수정안(Option A)을 자동 3회 재시도 예산 밖에서 직접 승인 — 이번 수정 이후 plan-auditor 재실행 불필요. AC-OUTBOUND-009(Ubiquitous 라벨에 State-Driven 조건절이 혼입된 항목)를 순수 Ubiquitous AC-OUTBOUND-009(`shipped_quantity` 기본값 0, `shipped_at` nullable 필드 존재, REQ-001/002 추적)와 신규 State-Driven AC-OUTBOUND-009a(`shipped_at`가 미처리 상태에서 null 유지, REQ-002a 추적, REQ-002a의 트리거 문구를 그대로 재사용)로 분리해 단일 EARS 패턴 순도 확보(D7). acceptance.md의 대응 시나리오와 spec-compact.md AC 목록도 함께 갱신. |
 | 1.1.0 | 2026-08-11 | ggajo | 구현 완료(commit f122014) — Run 단계 완료 후 manager-docs 동기화 Phase. 백엔드 82개 pytest + 프론트엔드 79개 vitest + 회귀 754개(backend) + 15개(frontend) = 930개 전체 테스트 통과. LSP 게이트: 0 lint/type/test 에러. Exclusions 6개 항목 전수 검증 완료 (변경 없음). evaluator-active 단계 발견 defect 2건 수정(둘 다 `_process_outbound_rows`, `backend/order/purchase_order_views.py`): invalid_total(음수/0 total이 `shipped_quantity`를 감소시켜 Exclusions가 금지한 출고취소 기능을 우회할 수 있던 결함) + invalid_row(non-dict 행 입력 시 처리되지 않은 AttributeError/500, `OutboundProcessView.post`의 사전 검증으로 해결). 이상 모두 회귀 테스트로 검증. status: draft → completed, version 1.0.3 → 1.1.0 |
 | 1.1.1 | 2026-08-11 | ggajo | 성능 후속 조치 — 두 건의 성능 최적화 fix commit(f47d34b, bf9f5f7)을 spec.md에 문서화. (1) f47d34b: Order.name 인덱스 추가로 전체 테이블 스캔 제거(3094행 검사→1행 검사, EXPLAIN 확인). (2) bf9f5f7: _process_outbound_rows의 N+1 쿼리를 배치 쿼리로 교체(쿼리 수 3N→3 고정, 5배 입력에서도 동일 쿼리 수 증명). 테스트 커버리지 유지, 기존 기능 무변경(순수 내부 최적화). |
+| 1.2.0 | 2026-08-11 | ggajo | 기능 확장 — 미국창고 확정 품목의 출고 완료 신호 처리 (commit ca2cbfe). LineItem.confirmed_distributor가 warehouse_ca/warehouse_nj(미국 창고)인 품목에 대해서는, 출고 처리 시 total=0을 "이미 완료됨" 신호로 해석해 shipped_quantity를 quantity까지 채우고 logistics_status를 shipped로 전이. 미국창고가 아닌 품목의 total=0은 기존대로 invalid_total로 거부. 안전장치: (1) 음수 total 거부(기존 REQ-OUTBOUND-009 범위, 변경 없음)는 여전히 그룹화 이전에 적용됨. (2) shipped_quantity는 max()로만 갱신해 절대 감소하지 않음(신규 REQ-OUTBOUND-020b). (3) _parse_total 도입으로 "파싱 실패로 인한 0"과 "진짜 입력된 0"을 구분(신규 REQ-OUTBOUND-020c) — 파싱 실패는 invalid_total로 거부. 테스트 124/124 통과(기존 91 + 신규 33). 신규 REQ 4건 추가(REQ-OUTBOUND-020/020a/020b/020c, 순차 번호가 아닌 알파벳 접미사 계열). |
 
 ---
 
@@ -98,12 +99,50 @@ SPEC-ORDER-013의 기존 렉번호 업로드 처리는 동일 `(order_name, sku)
 걸쳐 나타나면 그 `Total` 값들을 먼저 합산한 뒤, 합산된 값 하나에 대해서만 수량초과 판정과 반영을
 1회 수행한다(REQ-OUTBOUND-007). last-row-wins는 적용하지 않는다.
 
+### 결정 D — 미국창고 확정 품목의 총수량 0은 완료 신호 (사용자 승인)
+
+한국→미국 물리적 이동이 없는 경우는 있다: 이미 미국 창고에 있던 상품이 "한국 재고"로
+분류되어 있다가, 위험회피 차원에서 "미국 창고 확정"으로 변경되는 케이스이다. 그런 품목의
+경우 기존 "출고" 기능(부분 출고 누적 메커니즘)은 의미가 없고, 대신 "이미 완료됨"이라는
+신호만 있으면 된다.
+
+따라서 SPEC-ORDER-015 구현 후, 출고 처리 시 입력된 총수량(group summation 후)이 정확히
+`0`이고 해당 LineItem의 `confirmed_distributor`가 `warehouse_ca` 또는 `warehouse_nj`
+(미국 창고 위치 코드, 일일 리뷰 confirm 흐름이 기록하는 location 맵과 동일한 명명법)인
+경우, 이 행을 "무효한 수량"으로 거부하는 대신 "이미 출고됨" 신호로 해석한다. 그 결과
+`shipped_quantity`를 `quantity`까지 채우고(null quantity는 0으로 취급, 설계 결정 B),
+`logistics_status`를 `"shipped"`로 자동 전이한다. 이 전이 로직은 기존 REQ-OUTBOUND-010의
+임계값 메커니즘을 재사용하며, 신규 enum 값을 추가하지 않는다 — 기존 5단계 물류 파이프라인에서
+마지막 단계를 도달하는 것이다.
+
+이 결정은 아래 3가지 안전장치로 강화되었다:
+
+1. **음수 거부 유지** (기존 REQ-OUTBOUND-009 범위, 변경 없음): 음수 합계는 여전히 grouping
+   이전에 행 단위로 거부되며, completed 경로로 진입할 수 없다. 음수 행이 양수 행을 상쇄하는
+   경로도 차단된다. 이번 기능은 이 기존 검증을 그대로 재사용할 뿐 새 REQ를 도입하지 않는다.
+
+2. **max() 갱신 (불감소 보장)** (REQ-OUTBOUND-020b):
+   `shipped_quantity`는 항상 `max(현재값, 목표값)` 형태로만 갱신되므로, 절대 감소하지
+   않는다. 완료 신호를 재전송해도 멱등이다.
+
+3. **파싱 실패 vs 진짜 0 구분** (REQ-OUTBOUND-020c):
+   새로운 `_parse_total()` 함수가 도입되어, "사용자가 명시적으로 0을 입력함"과
+   "셀이 비어있거나 읽을 수 없어서 기본값 0으로 강등함"을 구분한다. 진짜 0만이
+   완료 신호를 잠금해제하며, 파싱 실패 0은 기존과 동일하게 `invalid_total`로 거부된다.
+   Excel 경로의 `parse_outbound_excel`도 읽을 수 없는 수량 셀에 대해 0 대신 None을
+   반환하도록 개선되었다.
+
+이 결정과 안전장치는 Shopify 동기화 후 warehouse 확정 플로우가 보편화되면서 자연스럽게
+필요해진 것이다(기존 기능 확장, 신규 enum 추가 아님, Exclusions 변경 아님).
+
 ## 요구사항 (EARS)
 
-**번호 규칙 참고**: 기본 번호 계열(REQ-OUTBOUND-001~019)에는 결번이 없다. 알파벳 접미사(`002a`,
-`003a`, `005a`, `010a`, `012a`)는 SPEC-ORDER-011/012/013/014에서 확립된 프로젝트 관례를 따라,
-기본 항목에서 파생된 서로 다른 트리거 또는 서로 다른 성격의 규범 진술(정상 경로 vs 예외/검증
-경로)을 분리 표현하기 위한 것이다.
+**번호 규칙 참고**: 기본 번호 계열(REQ-OUTBOUND-001~020)에는 결번이 없다. 알파벳 접미사(`002a`,
+`003a`, `005a`, `010a`, `012a`, `020a`, `020b`, `020c`)는 SPEC-ORDER-011/012/013/014에서
+확립된 프로젝트 관례를 따라, 기본 항목에서 파생된 서로 다른 트리거 또는 서로 다른 성격의 규범
+진술(정상 경로 vs 예외/검증 경로)을 분리 표현하기 위한 것이다. REQ-OUTBOUND-020 및 그 파생 항목들
+(020a~020c)은 미국창고 확정 품목의 완료 신호 처리(설계 결정 D)를 다루며, version 1.2.0에서
+신규 추가되었다.
 
 ### 데이터 모델
 
@@ -223,6 +262,38 @@ reload.
 `LineItem.fulfillment_status`, `book.Info.qty`, and every `order.WarehouseStock` record
 unmodified by any outbound processing operation.
 
+### 미국창고 완료 신호 (설계 결정 D)
+
+**REQ-OUTBOUND-020** (Event-Driven): When a row's combined total (after summation per
+REQ-OUTBOUND-007) equals exactly 0 and the matched LineItem's `confirmed_distributor` is
+either `"warehouse_ca"` or `"warehouse_nj"` (a US warehouse location), the system shall treat
+this row as a completion signal rather than an invalid amount — the LineItem was never
+physically shipped Korea→US because it was already in the US warehouse. The system shall set
+that LineItem's `shipped_quantity` to at least its `quantity` value (treating `null quantity`
+as `0` per REQ-OUTBOUND-009) and shall set `logistics_status` to `"shipped"` via the existing
+threshold logic (REQ-OUTBOUND-010).
+
+**REQ-OUTBOUND-020a** (Unwanted): If a row's combined total equals exactly 0 and the matched
+LineItem's `confirmed_distributor` is NOT a US warehouse (`"warehouse_korea"`, an unset
+value, or a regular distributor name), then the system shall treat the zero as an invalid
+amount and shall report that row (or combined-duplicate group per REQ-OUTBOUND-007) under
+the "수량초과" or "매칭 실패" category with reason `invalid_total`, unchanged from
+REQ-OUTBOUND-009 behavior.
+
+**REQ-OUTBOUND-020b** (Ubiquitous): The system shall never decrease a LineItem's
+`shipped_quantity` as a result of any outbound processing operation — only increments or
+no-change outcomes are permitted. When a US-warehouse completion signal is applied
+(REQ-OUTBOUND-020), the `shipped_quantity` shall be set to
+`max(current_shipped_quantity, quantity)` to ensure idempotence: if the LineItem already
+reached or exceeded its target quantity, reapplying the completion signal has no effect.
+
+**REQ-OUTBOUND-020c** (Ubiquitous): The system shall distinguish between a `0` value that
+was genuinely parsed from user input and a `0` value that results from a parse failure (blank
+cell, non-numeric text, or Excel error value like #N/A). Only a genuinely parsed `0` unlocks
+the US-warehouse completion path (REQ-OUTBOUND-020); a parse-failure `0` shall be rejected
+with reason `invalid_total` before any matching or completion logic is applied, preserving
+the same rejection that would apply if the cell were unreadable on the manual-entry path.
+
 ---
 
 ## ACCEPTANCE CRITERIA
@@ -332,6 +403,25 @@ three visually distinct sections, each showing its count and item list.
 **AC-OUTBOUND-020** (Event-Driven) — Traces: REQ-OUTBOUND-018. When the user activates the reset
 control after viewing results, the system shall clear the form and result display, enabling a
 new outbound processing submission without a page reload.
+
+**AC-OUTBOUND-021** (Event-Driven) — Traces: REQ-OUTBOUND-020. When a row's combined total is
+exactly 0 and the matched LineItem's `confirmed_distributor` is `"warehouse_ca"` or
+`"warehouse_nj"`, the system shall set `shipped_quantity` to at least `quantity`, transition
+`logistics_status` to `"shipped"`, and report the row under matched.
+
+**AC-OUTBOUND-021a** (Unwanted) — Traces: REQ-OUTBOUND-020a. If a row's combined total is
+exactly 0 and the matched LineItem's `confirmed_distributor` is not a US warehouse value, then
+the system shall NOT modify that LineItem and shall report the row with reason `invalid_total`.
+
+**AC-OUTBOUND-021b** (Ubiquitous) — Traces: REQ-OUTBOUND-020b. Applying a US-warehouse
+completion signal to a LineItem whose `shipped_quantity` already equals or exceeds `quantity`
+shall leave `shipped_quantity` unchanged and shall still report the row as matched.
+
+**AC-OUTBOUND-021c** (Unwanted) — Traces: REQ-OUTBOUND-020c. If a row's `total` value results
+from a parse failure (blank cell, non-numeric text, or unreadable Excel cell) rather than a
+genuinely parsed `0`, then the system shall reject that row with reason `invalid_total` and
+shall NOT apply the US-warehouse completion path, even against a `confirmed_distributor` of
+`"warehouse_ca"` or `"warehouse_nj"`.
 
 ---
 
@@ -472,8 +562,9 @@ new outbound processing submission without a page reload.
 | frontend/src/components/Sidebar.tsx | [MODIFY] | "출고 처리" 메뉴 항목 추가 |
 | frontend/src/router/index.tsx | [MODIFY] | `/outbound` 라우트 등록 |
 
-모든 변경은 SPEC 요구사항 24개(REQ-OUTBOUND-001~019, 하위 002a/003a/005a/010a/012a 포함)에 1:1 이상 추적되며,
-Acceptance Criteria 23개(AC-OUTBOUND-001~020, 하위 004a/009a/010a 포함) 모두 검증 완료.
+모든 변경은 SPEC 요구사항 28개(REQ-OUTBOUND-001~020, 하위 002a/003a/005a/010a/012a/020a/020b/020c
+포함, v1.2.0 기준)에 1:1 이상 추적되며, Acceptance Criteria 27개(AC-OUTBOUND-001~021, 하위
+004a/009a/010a/021a/021b/021c 포함) 모두 검증 완료.
 
 ### 성능 후속 조치 (2026-08-11)
 
@@ -509,3 +600,56 @@ Acceptance Criteria 23개(AC-OUTBOUND-001~020, 하위 004a/009a/010a 포함) 모
 **API 계약**: 매칭/판정 로직(설계 결정 A/B/C, 동명 주문 tie-break, 매칭 실패/수량초과 분류) 및 응답 형식은 100% 동일하게 유지. 순수 내부 최적화이며 사용자 경험 변경 없음.
 
 **검증**: 신규 테스트 9개 추가(기존 82개 + 신규 9개 = 91개), 기존 회귀 테스트 전수 통과(test_spec_013.py 57개, test_models.py 5개 포함). 동명 주문 tie-break 등 엣지 케이스 전량 검증 완료.
+
+### 기능 확장 — 미국창고 확정 품목의 완료 신호 처리 (2026-08-11)
+
+**Commit**: ca2cbfe (`feat(order): 출고 처리 시 미국창고 확정 품목의 0수량을 완료 신호로 처리`)
+
+한국→미국 물리적 이동 없이 이미 미국 창고에 있던 품목(`confirmed_distributor`가
+`warehouse_ca` 또는 `warehouse_nj`)에 대해서는, 출고 처리 시 입력 총수량(그룹 합산 후)이
+정확히 0이고 파싱에 성공한 경우(설계 결정 D), 이를 "이미 출고 완료됨" 신호로 해석한다.
+그 결과 `shipped_quantity`를 `quantity`까지 채우고 `logistics_status`를 `"shipped"`로
+자동 전이하며, 기존 5단계 물류 파이프라인의 마지막 단계에 도달하는 것이다. 미국창고가
+아닌 품목의 `total=0`은 기존대로 `invalid_total`로 거부된다.
+
+**기능 요구사항**:
+- LineItem.confirmed_distributor가 warehouse_ca/warehouse_nj인 경우에만 완료 신호 해석
+- 완료 신호 적용 시 shipped_quantity를 max() 로직으로 갱신 (절대 감소하지 않음, 멱등)
+- logistics_status를 "shipped"로 전이 (REQ-OUTBOUND-010 기존 임계값 로직 재사용)
+- 응답상 matched로 보고 (unmatched나 quantity_exceeded가 아님)
+
+**안전장치**:
+- **음수 전 거부** (기존 REQ-OUTBOUND-009 범위, 변경 없음): 음수 합계는 여전히 grouping 이전
+  행 단위로 거부. 음수+양수 합산으로 0을 만들어 완료 신호로 오인하는 경로 차단.
+- **max() 불감소** (REQ-OUTBOUND-020b): shipped_quantity는 max(현재, 목표)로만 갱신.
+  이미 완료된 품목에 신호를 재전송해도 멱등.
+- **파싱 실패 vs 진짜 0 구분** (REQ-OUTBOUND-020c): 새로운 `_parse_total()` 함수
+  도입. "명시적으로 0 입력"과 "셀 읽기 실패로 인한 0 기본값"을 구분. 진짜 0만이
+  완료 신호를 잠금해제. 파싱 실패 0은 invalid_total로 거부됨. 엑셀 경로의
+  `parse_outbound_excel`도 읽을 수 없는 수량 셀에 대해 None 반환으로 개선.
+
+**코드 변경**:
+- `backend/order/purchase_order_views.py`: `_parse_total()` 함수 추가 (line 2338),
+  `_US_WAREHOUSE_DISTRIBUTORS` 상수 추가 (line 2367), `_process_outbound_rows`에서
+  total==0인 행의 confirmed_distributor 확인 로직 추가 (line 2601~2646), max() 갱신
+  적용
+- `backend/order/excel_utils.py`: `parse_outbound_excel`에서 읽을 수 없는 Total 셀에
+  대해 None 반환으로 개선 (기존 0 대신)
+- `backend/order/tests/test_spec_015.py`: 33개 신규 테스트 추가 (기존 91 + 신규 33 =
+  124/124 통과)
+
+**테스트 커버리지**:
+- 총 124/124 pytest 통과 (기존 91개 + 신규 33개)
+- 신규 테스트 항목:
+  - US warehouse total=0 성공 케이스 (shipped_quantity 갱신, status 전이, matched 보고)
+  - US warehouse total=0 멱등성 (이미 완료된 품목 재전송 시 무변경)
+  - non-US warehouse total=0 거부 케이스 (invalid_total, unmatched 보고)
+  - 파싱 실패 vs 진짜 0 구분 (blank/garbage cell 거부, 진짜 0만 완료 신호)
+  - 음수+양수 합산 후 0이 되는 경우 (음수 이전 거부로 완료 신호까지 도달 불가)
+  - Excel 빈 셀/오류값 처리 (None 반환, invalid_total 거부)
+- 회귀 테스트: 기존 모든 테스트 통과, 기존 기능 무변경
+
+**Exclusions 검증** (설계 결정 D 적용 후에도 유지):
+- confirmed_distributor는 읽기만 함 (쓰기 없음, 기존 Shopify/daily-review 플로우에서만 기록)
+- LineItem.rack_number, fulfillment_status, book.Info.qty, order.WarehouseStock 모두 무변경
+- 물류 enum 확장 없음 (기존 "shipped" 값 재사용)
