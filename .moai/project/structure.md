@@ -105,6 +105,8 @@ scm_v2_frontend/
 │   │   ├── DashboardPage.tsx
 │   │   ├── ListingsPage.tsx
 │   │   ├── OrdersPage.tsx
+│   │   ├── RackNumberPage.tsx
+│   │   ├── OutboundPage.tsx
 │   │   ├── SyncStatusPage.tsx
 │   │   └── NotFoundPage.tsx
 │   │

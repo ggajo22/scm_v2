@@ -110,7 +110,7 @@ Shopify 연동 도서 재고 및 주문 관리 관리자 애플리케이션
 - 테스트 커버리지: 백엔드 51개 pytest (T1~T7), 프론트엔드 15개 테스트
 
 ### 9. 렉번호 요약 뷰 — 미출고 LineItem 렉별 교차 주문 집계 (SPEC-ORDER-014 — 완료)
-- **렉번호 요약 탭** — `/rack-number` 페이지 2번째 탭 추가
+- **렉번호 요약 탭** — `/rack-number` 페이지 2번째 탁 추가
   - Tab1 "주문 검색" — 기존 SPEC-ORDER-013 동작 무변경 (검색 → 체크박스 일괄 선택 → 인라인 편집)
   - Tab2 "렉번호 요약" — 신규 읽기 전용 집계 뷰 (항상 고정 미출고 필터 적용)
 - **렉번호별 그룹핑** — 전체 주문을 가로지르는 미출고 LineItem을 렉번호별로 자동 그룹화
@@ -121,6 +121,24 @@ Shopify 연동 도서 재고 및 주문 관리 관리자 애플리케이션
 - **읽기 전용 강제** — Tab2에 체크박스, 일괄 적용, 인라인 편집 등 편집 기능 제공 금지
   - 렉번호 수정은 여전히 Tab1(SPEC-ORDER-013)에서만 가능
 - 테스트 커버리지: 백엔드 13개 pytest (필터/그룹핑/null 처리), 프론트엔드 26개 테스트, 회귀 테스트 276개 통과
+
+### 10. 출고 처리 — 한국 창고 → 미국 창고 이동 (SPEC-ORDER-015 — 완료)
+- **신규 LineItem 필드** — `shipped_quantity` (누적 출고 수량, 기본값 0) + `shipped_at` (최근 출고 처리 일시, nullable)
+- **주문-SKU 기반 매칭** — Order.name 정확 일치 → (order, sku) 조합 기반 LineItem 매칭
+  - 복수 LineItem 매칭 시 "매칭 실패" 안전 스킵 (분배 로직 불필요 — 설계 결정 A)
+  - null quantity는 0으로 간주해 모든 양수 입력에서 "수량초과" 판정 (설계 결정 B)
+  - 동일 요청 내 중복 행은 수량 합산 후 1회 판정 (설계 결정 C)
+- **백엔드 엔드포인트** — 2개 (JSON 수동 입력 `/api/purchase-orders/line-items/outbound-process/` + Excel 업로드 `/api/purchase-orders/upload-outbound/`)
+  - 3개 컬럼 자동 인식 (Name/Lineitem sku/Total, 대소문자 무시 substring 매칭)
+  - 3분류 결과 응답 (성공/매칭 실패/수량초과)
+  - 모든 행을 단일 atomic transaction으로 처리
+- **상태 전이** — `shipped_quantity >= quantity` 시 자동으로 `logistics_status = "shipped"` 전이
+- **신규 프론트엔드 페이지** — `/outbound` (독립 페이지, `/rack-number`와 분리)
+  - 수동 텍스트/테이블 입력 폼 + Excel 파일 업로드 UI
+  - 3분류 결과 시각화 + "다시 처리하기" 리셋 버튼
+- **사이드바 메뉴** — "출고 처리" 항목 추가
+- **기존 기능 무변경** — book.Info.qty / order.WarehouseStock / LineItem.fulfillment_status / order.order_number 유지
+- 테스트 커버리지: 백엔드 82개 pytest, 프론트엔드 79개 vitest, 회귀 테스트 769개(754+15) 통과
 
 ---
 

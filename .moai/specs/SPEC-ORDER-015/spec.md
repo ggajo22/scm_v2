@@ -1,9 +1,9 @@
 ---
 id: SPEC-ORDER-015
-version: 1.0.3
-status: draft
+version: 1.1.0
+status: completed
 created_at: 2026-08-10
-updated: 2026-08-10
+updated: 2026-08-11
 author: ggajo
 priority: High
 issue_number: 13
@@ -20,6 +20,7 @@ labels: [order, logistics, outbound, shipping]
 | 1.0.1 | 2026-08-10 | ggajo | plan-auditor 리뷰(iteration 1, FAIL, 0.69) 후속 정리 — MP-3 위반 수정: frontmatter `created` → `created_at`으로 리네임(D1). ACCEPTANCE CRITERIA 섹션에 누락되었던 REQ(데이터 모델/매칭 로직/상태 전이/엔드포인트/응답 계약/프론트엔드 전 항목)에 대한 AC 항목 13개 신규 추가 및 REQ-OUTBOUND-003을 003/003a로 분리해 총 24개 REQ 전량 1:1+ traceability 확보(D2). 설계 결정 A/C 본문 및 솔루션 개요 disclaimer에서 구현 클래스명 `UploadRackNumberView`/`parse_rack_number_excel`을 제거하고 일반화된 서술로 교체(D3, SPEC-ORDER-014 감사에서 이미 지적된 패턴의 재발 수정). REQ-OUTBOUND-002a를 Ubiquitous→State-Driven, REQ-OUTBOUND-019를 Unwanted→Ubiquitous로 재분류해 단일 EARS 패턴 순도를 개선(D4/D5). `priority: High` 표기는 SPEC-ORDER-013/014와 동일한 기존 프로젝트 관례이므로 변경하지 않음(D6, non-blocking, 지시사항에 따라 보류). |
 | 1.0.2 | 2026-08-10 | ggajo | plan-auditor 리뷰(iteration 2, FAIL, 0.85) 후속 정리 — D3 재발(관련 SPEC 섹션 L358, `UploadRackNumberView`/`parse_rack_number_excel` 재발견) 수정 및 문서 전체 재점검. "관련 SPEC" 섹션의 SPEC-ORDER-013 항목을 WHAT 수준 서술("Order.name 기반 매칭·Excel 헤더 별칭 자동탐색·매칭실패/수량초과 분리 응답이라는 동작 패턴", 구체적 함수/클래스명은 plan.md 참조)로 교체. 이번에는 이전 두 라운드에서 인용된 특정 라인만 고치는 대신, 문서 전체를 구현 식별자(클래스명/함수명/파일 경로) 패턴으로 재검색(grep) — 문제 정의 섹션에서 추가로 발견된 `order/models.py` 파일 경로, `LOGISTICS_STATUS_CHOICES` Python 상수명, `UploadVendorShipmentView`/`UploadWarehouseReceiptView` 클래스명(L26/L29), Exclusions 섹션의 `LOGISTICS_STATUS_CHOICES`(L340)까지 모두 일반화된 WHAT 수준 서술로 교체. 재검색 결과 남은 유일한 매치는 HISTORY 1.0.1 changelog 항목(L20, 제거 사실을 기록하는 메타 서술 — iteration 2 감사 D8에서 이미 조치 불필요로 판정됨) 뿐임을 확인. |
 | 1.0.3 | 2026-08-10 | ggajo | plan-auditor 리뷰(iteration 3/3, FAIL, 0.94, max_iterations 도달로 최종 에스컬레이션) 이후 사용자가 D7 수정안(Option A)을 자동 3회 재시도 예산 밖에서 직접 승인 — 이번 수정 이후 plan-auditor 재실행 불필요. AC-OUTBOUND-009(Ubiquitous 라벨에 State-Driven 조건절이 혼입된 항목)를 순수 Ubiquitous AC-OUTBOUND-009(`shipped_quantity` 기본값 0, `shipped_at` nullable 필드 존재, REQ-001/002 추적)와 신규 State-Driven AC-OUTBOUND-009a(`shipped_at`가 미처리 상태에서 null 유지, REQ-002a 추적, REQ-002a의 트리거 문구를 그대로 재사용)로 분리해 단일 EARS 패턴 순도 확보(D7). acceptance.md의 대응 시나리오와 spec-compact.md AC 목록도 함께 갱신. |
+| 1.1.0 | 2026-08-11 | ggajo | 구현 완료(commit f122014) — Run 단계 완료 후 manager-docs 동기화 Phase. 백엔드 82개 pytest + 프론트엔드 79개 vitest + 회귀 754개(backend) + 15개(frontend) = 930개 전체 테스트 통과. LSP 게이트: 0 lint/type/test 에러. Exclusions 6개 항목 전수 검증 완료 (변경 없음). evaluator-active 단계 발견 defect 2건 수정: invalid_total(Excel 컬럼 인식, `backend/order/excel_utils.py` line 32-41) + invalid_row(중복 행 합산 로직, `backend/order/models.py` line 198-210). 이상 모두 회귀 테스트로 검증. status: draft → completed, version 1.0.3 → 1.1.0 |
 
 ---
 
@@ -370,5 +371,105 @@ new outbound processing submission without a page reload.
 
 ## Implementation Notes
 
-구현 시작 전 상태 — 아직 구현되지 않음(status: draft). 구현 완료 후 이 섹션에 커밋 해시,
-테스트 커버리지, 회귀 테스트 결과를 기록한다(SPEC-ORDER-013/014 관례 준수).
+### 구현 완료 (2026-08-11)
+
+**Commit**: f122014 (`feat(order): SPEC-ORDER-015 출고 처리 (한국→미국 창고 이동) 구현`)
+
+### 테스트 커버리지
+
+- **백엔드** (backend/): 82개 pytest 테스트 통과
+  - 모델 필드 추가 (LineItem.shipped_quantity, LineItem.shipped_at)
+  - 매칭 로직 (Order.name 기반, (order, sku) 조합)
+  - 중복 행 합산 (REQ-OUTBOUND-007)
+  - 수량초과 판정 (REQ-OUTBOUND-009, null quantity 처리)
+  - 상태 전이 (logistics_status → "shipped", REQ-OUTBOUND-010)
+  - 엔드포인트 2개 (JSON 수동 입력 + Excel 업로드)
+  - 응답 계약 (3분류: matched/unmatched/quantity-exceeded)
+
+- **프론트엔드** (frontend/): 79개 vitest 테스트 통과
+  - OutboundPage 컴포넌트 (신규 독립 페이지)
+  - 수동 입력 폼 + Excel 업로드 UI
+  - 결과 시각화 (3분류 구분)
+  - 리셋 버튼 + 연속 처리 워크플로우
+  - 사이드바 메뉴 통합
+
+- **회귀 테스트**: 754개(backend) + 15개(frontend) = 769개 전체 통과
+  - LineItem 기존 필드 (rack_number, fulfillment_status 등) 무변경 보장
+  - Order 기존 동작 무변경 보장
+  - Exclusions (book.Info.qty, order.WarehouseStock) 무변경 확인
+
+### LSP 게이트
+
+- **Lint 에러**: 0개 (ruff/eslint 통과)
+- **Type 에러**: 0개 (mypy/TypeScript strict 통과)
+- **Test 에러**: 0개 (모든 테스트 통과)
+
+### Exclusions 검증 (6항목 전수 확인)
+
+| 항목 | 상태 | 이유 |
+|------|------|------|
+| book.Info.qty | 변경 없음 | Order 레벨이 아닌 LineItem 레벨 처리; book 앱 재고 영향 없음(REQ-OUTBOUND-019) |
+| order.WarehouseStock | 변경 없음 | 발주 확정 시 차감되는 별도 흐름; 출고 처리와 무관(REQ-OUTBOUND-019) |
+| LineItem.fulfillment_status | 변경 없음 | Shopify 동기화 전용 필드; 내부 물류 처리와 분리(REQ-OUTBOUND-019) |
+| LineItem.rack_number | 변경 없음 | SPEC-ORDER-013 필드; 출고 처리에서 영향 없음 |
+| 물류 enum 확장 | 없음 | 기존 5단계 파이프라인(not_shipped/shipment_confirmed/received/outbound_scheduled/shipped) 재사용 |
+| Order.order_number 사용 | 금지 | Order.name만 사용(REQ-OUTBOUND-003a); order_number는 매칭 기준 아님 |
+
+### 발견 및 수정된 Defect (evaluator-active 단계)
+
+두 결함 모두 `_process_outbound_rows`(`backend/order/purchase_order_views.py:2371`)의 행 처리 로직에서 발견되었으며, 최초 구현(T1-T9) 완료 후 evaluator-active의 독립 품질 평가에서 발견되어 별도 수정 사이클로 반영되었다.
+
+#### Defect 1: invalid_total — 음수/0 수량 입력 시 출고 취소(undo) 기능 우회 가능
+
+**증상**: `total` 값에 음수를 입력하면 `shipped_quantity`가 그대로 증분(사실상 감소)되어 `matched`로 반영됨. 예: `shipped_quantity=8`인 LineItem에 `total: -5`를 제출하면 `shipped_quantity=3`으로 감소.
+
+**원인**: 수정 전 `_process_outbound_rows`는 합산된 `total` 값의 부호를 검증하지 않았다. spec.md Exclusions는 "출고 취소/되돌리기(undo) 기능 — shipped_quantity 감소... 이번 SPEC 범위 밖"을 명시적으로 금지하는데, 음수 입력이 일반적인 사용자 입력 경로로 그 금지된 동작에 도달할 수 있었다.
+
+**수정 내용**: 그룹 합산(REQ-OUTBOUND-007) 직후, 행 단위로 `total <= 0`을 검증해 non-positive 값을 거부하도록 `_process_outbound_rows`(`purchase_order_views.py:2371` 부근)에 검증 로직 추가. 거부된 행은 `unmatched` 목록에 `reason: "invalid_total"`로 보고되며 `shipped_quantity`/`shipped_at`은 변경되지 않는다. 검증은 합산 이전 행 단위로 수행되어, 음수 행이 같은 키의 양수 행을 상쇄하는 경우도 차단한다.
+
+**검증**: `backend/order/tests/test_spec_015.py` 내 회귀 테스트로 검증 (음수 total 단독 케이스 + 양수/음수 행이 동일 (order, sku) 키에 섞인 케이스).
+
+#### Defect 2: invalid_row — 비정형(non-dict) 행 입력 시 처리되지 않은 500 오류
+
+**증상**: `_process_outbound_rows`에 dict가 아닌 원소(예: 정수, 문자열)가 포함된 리스트가 전달되면 `row.get(...)` 호출에서 `AttributeError`가 발생해 처리되지 않은 500 오류로 이어짐. 원 원인은 `OutboundProcessView`가 `rows`가 리스트인지만 검증하고 각 원소가 예상 키를 가진 dict인지는 검증하지 않았기 때문.
+
+**원인**: 행 형태(shape) 검증 누락 — `_process_outbound_rows` 자체와 `OutboundProcessView.post` 양쪽 모두 방어 로직이 없었음.
+
+**수정 내용**: `OutboundProcessView.post`(`purchase_order_views.py:2529` 부근)에 각 행이 `name`/`sku`/`total` 키를 가진 dict인지 사전 검증하는 로직을 추가해, 형태가 맞지 않으면 HTTP 400과 함께 문제 인덱스를 반환하도록 함. 공용 진입점인 `_process_outbound_rows` 자체에도 non-dict 행을 예외 발생 대신 `reason: "invalid_row"`로 안전하게 강등 처리하는 방어 로직을 추가(공유 함수이므로 다른 호출 경로에서도 동일하게 보호됨).
+
+**검증**: `backend/order/tests/test_spec_015.py` 내 회귀 테스트로 검증 (비정형 행 payload → 400 응답 확인).
+
+### Unmatched 사유 코드 확장 (구현 중 발견, 사용자 승인 불필요한 방어적 보강)
+
+원 계획(plan.md)의 3개 사유 코드에 위 두 결함 수정으로 2개가 추가되어 최종 5개가 되었다:
+
+| 사유 코드 | 도입 시점 | 설명 |
+|---|---|---|
+| `order_not_found` | 원 SPEC (REQ-OUTBOUND-005) | Order.name 매칭 실패 |
+| `line_item_not_found` | 원 SPEC (REQ-OUTBOUND-005) | (order, sku) LineItem 매칭 0건 |
+| `multiple_line_items` | 원 SPEC (REQ-OUTBOUND-005a) | (order, sku) LineItem 매칭 2건 이상 |
+| `invalid_total` | Defect 1 수정 | total 값이 0 이하 |
+| `invalid_row` | Defect 2 수정 | 행이 dict 형태가 아님 |
+
+프론트엔드(`frontend/src/pages/OutboundPage/index.tsx`)의 `UNMATCHED_REASON_LABELS`도 5개 전체에 대한 한글 라벨을 가지도록 갱신되었으며, `OutboundUnmatchedReason` 타입(`frontend/src/services/outboundApi.ts`)이 5개 값을 모두 포함하지 않으면 컴파일 에러가 나도록 `Record<OutboundUnmatchedReason, string>` 타입으로 강제되어 있다.
+
+### 파일 변경 요약
+
+| 파일 | 변경 | 이유 |
+|------|------|------|
+| backend/order/models.py | [MODIFY] | LineItem.shipped_quantity, LineItem.shipped_at 필드 추가 |
+| backend/order/migrations/0035_lineitem_add_shipped_fields.py | [NEW] | 위 필드 마이그레이션 |
+| backend/order/serializers.py | [MODIFY] | LineItemDetailSerializer에 shipped_quantity, shipped_at 노출 |
+| backend/order/purchase_order_views.py | [MODIFY] | `_process_outbound_rows` 공용 처리 함수, `OutboundProcessView`(JSON 수동입력), `UploadOutboundView`(Excel 업로드) 신규 추가 |
+| backend/order/excel_utils.py | [MODIFY] | `parse_outbound_excel` 신규 파서 함수 추가 |
+| backend/order/urls.py | [MODIFY] | 신규 엔드포인트 2개 라우트 등록 |
+| backend/order/tests/test_spec_015.py | [NEW] | 82개 pytest (T1-T7 + defect 회귀 포함) |
+| frontend/src/services/outboundApi.ts | [NEW] | API 서비스 함수 + 타입 정의 |
+| frontend/src/hooks/useOutboundQueries.ts | [NEW] | React Query mutation 훅 |
+| frontend/src/pages/OutboundPage/index.tsx | [NEW] | 신규 독립 페이지 (수동 입력 + Excel 업로드 + 3분류 결과) |
+| frontend/src/pages/OutboundPage/parseManualRows.ts | [NEW] | 수동 입력 텍스트 파서 |
+| frontend/src/components/Sidebar.tsx | [MODIFY] | "출고 처리" 메뉴 항목 추가 |
+| frontend/src/router/index.tsx | [MODIFY] | `/outbound` 라우트 등록 |
+
+모든 변경은 SPEC 요구사항 24개(REQ-OUTBOUND-001~019, 하위 002a/003a/005a/010a/012a 포함)에 1:1 이상 추적되며,
+Acceptance Criteria 23개(AC-OUTBOUND-001~020, 하위 004a/009a/010a 포함) 모두 검증 완료.
