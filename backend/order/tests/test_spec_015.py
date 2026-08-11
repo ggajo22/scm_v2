@@ -795,13 +795,13 @@ class TestLineItemDetailSerializerShippedFields:
 
 @pytest.mark.django_db
 class TestOutboundMalformedInput:
-    """Garbage cell values must degrade to 0 rather than raising, and both
-    endpoints must reject structurally invalid requests with 4xx."""
+    """Garbage cell values must degrade to a reported row rather than raising,
+    and both endpoints must reject structurally invalid requests with 4xx."""
 
     @pytest.mark.parametrize("bad_total", [None, "", "abc", "12abc"])
     def test_unparseable_total_is_rejected_rather_than_silently_applied(self, bad_total):
-        """An unreadable quantity coerces to 0, and 0 is not a shippable
-        amount — the row must be reported, not counted as a success."""
+        """An unreadable quantity is not a shippable amount — the row must be
+        reported, not counted as a success."""
         order = _make_order(name="#37349")
         li = _make_line_item(order, sku="ISBN001", quantity=10)
 
@@ -879,12 +879,33 @@ class TestParseOutboundExcelMalformedInput:
         assert parsed == [{"name": "", "sku": "ISBN001", "total": 4}]
 
     @pytest.mark.parametrize("bad_total", [None, "abc", ""])
-    def test_non_numeric_total_cell_becomes_zero(self, bad_total):
+    def test_non_numeric_total_cell_becomes_none_not_zero(self, bad_total):
+        """CHANGED from `... becomes_zero`, which asserted `total == 0`.
+
+        That assertion encoded the safety gap rather than a requirement. It was
+        written when every non-positive total was rejected identically, so
+        flattening an unreadable cell to 0 was unobservable. Once total 0 on a
+        warehouse_ca / warehouse_nj LineItem became a "mark complete" signal
+        (TestZeroTotalUsWarehouseCompletion), that flattening turned an empty
+        or garbage cell into a shipment-closing instruction. The parser now
+        preserves the parse failure as None so the matching layer can reject
+        it; see TestZeroTotalRequiresAGenuineParsedZero for the behaviour this
+        protects.
+        """
         parsed = parse_outbound_excel(
             _make_outbound_excel([("#37349", "ISBN001", bad_total)])
         )
 
-        assert parsed[0]["total"] == 0
+        assert parsed[0]["total"] is None
+
+    def test_numeric_total_cell_is_still_parsed_as_int(self):
+        """The counterpart to the above: readable cells, INCLUDING an explicit
+        0, must still arrive as ints so the completion path stays reachable."""
+        parsed = parse_outbound_excel(
+            _make_outbound_excel([("#37349", "ISBN001", 0), ("#37349", "ISBN002", 4)])
+        )
+
+        assert [r["total"] for r in parsed] == [0, 4]
 
     @pytest.mark.django_db
     def test_blank_order_name_is_reported_unmatched_end_to_end(self):
@@ -1254,3 +1275,364 @@ class TestOutboundBatchingPreservesMatchingSemantics:
         li_advance.refresh_from_db()
         assert li_keep.logistics_status == "received"
         assert li_advance.logistics_status == "shipped"
+
+
+# ---------------------------------------------------------------------------
+# T9 — total == 0 as a US-warehouse completion signal
+#
+# A LineItem confirmed against a US warehouse (warehouse_ca / warehouse_nj)
+# was never physically shipped Korea -> US: it was already sitting in the
+# destination warehouse. Such a row arrives with total 0 and must be read as
+# "already complete", not as an unshippable amount.
+#
+# Everything else about total 0 is unchanged: a non-US confirmed_distributor
+# (Korea warehouse, unset, or a real distributor) still yields invalid_total,
+# and a NEGATIVE total is still rejected per row before grouping, because
+# 출고 취소/되돌리기(undo) stays out of scope.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestZeroTotalUsWarehouseCompletion:
+    """total == 0 + confirmed_distributor in {warehouse_ca, warehouse_nj}
+    completes the LineItem through the existing REQ-OUTBOUND-010 threshold
+    mechanism."""
+
+    @pytest.mark.parametrize("us_warehouse", ["warehouse_ca", "warehouse_nj"])
+    def test_zero_total_on_a_us_warehouse_line_item_completes_it(self, us_warehouse):
+        """T9-1 / T9-2: shipped_quantity jumps to the full quantity and the
+        existing `shipped_quantity >= effective_quantity` check flips
+        logistics_status to "shipped"."""
+        order = _make_order(shopify_order_id=920001, name="#USWH")
+        li = _make_line_item(
+            order,
+            sku="ISBN001",
+            quantity=7,
+            confirmed_distributor=us_warehouse,
+            logistics_status="outbound_scheduled",
+        )
+
+        result = _process_outbound_rows([{"name": "#USWH", "sku": "ISBN001", "total": 0}])
+
+        li.refresh_from_db()
+        assert li.shipped_quantity == 7
+        assert li.logistics_status == "shipped"
+        assert li.shipped_at is not None
+        assert result["unmatched"] == []
+        assert result["quantity_exceeded"] == []
+        assert result["matched_count"] == 1
+        assert result["matched"][0] == {
+            "name": "#USWH",
+            "sku": "ISBN001",
+            "total": 0,
+            "line_item_id": li.id,
+            "shipped_quantity": 7,
+            "quantity": 7,
+            "logistics_status": "shipped",
+        }
+
+    @pytest.mark.parametrize(
+        "distributor", ["warehouse_korea", None, "booxen", "kyobo", "yes24", ""]
+    )
+    def test_zero_total_on_a_non_us_warehouse_line_item_stays_invalid_total(
+        self, distributor
+    ):
+        """T9-3 / T9-4 / T9-5: only the two US warehouse codes unlock the
+        completion path. Korea warehouse, an unconfirmed LineItem and a real
+        distributor all keep the pre-existing rejection, untouched."""
+        order = _make_order(shopify_order_id=920002, name="#NONUS")
+        li = _make_line_item(
+            order,
+            sku="ISBN001",
+            quantity=7,
+            shipped_quantity=2,
+            confirmed_distributor=distributor,
+            logistics_status="outbound_scheduled",
+        )
+
+        result = _process_outbound_rows([{"name": "#NONUS", "sku": "ISBN001", "total": 0}])
+
+        li.refresh_from_db()
+        assert li.shipped_quantity == 2
+        assert li.shipped_at is None
+        assert li.logistics_status == "outbound_scheduled"
+        assert result["matched"] == []
+        assert result["unmatched_count"] == 1
+        assert result["unmatched"][0]["reason"] == "invalid_total"
+
+    def test_zero_total_on_an_already_shipped_us_warehouse_line_item_is_idempotent(self):
+        """T9-6: re-running the same completion must not double-apply. The new
+        value is max(current, effective) — never a blind overwrite."""
+        order = _make_order(shopify_order_id=920003, name="#USWHIDEM")
+        li = _make_line_item(
+            order,
+            sku="ISBN001",
+            quantity=7,
+            shipped_quantity=7,
+            confirmed_distributor="warehouse_ca",
+            logistics_status="shipped",
+        )
+
+        result = _process_outbound_rows([{"name": "#USWHIDEM", "sku": "ISBN001", "total": 0}])
+
+        li.refresh_from_db()
+        assert li.shipped_quantity == 7
+        assert li.logistics_status == "shipped"
+        assert result["matched_count"] == 1
+        assert result["matched"][0]["shipped_quantity"] == 7
+
+    def test_zero_total_never_decreases_an_over_shipped_line_item(self):
+        """SAFETY: an anomalous shipped_quantity ABOVE quantity must not be
+        pulled back down to quantity by this path — mirrors the
+        negative-row undo guard. The completion path writes
+        max(shipped_quantity, effective_quantity), never effective_quantity
+        unconditionally."""
+        order = _make_order(shopify_order_id=920004, name="#USWHOVER")
+        li = _make_line_item(
+            order,
+            sku="ISBN001",
+            quantity=7,
+            shipped_quantity=9,
+            confirmed_distributor="warehouse_nj",
+        )
+
+        result = _process_outbound_rows([{"name": "#USWHOVER", "sku": "ISBN001", "total": 0}])
+
+        li.refresh_from_db()
+        assert li.shipped_quantity == 9
+        assert li.logistics_status == "shipped"
+        assert result["matched"][0]["shipped_quantity"] == 9
+
+    def test_zero_total_reports_order_not_found_when_the_order_is_missing(self):
+        """T9-7a: matching is unchanged by total value. With no Order there is
+        no LineItem to read confirmed_distributor from, so the match verdict
+        wins over the invalid_total verdict."""
+        result = _process_outbound_rows([{"name": "#NOSUCHORDER", "sku": "ISBN001", "total": 0}])
+
+        assert result["matched"] == []
+        assert result["unmatched"][0]["reason"] == "order_not_found"
+
+    def test_zero_total_reports_line_item_not_found_when_the_sku_is_missing(self):
+        """T9-7b: same for a known order holding no such SKU."""
+        order = _make_order(shopify_order_id=920005, name="#USWHNOSKU")
+        _make_line_item(order, sku="ISBN001", quantity=7, confirmed_distributor="warehouse_ca")
+
+        result = _process_outbound_rows(
+            [{"name": "#USWHNOSKU", "sku": "ISBN_MISSING", "total": 0}]
+        )
+
+        assert result["matched"] == []
+        assert result["unmatched"][0]["reason"] == "line_item_not_found"
+
+    @pytest.mark.parametrize("bad_total", [-1, -5, -100])
+    def test_negative_total_is_still_rejected_on_a_us_warehouse_line_item(self, bad_total):
+        """T9-8: the completion path is reachable through total == 0 ONLY. A US
+        warehouse LineItem gives a negative row no new privileges."""
+        order = _make_order(shopify_order_id=920006, name="#USWHNEG")
+        li = _make_line_item(
+            order,
+            sku="ISBN001",
+            quantity=7,
+            shipped_quantity=5,
+            confirmed_distributor="warehouse_ca",
+            logistics_status="outbound_scheduled",
+        )
+
+        result = _process_outbound_rows(
+            [{"name": "#USWHNEG", "sku": "ISBN001", "total": bad_total}]
+        )
+
+        li.refresh_from_db()
+        assert li.shipped_quantity == 5
+        assert li.logistics_status == "outbound_scheduled"
+        assert result["matched"] == []
+        assert result["unmatched"][0]["reason"] == "invalid_total"
+
+    def test_negative_row_never_reaches_the_matching_stage_at_all(self):
+        """SAFETY: negative rejection stays STRICTLY pre-grouping. A batch of
+        nothing but negative rows must issue no Order/LineItem lookup
+        whatsoever — proving a negative row can never enter the summation that
+        the new zero path reads."""
+        order = _make_order(shopify_order_id=920007, name="#USWHPRE")
+        _make_line_item(order, sku="ISBN001", quantity=7, confirmed_distributor="warehouse_ca")
+
+        with CaptureQueriesContext(connection) as ctx:
+            result = _process_outbound_rows(
+                [
+                    {"name": "#USWHPRE", "sku": "ISBN001", "total": -3},
+                    {"name": "#USWHPRE", "sku": "ISBN001", "total": -4},
+                ]
+            )
+
+        selects = [q["sql"] for q in ctx.captured_queries if "orders_" in (q["sql"] or "")]
+        assert selects == []
+        assert result["unmatched_count"] == 2
+        assert all(u["reason"] == "invalid_total" for u in result["unmatched"])
+
+    def test_a_zero_row_summed_with_a_positive_row_is_a_normal_shipment(self):
+        """T9-9: the completion branch keys off the SUMMED total. 0 + 5 is 5,
+        i.e. an ordinary partial shipment — the zero contributes nothing and
+        confirmed_distributor is never consulted."""
+        order = _make_order(shopify_order_id=920008, name="#USWHMIX")
+        li = _make_line_item(
+            order,
+            sku="ISBN001",
+            quantity=7,
+            confirmed_distributor="warehouse_ca",
+            logistics_status="outbound_scheduled",
+        )
+
+        result = _process_outbound_rows(
+            [
+                {"name": "#USWHMIX", "sku": "ISBN001", "total": 0},
+                {"name": "#USWHMIX", "sku": "ISBN001", "total": 5},
+            ]
+        )
+
+        li.refresh_from_db()
+        assert li.shipped_quantity == 5
+        assert li.logistics_status == "outbound_scheduled"
+        assert result["matched_count"] == 1
+        assert result["matched"][0]["total"] == 5
+        # The zero row is absorbed by the sum, not reported separately: it now
+        # enters grouping instead of being dropped as invalid_total up front.
+        assert result["unmatched"] == []
+
+
+# ---------------------------------------------------------------------------
+# T10 — the US-warehouse completion path requires a GENUINELY PARSED zero
+#
+# SAFETY tightening for the T9 completion path above. Before T9 existed, every
+# non-positive total was rejected identically, so it did not matter that a
+# blank / missing / garbage quantity silently coerced to 0 — real 0, negative
+# and parse failure all landed on the same `invalid_total` verdict.
+#
+# T9 gave the integer 0 meaning: on a warehouse_ca / warehouse_nj LineItem it
+# CLOSES OUT the shipment. That turns the silent coercion into a live hazard —
+# an empty Total cell or a stray Excel formula error (#N/A, #REF!) on such a
+# LineItem would be indistinguishable from a deliberate "already in the US
+# warehouse" signal and would wrongly mark the item shipped.
+#
+# So the completion path must key off a zero the input actually SPELLED, and
+# a value that merely defaulted to zero keeps the pre-T9 `invalid_total`
+# rejection it always had. The reason code is deliberately reused: both cases
+# are "the total value was not usable", and callers already handle it.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestZeroTotalRequiresAGenuineParsedZero:
+    """A parse failure must never be read as a US-warehouse completion signal."""
+
+    @staticmethod
+    def _us_warehouse_item(shopify_order_id: int, name: str):
+        order = _make_order(shopify_order_id=shopify_order_id, name=name)
+        return _make_line_item(
+            order,
+            sku="ISBN001",
+            quantity=7,
+            shipped_quantity=2,
+            confirmed_distributor="warehouse_ca",
+            logistics_status="outbound_scheduled",
+        )
+
+    @pytest.mark.parametrize("bad_total", [None, "", "abc", "12abc", "  ", "#N/A"])
+    def test_unparseable_total_never_completes_a_us_warehouse_line_item(self, bad_total):
+        """T10-1: the exact hazard — a blank/garbage quantity on a US-warehouse
+        LineItem must stay `invalid_total`, not close the shipment out."""
+        li = self._us_warehouse_item(930001, "#T10BAD")
+
+        result = _process_outbound_rows(
+            [{"name": "#T10BAD", "sku": "ISBN001", "total": bad_total}]
+        )
+
+        li.refresh_from_db()
+        assert li.shipped_quantity == 2
+        assert li.shipped_at is None
+        assert li.logistics_status == "outbound_scheduled"
+        assert result["matched"] == []
+        assert result["unmatched_count"] == 1
+        assert result["unmatched"][0]["reason"] == "invalid_total"
+
+    def test_missing_total_key_never_completes_a_us_warehouse_line_item(self):
+        """T10-2: an absent key is a parse failure too, not an implicit 0."""
+        li = self._us_warehouse_item(930002, "#T10MISSING")
+
+        result = _process_outbound_rows([{"name": "#T10MISSING", "sku": "ISBN001"}])
+
+        li.refresh_from_db()
+        assert li.shipped_quantity == 2
+        assert li.logistics_status == "outbound_scheduled"
+        assert result["matched"] == []
+        assert result["unmatched"][0]["reason"] == "invalid_total"
+
+    @pytest.mark.parametrize("genuine_zero", [0, "0", " 0 ", 0.0, "00"])
+    def test_a_genuinely_spelled_zero_still_completes_a_us_warehouse_line_item(
+        self, genuine_zero
+    ):
+        """T10-3: the T9 feature is unchanged for input that really says zero.
+        Any representation the parser can read as 0 counts — the distinction
+        being drawn is parsed-vs-defaulted, not int-vs-str."""
+        li = self._us_warehouse_item(930003, "#T10ZERO")
+
+        result = _process_outbound_rows(
+            [{"name": "#T10ZERO", "sku": "ISBN001", "total": genuine_zero}]
+        )
+
+        li.refresh_from_db()
+        assert li.shipped_quantity == 7
+        assert li.logistics_status == "shipped"
+        assert li.shipped_at is not None
+        assert result["unmatched"] == []
+        assert result["matched_count"] == 1
+
+    def test_parse_failure_is_rejected_before_grouping_not_absorbed_by_the_sum(self):
+        """T10-4: placement matters. The rejection sits with the negative-row
+        guard, BEFORE summation, so a garbage row is surfaced to the operator
+        instead of vanishing as a silent +0 into a legitimate row's total."""
+        li = self._us_warehouse_item(930004, "#T10MIX")
+
+        result = _process_outbound_rows(
+            [
+                {"name": "#T10MIX", "sku": "ISBN001", "total": 3},
+                {"name": "#T10MIX", "sku": "ISBN001", "total": None},
+            ]
+        )
+
+        li.refresh_from_db()
+        assert li.shipped_quantity == 5
+        assert result["matched_count"] == 1
+        assert result["matched"][0]["total"] == 3
+        assert result["unmatched_count"] == 1
+        assert result["unmatched"][0]["reason"] == "invalid_total"
+
+    def test_blank_excel_total_cell_never_completes_a_us_warehouse_line_item(self):
+        """T10-5: END-TO-END through the Excel path, which is where the hazard
+        actually originates — an operator leaving a Total cell empty. The
+        parser must carry the parse failure through to the matching layer
+        rather than flattening it to a 0 that reads as a completion signal."""
+        li = self._us_warehouse_item(930005, "#T10XLSX")
+
+        result = _process_outbound_rows(
+            parse_outbound_excel(_make_outbound_excel([("#T10XLSX", "ISBN001", None)]))
+        )
+
+        li.refresh_from_db()
+        assert li.shipped_quantity == 2
+        assert li.logistics_status == "outbound_scheduled"
+        assert result["matched"] == []
+        assert result["unmatched"][0]["reason"] == "invalid_total"
+
+    def test_explicit_excel_zero_still_completes_a_us_warehouse_line_item(self):
+        """T10-6: the counterpart — a cell the operator actually typed 0 into
+        keeps working, so the Excel path retains the T9 capability."""
+        li = self._us_warehouse_item(930006, "#T10XLSXZERO")
+
+        result = _process_outbound_rows(
+            parse_outbound_excel(_make_outbound_excel([("#T10XLSXZERO", "ISBN001", 0)]))
+        )
+
+        li.refresh_from_db()
+        assert li.shipped_quantity == 7
+        assert li.logistics_status == "shipped"
+        assert result["matched_count"] == 1

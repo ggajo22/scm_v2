@@ -2335,14 +2335,36 @@ class LineItemRackNumberSummaryView(APIView):
 # ---------------------------------------------------------------------------
 
 
-def _to_int(value, default: int = 0) -> int:
-    """Coerce a spreadsheet/JSON cell to int, falling back to `default`."""
-    if value is None or value == "":
-        return default
+def _parse_total(value) -> tuple[int, bool]:
+    """Coerce an outbound row's quantity cell to int, reporting whether the
+    input actually SPELLED a number.
+
+    Returns `(parsed, parsed_ok)`. On failure `parsed` is 0 — the same fallback
+    the previous `_to_int` helper applied — but `parsed_ok` is False, so the
+    caller can tell a real 0 apart from a blank/garbage cell that merely
+    DEFAULTED to one.
+
+    That distinction is load-bearing rather than cosmetic. A genuine 0 unlocks
+    the US-warehouse completion path below (it closes the shipment out); a
+    defaulted 0 must not, or an empty Total cell or a stray Excel error value
+    would be indistinguishable from a deliberate business signal. Before that
+    completion path existed the two were interchangeable, because every
+    non-positive total was rejected identically.
+    """
     try:
-        return int(value)
+        return int(value), True
     except (TypeError, ValueError):
-        return default
+        # Covers None (TypeError), "" / "  " / "abc" / "#N/A" (ValueError).
+        return 0, False
+
+
+# `confirmed_distributor` values meaning "already in a US warehouse". A
+# LineItem confirmed against one of these never travels Korea -> US, so an
+# outbound row for it carries total 0 and is read as a completion signal
+# instead of an unshippable amount. The suffixed codes match the location map
+# the Daily Review confirm flow writes (see _WAREHOUSE_LOCATION_MAP above);
+# "warehouse_korea" is deliberately absent — Korea stock DOES ship.
+_US_WAREHOUSE_DISTRIBUTORS: frozenset[str] = frozenset({"warehouse_ca", "warehouse_nj"})
 
 
 # @MX:NOTE: [AUTO] Two non-obvious business rules live here, both deliberate
@@ -2356,10 +2378,17 @@ def _to_int(value, default: int = 0) -> int:
 #   being silently applied against an unknown limit.
 #   (설계 결정 A, REQ-OUTBOUND-005a) a 2+ LineItem match is reported unmatched
 #   and left untouched — there is no quantity-distribution rule.
-#   (spec.md Exclusions) a non-positive `total` is rejected per row before
+#   (spec.md Exclusions) a NEGATIVE `total` is rejected per row before
 #   summation. shipped_quantity must never decrease: 출고 취소/되돌리기(undo)
 #   is explicitly out of scope, and a negative total would otherwise reach
 #   that excluded capability through ordinary input.
+#   (US-warehouse completion) a group summing to exactly 0 is judged AFTER
+#   matching, not before: for a LineItem whose confirmed_distributor is a US
+#   warehouse it completes the item, for anything else it stays invalid_total.
+#   That split is why the pre-grouping filter rejects `< 0` rather than `<= 0`.
+#   Because that 0 carries meaning, it must be a zero the input actually
+#   SPELLED — an unreadable quantity is rejected pre-grouping rather than
+#   defaulted to 0, so a blank cell cannot impersonate the completion signal.
 # @MX:NOTE: [AUTO] All database access is BATCHED into a fixed number of
 # queries — 1 Order fetch + 1 LineItem fetch + 1 bulk_update — regardless of
 # how many (order name, sku) groups the request carries. The original
@@ -2393,8 +2422,9 @@ def _process_outbound_rows(rows: list[dict]) -> dict:
     Returns a dict with `matched` / `unmatched` / `quantity_exceeded` item
     lists plus their `*_count` totals (REQ-OUTBOUND-014). `unmatched` reasons
     are `order_not_found`, `line_item_not_found`, `multiple_line_items`,
-    `invalid_total` (non-positive quantity) and `invalid_row` (malformed
-    input shape).
+    `invalid_total` (negative quantity, an unreadable quantity, or a zero
+    quantity on a LineItem that is not confirmed against a US warehouse) and
+    `invalid_row` (malformed input shape).
     """
     matched: list[dict] = []
     unmatched: list[dict] = []
@@ -2417,16 +2447,48 @@ def _process_outbound_rows(rows: list[dict]) -> dict:
 
         order_name = str(row.get("name") or "").strip()
         sku = str(row.get("sku") or "").strip()
-        total = _to_int(row.get("total"))
+        total, total_ok = _parse_total(row.get("total"))
+
+        # A quantity that could not be READ is rejected here alongside the
+        # negative guard, and for the same structural reason: it must never
+        # reach the post-matching zero branch. `_parse_total` falls back to 0,
+        # and on a US-warehouse LineItem a 0 CLOSES THE SHIPMENT OUT — so a
+        # blank cell, a text cell or an Excel error value would otherwise be
+        # silently promoted into a deliberate "already in the US warehouse"
+        # completion signal. Rejecting pre-grouping also stops a garbage row
+        # from disappearing as a silent +0 into a legitimate row's sum, which
+        # is the same argument that puts the negative guard here.
+        #
+        # The reason code is deliberately REUSED rather than split: both a
+        # negative and an unreadable total mean "the total value was not
+        # usable", callers already handle `invalid_total`, and this is exactly
+        # the verdict an unreadable total received before the completion path
+        # existed. Pinned by TestZeroTotalRequiresAGenuineParsedZero.
+        if not total_ok:
+            unmatched.append(
+                {
+                    "name": order_name,
+                    "sku": sku,
+                    "total": total,
+                    "reason": "invalid_total",
+                }
+            )
+            continue
 
         # spec.md Exclusions forbid 출고 취소/되돌리기 (undo): shipped_quantity
         # must never decrease. A negative `total` would reach exactly that
-        # excluded capability through ordinary input, and a zero/unparseable
-        # total is not a shippable amount either — so non-positive totals are
-        # rejected here, per row and BEFORE summation. Rejecting after
-        # summation would let a negative row quietly shrink a legitimate
-        # positive one for the same key.
-        if total <= 0:
+        # excluded capability through ordinary input, so it is rejected here,
+        # per row and STRICTLY BEFORE summation. Rejecting after summation
+        # would let a negative row quietly shrink a legitimate positive one for
+        # the same key. Pinned by
+        # test_negative_row_cannot_offset_a_positive_row_for_the_same_key and
+        # test_negative_row_never_reaches_the_matching_stage_at_all.
+        #
+        # A total of exactly 0 is NOT rejected here: it may be a US-warehouse
+        # completion signal, and that verdict needs `confirmed_distributor`,
+        # which only exists on the matched LineItem. So zero rows fall through
+        # into grouping and are judged after matching instead (see below).
+        if total < 0:
             unmatched.append(
                 {
                     "name": order_name,
@@ -2523,6 +2585,59 @@ def _process_outbound_rows(rows: list[dict]) -> dict:
             line_item = candidates[0]
             # REQ-OUTBOUND-009 (설계 결정 B): NULL quantity == 0 capacity.
             effective_quantity = line_item.quantity or 0
+
+            # A group whose rows SUM to exactly 0 carries no shippable amount,
+            # so it is normally invalid_total. The one exception is a LineItem
+            # confirmed against a US warehouse: it was never physically shipped
+            # Korea -> US because it was already sitting in the destination
+            # warehouse, so a zero is a completion signal rather than a missing
+            # quantity. The decision needs `confirmed_distributor`, which lives
+            # on the matched LineItem, which is why zero survives the pre-
+            # grouping filter and is judged here instead.
+            # Note this keys off the SUMMED total: a 0 row plus a 5 row for the
+            # same key is an ordinary 5-unit shipment (REQ-OUTBOUND-007), and
+            # a negative total can never arrive here at all — it was rejected
+            # per row before grouping.
+            if total == 0:
+                if line_item.confirmed_distributor not in _US_WAREHOUSE_DISTRIBUTORS:
+                    unmatched.append(
+                        {
+                            "name": order_name,
+                            "sku": sku,
+                            "total": total,
+                            "reason": "invalid_total",
+                        }
+                    )
+                    continue
+
+                # max(), never a bare assignment: an already-complete (or
+                # anomalously over-shipped) LineItem must not be pulled back
+                # DOWN to `quantity`. shipped_quantity may only ever grow —
+                # same undo-prevention invariant the negative guard enforces.
+                line_item.shipped_quantity = max(
+                    line_item.shipped_quantity, effective_quantity
+                )
+                line_item.shipped_at = timezone.now()
+                # Reuse of the REQ-OUTBOUND-010 threshold below, not a special
+                # -case status write: reaching the full quantity is what makes
+                # this "shipped", exactly as for a positive total.
+                if line_item.shipped_quantity >= effective_quantity:
+                    line_item.logistics_status = "shipped"
+
+                to_update.append(line_item)
+                matched.append(
+                    {
+                        "name": order_name,
+                        "sku": sku,
+                        "total": total,
+                        "line_item_id": line_item.id,
+                        "shipped_quantity": line_item.shipped_quantity,
+                        "quantity": line_item.quantity,
+                        "logistics_status": line_item.logistics_status,
+                    }
+                )
+                continue
+
             if line_item.shipped_quantity + total > effective_quantity:
                 quantity_exceeded.append(
                     {

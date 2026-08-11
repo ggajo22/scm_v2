@@ -1103,9 +1103,12 @@ def parse_outbound_excel(file_bytes: bytes) -> list[dict]:
     all-empty rows openpyxl commonly reports.
 
     Returns:
-        List of dicts: {"name": str, "sku": str, "total": int} — the exact
-        row shape `_process_outbound_rows` consumes from the manual-entry
-        endpoint, so both endpoints share one contract.
+        List of dicts: {"name": str, "sku": str, "total": int | None} — the
+        exact row shape `_process_outbound_rows` consumes from the manual-entry
+        endpoint, so both endpoints share one contract. `total` is None when
+        the quantity cell could not be read as a whole number; that layer
+        rejects such rows as `invalid_total` rather than treating them as 0
+        (see the parse-failure note below).
     """
     try:
         wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
@@ -1144,7 +1147,15 @@ def parse_outbound_excel(file_bytes: bytes) -> list[dict]:
         try:
             total = int(raw_total)
         except (TypeError, ValueError):
-            total = 0
+            # Deliberately None, NOT 0. `_process_outbound_rows` reads a
+            # genuine 0 on a warehouse_ca / warehouse_nj LineItem as an
+            # "already in the US warehouse, mark complete" signal, so
+            # flattening an empty cell, a text cell or an Excel error value
+            # (#N/A, #REF!) to 0 here would let a data-entry accident close a
+            # shipment out. None carries the parse failure through to that
+            # layer, which rejects the row as `invalid_total` — the verdict an
+            # unreadable quantity has always received.
+            total = None
 
         results.append({"name": name, "sku": sku, "total": total})
 
