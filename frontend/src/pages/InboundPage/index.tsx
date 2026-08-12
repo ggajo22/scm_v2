@@ -31,10 +31,19 @@ const LOGISTICS_STATUS_LABELS: Record<string, string> = Object.fromEntries(
   LOGISTICS_STATUS_OPTIONS.map((option) => [option.value, option.label])
 )
 
-// SPEC-ORDER-011 T11: two upload cards for the logistics_status pipeline
-// (REQ-LOGI-003 vendor shipment confirmation, REQ-LOGI-005 warehouse
-// receiving results), reusing DailyReviewTab.tsx's card layout pattern.
-export function LogisticsStatusTab() {
+// SPEC-ORDER-011 T11 / promoted to a standalone page: two upload cards for
+// the logistics_status pipeline (REQ-LOGI-003 vendor shipment confirmation,
+// REQ-LOGI-005 warehouse receiving results), reusing DailyReviewTab.tsx's
+// card layout pattern. Originally a buried tab inside PurchaseOrders
+// ("입고/출고 물류 상태"); promoted to /inbound to pair with the standalone
+// /outbound page (SPEC-ORDER-015) so the warehouse-floor flow (입고 → 출고)
+// has matching top-level nav entries.
+// @MX:ANCHOR: [AUTO] InboundPage — entry point for the /inbound route
+// @MX:REASON: Lazy-loaded from router via named export destructure
+// (`const { InboundPage } = await import('@/pages/InboundPage')`) — this
+// export name and the folder+index.tsx module resolution must not change
+// without also updating router/index.tsx.
+export function InboundPage() {
   const vendorFileInputRef = useRef<HTMLInputElement>(null)
   const warehouseFileInputRef = useRef<HTMLInputElement>(null)
 
@@ -83,9 +92,9 @@ export function LogisticsStatusTab() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="p-6 max-w-5xl mx-auto space-y-6">
       <div className="space-y-1">
-        <h2 className="text-base font-semibold">입고/출고 물류 상태 관리</h2>
+        <h1 className="text-lg font-semibold">입고 처리</h1>
         <p className="text-sm text-muted-foreground">
           벤더 출고확인 및 창고 입고결과 파일을 업로드하면 대상 SKU의 물류 상태가 자동으로 갱신됩니다.
         </p>

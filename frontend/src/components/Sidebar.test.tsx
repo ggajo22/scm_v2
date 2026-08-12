@@ -151,6 +151,25 @@ describe('Sidebar', () => {
     })
   })
 
+  describe('입고 처리 내비게이션 항목 (PurchaseOrders 탭에서 승격)', () => {
+    it('"입고 처리" 링크가 /inbound 경로로 렌더링된다', () => {
+      renderSidebar()
+      const link = screen.getByRole('link', { name: '입고 처리' })
+      expect(link).toBeInTheDocument()
+      expect(link).toHaveAttribute('href', '/inbound')
+    })
+
+    it('/inbound 경로에서 "입고 처리" 링크가 aria-current="page"를 가진다', () => {
+      renderSidebar('super_admin', '/inbound')
+      expect(screen.getByRole('link', { name: '입고 처리' })).toHaveAttribute('aria-current', 'page')
+    })
+
+    it('admin 역할에게도 "입고 처리" 항목이 보인다 (역할 제한 없음)', () => {
+      renderSidebar('admin')
+      expect(screen.getByRole('link', { name: '입고 처리' })).toBeInTheDocument()
+    })
+  })
+
   describe('SPEC-ORDER-015 REQ-OUTBOUND-015: 출고 처리 내비게이션 항목', () => {
     it('AC-OUTBOUND-017: "출고 처리" 링크가 /outbound 경로로 렌더링된다', () => {
       renderSidebar()

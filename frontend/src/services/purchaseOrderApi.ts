@@ -226,7 +226,7 @@ export interface UploadLogisticsResponse {
 //
 // Keep this union in sync with the reason strings in
 // backend/order/purchase_order_views.py — an unlisted code falls through to
-// the raw snake_case fallback in LogisticsStatusTab.
+// the raw snake_case fallback in InboundPage.
 export type WarehouseReceiptUnmatchedReason =
   | 'order_not_found'
   | 'line_item_not_found'

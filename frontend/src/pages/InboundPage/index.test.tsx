@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, within } from '@testing-library/react'
-import { LogisticsStatusTab } from './LogisticsStatusTab'
+import { InboundPage } from './index'
 import {
   useUploadVendorShipment,
   useUploadWarehouseReceipt,
@@ -12,7 +12,7 @@ vi.mock('@/hooks/usePurchaseOrderQueries', () => ({
   useUploadWarehouseReceipt: vi.fn(),
 }))
 
-describe('LogisticsStatusTab — SPEC-ORDER-011 T11 upload cards', () => {
+describe('InboundPage — promoted from PurchaseOrders/LogisticsStatusTab', () => {
   const vendorMutate = vi.fn()
   const warehouseMutate = vi.fn()
 
@@ -29,14 +29,22 @@ describe('LogisticsStatusTab — SPEC-ORDER-011 T11 upload cards', () => {
     } as unknown as ReturnType<typeof useUploadWarehouseReceipt>)
   })
 
+  describe('페이지 독립성', () => {
+    it('renders its own "입고 처리" heading, sharing no PurchaseOrders tab shell', () => {
+      render(<InboundPage />)
+      expect(screen.getByRole('heading', { name: '입고 처리' })).toBeInTheDocument()
+      expect(screen.queryAllByRole('tab')).toHaveLength(0)
+    })
+  })
+
   it('renders two upload cards for vendor shipment confirmation and warehouse receiving results (REQ-LOGI-003/005)', () => {
-    render(<LogisticsStatusTab />)
+    render(<InboundPage />)
     expect(screen.getByText('벤더 출고확인 업로드')).toBeInTheDocument()
     expect(screen.getByText('창고 입고결과 업로드')).toBeInTheDocument()
   })
 
   it('calls uploadVendorShipment mutation with the selected file (REQ-LOGI-003)', () => {
-    const { container } = render(<LogisticsStatusTab />)
+    const { container } = render(<InboundPage />)
     const file = new File(['dummy'], 'vendor.xlsx', {
       type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     })
@@ -53,7 +61,7 @@ describe('LogisticsStatusTab — SPEC-ORDER-011 T11 upload cards', () => {
     vendorMutate.mockImplementation((_formData, opts) => {
       opts.onSuccess({ matched_count: 5, skipped_count: 2 })
     })
-    const { container } = render(<LogisticsStatusTab />)
+    const { container } = render(<InboundPage />)
     const file = new File(['dummy'], 'vendor.xlsx', { type: 'application/xlsx' })
     const fileInputs = container.querySelectorAll('input[type="file"]')
     fireEvent.change(fileInputs[0], { target: { files: [file] } })
@@ -66,7 +74,7 @@ describe('LogisticsStatusTab — SPEC-ORDER-011 T11 upload cards', () => {
     warehouseMutate.mockImplementation((_formData, opts) => {
       opts.onError(new Error('network error'))
     })
-    const { container } = render(<LogisticsStatusTab />)
+    const { container } = render(<InboundPage />)
     const file = new File(['dummy'], 'warehouse.xlsx', { type: 'application/xlsx' })
     const fileInputs = container.querySelectorAll('input[type="file"]')
     fireEvent.change(fileInputs[1], { target: { files: [file] } })
@@ -90,7 +98,7 @@ describe('LogisticsStatusTab — SPEC-ORDER-011 T11 upload cards', () => {
         quantity_exceeded_count: 0,
       })
     })
-    const { container } = render(<LogisticsStatusTab />)
+    const { container } = render(<InboundPage />)
     const file = new File(['dummy'], 'warehouse.xlsx', { type: 'application/xlsx' })
     const fileInputs = container.querySelectorAll('input[type="file"]')
     fireEvent.change(fileInputs[1], { target: { files: [file] } })
@@ -146,7 +154,7 @@ describe('LogisticsStatusTab — SPEC-ORDER-011 T11 upload cards', () => {
       warehouseMutate.mockImplementation((_formData, opts) => {
         opts.onSuccess(buildWarehouseResponse())
       })
-      const { container } = render(<LogisticsStatusTab />)
+      const { container } = render(<InboundPage />)
       uploadWarehouseFile(container)
 
       expect(screen.getByTestId('warehouse-matched')).toBeInTheDocument()
@@ -167,7 +175,7 @@ describe('LogisticsStatusTab — SPEC-ORDER-011 T11 upload cards', () => {
       warehouseMutate.mockImplementation((_formData, opts) => {
         opts.onSuccess(buildWarehouseResponse())
       })
-      const { container } = render(<LogisticsStatusTab />)
+      const { container } = render(<InboundPage />)
       uploadWarehouseFile(container)
 
       const unmatchedSection = within(screen.getByTestId('warehouse-unmatched'))
@@ -179,7 +187,7 @@ describe('LogisticsStatusTab — SPEC-ORDER-011 T11 upload cards', () => {
       warehouseMutate.mockImplementation((_formData, opts) => {
         opts.onSuccess(buildWarehouseResponse())
       })
-      const { container } = render(<LogisticsStatusTab />)
+      const { container } = render(<InboundPage />)
       uploadWarehouseFile(container)
 
       const matchedSection = within(screen.getByTestId('warehouse-matched'))
@@ -197,7 +205,7 @@ describe('LogisticsStatusTab — SPEC-ORDER-011 T11 upload cards', () => {
           })
         )
       })
-      const { container } = render(<LogisticsStatusTab />)
+      const { container } = render(<InboundPage />)
       uploadWarehouseFile(container)
 
       expect(screen.getByTestId('warehouse-unmatched')).toBeInTheDocument()
@@ -214,7 +222,7 @@ describe('LogisticsStatusTab — SPEC-ORDER-011 T11 upload cards', () => {
       warehouseMutate.mockImplementation((_formData, opts) => {
         opts.onSuccess(buildWarehouseResponse())
       })
-      const { container } = render(<LogisticsStatusTab />)
+      const { container } = render(<InboundPage />)
       uploadWarehouseFile(container)
       expect(screen.getByTestId('warehouse-matched')).toBeInTheDocument()
 
@@ -235,7 +243,7 @@ describe('LogisticsStatusTab — SPEC-ORDER-011 T11 upload cards', () => {
       vendorMutate.mockImplementation((_formData, opts) => {
         opts.onSuccess({ matched_count: 4, skipped_count: 1 })
       })
-      const { container } = render(<LogisticsStatusTab />)
+      const { container } = render(<InboundPage />)
       const file = new File(['dummy'], 'vendor.xlsx', { type: 'application/xlsx' })
       const fileInputs = container.querySelectorAll('input[type="file"]')
       fireEvent.change(fileInputs[0], { target: { files: [file] } })

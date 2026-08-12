@@ -2,9 +2,9 @@
 // used by any upload-processing screen that reports a per-row breakdown
 // (matched / unmatched / quantity-exceeded, etc.). Originally a private
 // component of OutboundPage/index.tsx (SPEC-ORDER-015); extracted so
-// LogisticsStatusTab's warehouse-receipt upload card (REQ-LOGI-017) can
-// reuse it without duplicating the table markup. Pure move — no behavior
-// change from the OutboundPage version.
+// InboundPage's warehouse-receipt upload card (REQ-LOGI-017) can reuse it
+// without duplicating the table markup. Pure move — no behavior change
+// from the OutboundPage version.
 export interface ResultRow {
   key: string
   cells: string[]
