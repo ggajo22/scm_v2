@@ -1,5 +1,4 @@
 """SPEC-ORDER-008: confirmed_price / confirmed_distributor / confirmed_at + margin fields (TDD RED phase)."""
-import datetime as dt_module
 import pytest
 from datetime import datetime, timezone as dt_timezone
 from decimal import Decimal
@@ -101,11 +100,22 @@ def order_all_confirmed(db) -> Order:
 
 @pytest.fixture
 def exchange_rate_today(db):
-    """ExchangeRate for today: 1 USD = 1300.00 KRW. Required for margin calculations."""
-    return ExchangeRate.objects.create(
-        effective_date=dt_module.date.today(),
-        rate=Decimal("1300.00"),
+    """ExchangeRate for today: 1 USD = 1300.00 KRW. Required for margin calculations.
 
+    The date MUST come from `timezone.now()` (UTC, per settings TIME_ZONE="UTC"
+    + USE_TZ=True), not `date.today()` (the OS's local date). The order fixtures
+    below stamp `shopify_created_at=timezone.now()`, and OrderSerializer's
+    `_get_exchange_rate` looks the rate up with
+    `effective_date__lte=obj.shopify_created_at.date()` — a UTC date. On a
+    machine whose local zone is ahead of UTC (KST is UTC+9), `date.today()`
+    returns tomorrow's UTC date for the first 9 hours of every local day, so
+    the `<=` filter matched nothing and every margin assertion below saw
+    `margin_amount = None`. That made these tests fail daily between 00:00 and
+    09:00 KST for reasons unrelated to the code under test.
+    """
+    return ExchangeRate.objects.create(
+        effective_date=timezone.now().date(),
+        rate=Decimal("1300.00"),
     )
 
 
