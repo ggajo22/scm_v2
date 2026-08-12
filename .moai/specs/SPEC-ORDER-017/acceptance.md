@@ -1,9 +1,9 @@
 ---
 id: SPEC-ORDER-017
 document: acceptance
-version: 1.0.3
-status: draft
-updated: 2026-08-12
+version: 1.0.4
+status: completed
+updated: 2026-08-13
 ---
 
 # 인수 기준 — SPEC-ORDER-017 렉번호 엑셀 업로드 배치 처리
