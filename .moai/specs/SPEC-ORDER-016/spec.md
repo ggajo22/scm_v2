@@ -1,6 +1,6 @@
 ---
 id: SPEC-ORDER-016
-version: 1.0.3
+version: 1.0.4
 status: draft
 created_at: 2026-08-12
 updated: 2026-08-12
@@ -21,6 +21,8 @@ labels: [order, logistics, outbound, force]
 | 1.0.2 | 2026-08-12 | ggajo | plan-auditor 리뷰(iteration 2, FAIL, 0.76) 후속 정리 — iteration 1의 15개 결함은 전부 종결 확인되었고(critical D1 수정은 소스 대조로 사실 정확성까지 검증됨), 그 수정이 파생시킨 신규 결함 4건과 구조적 과잉 명세 1건을 해소했다. **N1**: AC-FORCE-001이 "다른 사유 코드 행은 반영에 도달하지 않는다"고 단언해 설계 결정 J(그런 행도 대상만 유효하면 반영된다)와 정면 충돌했고, 사유 코드가 payload에 없어 선언된 `[BE]` 레이어에서 검증 불가능했다 — 자격 판정을 순수 프론트엔드 관측(자격 행에만 컨트롤이 렌더된다)으로 재정의하고 `[FE]`로 재배치, 서버 측 사유 게이트를 암시하는 문구 전면 삭제. **N2**: 합산된 **matched** 항목의 입도와 필드값이 미정의였고(병합 행은 SKU가 서로 다름), AC의 행 단위 보고 서술이 REQ의 대상 단위 보고와 모순 — 응답을 **지정 대상 단위**로 확정하고 병합 항목의 `sku`는 **대상 LineItem 자신의 `sku`**, `total`은 합산량, `name`은 소유권 검증으로 단일하게 결정됨을 명시. "합산 수량"을 1개 행 경우까지 정의. **N3**: 명시한 항목 스키마가 기존 클라이언트 타입(`outboundApi.ts:37-65`이 `shipped_quantity`/`quantity`/`logistics_status`를 필수로 선언)보다 좁아, plan.md가 지시한 기존 뮤테이션 팩토리 재사용과 타입이 어긋났다 — 강제 응답은 **기존 3분류 응답 계약을 필드까지 그대로 재사용**하는 것으로 확정. **N4**: 실행 후 상태가 모호해 처리된 행을 재차 강제할 수 있는 해석이 존재 — 성공 시 강제 응답이 기존 결과 표시 슬롯을 **대체**하도록 확정(두 기존 제출 경로와 동일). **N12(구조)**: 39 REQ / 40 AC는 두 엔드포인트와 UI 섹션 하나에 대한 과잉 명세이며 3~4중 중복이 이번 회차의 N1·N2·N10을 만든 원인 — **24 REQ / 22 AC로 통합**(상세는 아래 "v1.0.2 통합 내역"). minor N5~N11/N13/N14: 주문 미해석 케이스를 게이트에 추가, 구조 오류 행 판정을 게이트에 편입, 빈 요청 동작 확정, "우회하는 규칙 하나뿐"을 두 개의 실제 편차 열거로 교체, 접합절 분리, 도달 불가능한 `purchase_status` 라벨링 요구 삭제, 후속 과제 2·R8에 배치 전체 400 실패 모드 반영, `useOrders.ts` 경로 정정, 설계 결정 L의 근거를 클라이언트 동기화 실패 논거로 재정립. 알파벳 접미사 체계를 폐지하고 001~024 연속 번호로 재부여. |
 
 | 1.0.3 | 2026-08-12 | ggajo | plan-auditor 리뷰(iteration 3, FAIL, 0.80, max_iterations 도달) 이후 사용자가 **major 2건만 수정하고 minor 8건(F3~F10)은 의도적으로 보류**하기로 결정 — 이번 수정 이후 plan-auditor 재실행 불필요. **F1(major)**: 어떤 대상의 모든 행이 REQ-FORCE-011로 제외되면 그 대상의 합산 수량이 0이 되고, 그 0이 REQ-FORCE-009의 조건절을 만족해 **쓰기를 강제**하는 구멍이 있었다 — `shipped_at`이 찍히고, `quantity`가 null(용량 0)이거나 이미 완료된 대상에서는 `0 >= 0`이 성립해 `logistics_status="shipped"`까지 전이되어, REQ-FORCE-007이 승계하지 않는다고 선언한 0 수량 완료 동작이 옆문으로 재진입했다. AC-FORCE-006("L3를 전혀 변경하지 않는다")·AC-FORCE-011("LA와 LB는 무변경")이 자기 픽스처로 이 모순을 이미 구성하고 있었다. 수정: 제외를 **그룹화 이전**에 수행함을 REQ-FORCE-011과 REQ-FORCE-008 본문에 명시(정상 경로가 `:2865-2898`에서 행을 거부한 뒤 `:2900-2901`의 합산에 도달하지 않는 것과 동일한 순서), 살아남은 행이 없는 대상은 **그룹 자체가 형성되지 않아** 판정·쓰기·보고 어디에도 등장하지 않음을 규범화, 그리고 "자격이 양수 수량을 요구하고 비양수·판독불가 행은 그룹화 이전에 제거되므로 평가되는 모든 그룹의 합산 수량은 최소 1이며 0은 구조적으로 도달 불가"라는 불변식을 REQ-FORCE-008에 명시. REQ-FORCE-009의 트리거는 이 불변식을 참조하도록 문구를 조정했고, AC-FORCE-006/011은 "그룹이 만들어지지만 아무것도 쓰지 않는다"가 아니라 "그룹이 만들어지지 않는다"를 주장하도록 재작성하면서 AC-FORCE-011 픽스처에 `quantity=null` 대상과 이미 완전 출고된 대상 두 변형을 추가해 `0 >= 0` 전이 경로를 테스트로 봉쇄했다. **F2(major)**: 결과 슬롯 통째 대체가 담당자가 **선택하지 않은** 자격 행과 이번 실행이 방금 만들어낸 수량초과 항목까지 기록 없이 지웠다(5건 중 2건 처리 시 나머지 3건 소실). 수정: REQ-FORCE-024를 병합 규칙(제출한 행만 `(주문 식별자, sku)` 키로 제거 / 미제출 행 유지 및 선택 가능 / 강제 응답의 성공·수량초과 항목을 대응 목록에 추가 / 세 건수 재계산 / 선택 리셋)으로 재작성하고, 설계 결정 N에 기각한 대안 2건과 수용된 대가를 기록, AC-FORCE-022를 3행 픽스처에서 네 결과(처리된 행 소멸 / 미선택 행 잔존 및 선택 가능 / 수량초과 항목 가시 / 건수 일치)를 모두 주장하도록 재작성. **보류(사용자 결정)**: F3(REQ-FORCE-007의 "exactly two deviations" — 구조 오류 행의 400 처리가 세 번째 편차), F4(EARS 단일 패턴 순도 — 3회 반복 지적된 정체 결함), F5(AC-FORCE-001의 "five rows" 오기), F6(AC-FORCE-005가 REQ-FORCE-006의 속성 집합 미주장), F7(REQ-FORCE-015의 "entire set" vs REQ-FORCE-023), F8("structurally malformed" 미정의), F9(읽기 전용성·시각적 일관성·임계 미달 무변경의 검증 부재), F10(인용 범위 시작점 off-by-one 3건). 이들은 구현을 차단하지 않는 minor 항목으로 판단되어 이번 범위에서 다루지 않는다. REQ/AC 개수와 번호는 변경 없음(24 REQ / 22 AC). |
+
+| 1.0.4 | 2026-08-12 | ggajo | 사용자 스코프 변경 — 보류했던 리스크를 재검토한 뒤 **강제 경로에 한해 행 단위 락을 도입**하기로 결정. 근거: (1) 이 기능의 확정 스코프가 "수량 한도 초과 불가"(Q6)를 하드 룰로 정했는데, 락이 없으면 같은 LineItem을 겨냥한 두 강제 요청이 같은 낡은 `shipped_quantity`를 읽고 각자 한도 검사를 통과해 합계가 `quantity`를 넘긴다 — 오용이 아니라 평범한 동시 사용으로 확정 규칙이 깨진다. (2) 강제 경로의 stale read 창은 구조적으로 더 넓다: 정상 경로는 한 요청 안에서 읽기·판정·쓰기가 연달아 일어나지만, 강제 경로는 후보 조회 → 담당자의 대상 선택 → 실행 사이에 사람의 판단이 끼어들어 한도 검사가 읽는 값이 수 초~수 분 낡을 수 있다. (3) 선례가 같은 모듈에 이미 있다(`_apply_logistics_transition`의 `select_for_update()`, `purchase_order_views.py:247`) — 한 파일에 두 관례가 이미 공존하므로 새 패턴이 아니다. (4) 비용이 낮다: 기존 대상 행 SELECT에 잠금을 붙이는 것이라 쿼리가 추가되지 않는다. 변경 내용 — REQ-FORCE-025 신설(모듈 3), AC-FORCE-023 신설(`[BE]`, 동시 실행 2건이 합산으로 한도를 넘기지 못함을 검증), Exclusions의 "동시성 락 도입 없음" 항목을 "강제 경로에 한정" 항목으로 교체, 후속 과제 2를 정상 경로 잔여 격차로 축소, 설계 결정 O 신설. **정상 경로(`_process_outbound_rows`)는 변경하지 않으며 두 경로의 락 관례 통일은 여전히 범위 밖이다.** 아울러 사용자 결정에 따라 후속 과제 1(주문 집계 미갱신)은 정상·강제 두 경로를 **함께** 다루는 별도 SPEC에서 처리함을 명시했다. REQ 24→25, AC 22→23, 모듈 수 5 유지. |
 
 ### v1.0.2 통합 내역 (N12)
 
@@ -307,11 +309,42 @@ SKU가 서로 다르므로 어느 `sku`를 실을지 — 는 다음과 같이 �
 처리를 다시 실행했을 때의 서버 응답과 일치하지 않을 수 있다. 이는 화면 상태에 한정된 차이이며
 저장된 데이터에는 영향이 없다.
 
+### 결정 O — 강제 경로에만 행 단위 락을 도입한다
+
+이 기능의 확정 스코프는 "수량 한도 초과 불가"(인터뷰 Q6)를 하드 룰로 정했다. 그런데 락이 없으면
+같은 LineItem을 겨냥한 두 강제 요청이 **같은 낡은 `shipped_quantity`를 읽고 각자 한도 검사를
+통과**한 뒤 둘 다 반영되어 합계가 `quantity`를 넘긴다. 오용이나 경합 유도가 아니라 두 담당자가
+평범하게 동시에 실행하는 것만으로 확정 규칙이 깨지는 것이다.
+
+강제 경로의 stale read 창은 정상 경로보다 **구조적으로** 넓다. 정상 경로는 한 요청 안에서 읽기·
+판정·쓰기가 연달아 일어난다. 강제 경로는 후보 조회 → 담당자의 대상 선택 → 실행 사이에 사람의
+판단이 끼어들므로, 한도 검사가 읽는 값이 수 초에서 수 분까지 낡을 수 있다. 같은 위험이라도 노출
+시간이 다르다.
+
+선례는 이미 같은 모듈 안에 있다 — `_apply_logistics_transition`이 `select_for_update()`를 쓴다
+(`backend/order/purchase_order_views.py:247`). 즉 이 파일에는 락을 쓰는 관례와 쓰지 않는 관례가
+이미 공존하며, 강제 경로에 락을 두는 것은 새 패턴의 도입이 아니라 기존 두 관례 중 하나를 고르는
+일이다. 비용도 낮다: 대상 행을 읽는 기존 SELECT에 잠금을 붙이는 형태이므로 요청당 쿼리 수가
+늘지 않는다(REQ-FORCE-018의 예산 논의와 무관하다).
+
+**정상 경로는 바꾸지 않는다.** `_process_outbound_rows`의 락 없는 동작은 그대로 두며, 두 경로의
+관례를 통일할지는 코드베이스 전역 결정이므로 후속 과제 2로 남긴다. 한 SPEC 안에서 두 경로를 함께
+건드리면 정상 경로의 회귀 위험(쿼리 카운트 상한, 기존 테스트 스위트)을 이 기능의 주제와 무관하게
+떠안게 된다.
+
+**수용된 대가**: 같은 LineItem을 겨냥한 강제 요청들이 직렬화되므로 경합 시 두 번째 요청은 첫
+번째가 커밋될 때까지 대기한다. 강제 실행은 담당자가 명시적으로 누르는 저빈도 동작이고 잠기는
+범위가 지정 대상 행으로 한정되므로 실사용 지연은 무시할 수준으로 판단한다. 정상 경로와 강제 경로가
+같은 LineItem을 동시에 건드리는 경우, 락을 쥐지 않는 정상 경로 쪽은 여전히 보호되지 않는다 —
+이 잔여 격차도 후속 과제 2에 포함된다.
+
 ## 요구사항 (EARS)
 
-**번호 규칙**: `REQ-FORCE-001`부터 `REQ-FORCE-024`까지 연속 번호이며 결번·중복·알파벳 접미사가
+**번호 규칙**: `REQ-FORCE-001`부터 `REQ-FORCE-025`까지 연속 번호이며 결번·중복·알파벳 접미사가
 없다. v1.0.1까지 사용하던 접미사 체계는 v1.0.2 통합에서 폐지했다. 요구사항은 5개 모듈로
-구성된다.
+구성된다. v1.0.4에서 추가된 REQ-FORCE-025는 성격상 모듈 3(강제 반영 불변식)에 속하므로 그 모듈
+끝에 배치했다 — 번호는 연속이지만 문서상 등장 순서는 모듈 4·5보다 뒤가 아니라 앞이며, 기존
+요구사항을 재번호하지 않기 위한 선택이다.
 
 ### 모듈 1 — 강제 대상 자격과 입력 게이트
 
@@ -400,6 +433,13 @@ the existing outbound processing path's current behavior (설계 결정 E).
 
 **REQ-FORCE-014** (Ubiquitous): The system shall apply a single force outbound request within one
 atomic transaction, so that no partially applied result can persist when processing fails mid-run.
+
+**REQ-FORCE-025** (Event-Driven): When a force outbound request reaches the evaluation step, the
+system shall acquire a row-level lock on every designated target LineItem inside the request's
+transaction before evaluating the quantity limit, and shall make the capacity judgement of
+REQ-FORCE-009 and REQ-FORCE-010 against the values read under that lock, so that two concurrent
+force requests targeting the same LineItem cannot both pass the limit against the same pre-update
+`shipped_quantity` (설계 결정 O).
 
 ### 모듈 4 — 실행 단위, 응답 계약, 기존 계약 보존
 
@@ -586,6 +626,14 @@ available, shall show the accepted row in the 성공 section and the quantity-ex
 수량초과 section, shall show all three category counts equal to the lengths of the lists as
 displayed, and shall present an empty selection — without a page reload.
 
+**AC-FORCE-023** (Event-Driven) — Traces: REQ-FORCE-025. When two force requests that designate the
+same LineItem — whose ordered `quantity` is 10 and whose `shipped_quantity` is 0, each request asking
+for 6 so that either alone fits and the two together do not — are executed concurrently, the system
+shall apply exactly one of them and shall report the other under the quantity-exceeded category
+against the first request's committed `shipped_quantity`, leaving that LineItem at
+`shipped_quantity` 6 and never above its ordered `quantity`, for every interleaving of the two
+requests.
+
 ### Traceability 검증표
 
 | REQ | AC | REQ | AC |
@@ -602,8 +650,9 @@ displayed, and shall present an empty selection — without a page reload.
 | REQ-FORCE-010 | AC-FORCE-007, AC-FORCE-010 | REQ-FORCE-022 | AC-FORCE-021 |
 | REQ-FORCE-011 | AC-FORCE-011 | REQ-FORCE-023 | AC-FORCE-015 |
 | REQ-FORCE-012 | AC-FORCE-012 | REQ-FORCE-024 | AC-FORCE-022 |
+| — | — | REQ-FORCE-025 | AC-FORCE-023 |
 
-요구사항 24개 전량이 최소 1개의 인수 기준에 대응한다(24 REQ → 22 AC, 미커버 REQ 없음, 미정의
+요구사항 25개 전량이 최소 1개의 인수 기준에 대응한다(25 REQ → 23 AC, 미커버 REQ 없음, 미정의
 REQ를 가리키는 AC 없음). 6개 인수 기준(001, 005, 007, 008, 011, 015)이 한 동작의 여러 측면을
 규정하는 2~3개 요구사항을 함께 검증하며, 3개 요구사항(009, 010, 016)은 정상·초과 두 방향을 각각
 다루는 2개 인수 기준을, REQ-FORCE-008은 초과·성공·전량 거부 세 방향을 다루는 3개 인수 기준을
@@ -659,7 +708,9 @@ REQ를 가리키는 AC 없음). 6개 인수 기준(001, 005, 007, 008, 011, 015)
   (REQ-FORCE-021).
 - **라우팅·사이드바 변경 없음** — `/outbound` 경로와 메뉴 항목은 그대로이며, 페이지 모듈의 named
   export와 폴더+index 해석도 유지된다.
-- **동시성 락 도입 없음** — 출고 경로의 락 부재는 기존 상태를 승계한다(후속 과제 2).
+- **정상 출고 경로의 락 도입 없음** — 행 단위 락은 **강제 경로에만** 도입한다(REQ-FORCE-025,
+  설계 결정 O). `_process_outbound_rows`의 락 없는 동작은 그대로 두며 그 함수와 두 출고
+  엔드포인트는 이 SPEC으로 변경되지 않는다. 두 경로의 락 관례 통일은 후속 과제 2다.
 - **강제 처리 결과의 Excel/CSV 내보내기 없음** — 범위 밖이다.
 
 ## 후속 과제 (Out of Scope Follow-up)
@@ -668,17 +719,20 @@ REQ를 가리키는 AC 없음). 6개 인수 기준(001, 005, 007, 008, 011, 015)
 
 1. **출고 경로의 주문 집계 미갱신 해소** — 출고 처리는 `logistics_status`를 `"shipped"`로 기록하면서
    주문 단위 집계를 재계산하지 않는다. 자매 함수인 입고 처리 경로는 재계산한다. 이 SPEC은 정상
-   경로와 강제 경로의 동작을 일치시키기 위해 현행 동작을 답습했다(설계 결정 E). 해소하려면 두 경로를
-   함께 고쳐야 하며 기존 쿼리 카운트 상한 조정이 동반된다.
-2. **출고 경로의 동시성 보호와 강제 경로의 stale read 실패 모드** — 출고 처리에는 대상 행 잠금이
-   없다. 강제 경로는 담당자가 후보 목록을 보고 대상을 고른 뒤 실행하므로, 조회 시점 값이 실행 시점에
-   낡아 있을 창이 정상 경로보다 넓다. 낡음이 초래하는 결과는 두 가지로 갈린다:
-   (a) `shipped_quantity`만 낡은 경우 — 한도 검증이 실행 시점 값 기준이므로 해당 대상이
-   `quantity_exceeded`로 보고되는 안전 실패이며, 같은 요청의 다른 대상은 정상 반영된다.
-   (b) 대상이 조회 이후 `order_cancelled`가 되었거나 `sku`를 잃은 경우 — 사전 게이트에 걸려
-   **요청 전체가 HTTP 400으로 거부**되므로(설계 결정 L), 함께 제출된 다른 유효한 행들도 전부 반영되지
-   않는다. 일괄 실행 단위를 쓰는 담당자에게 (b)의 체감은 (a)와 상당히 다르다. 락 도입 또는 부분 반영
-   정책은 코드베이스 전역 관례 결정이므로 별도 SPEC에서 다룬다.
+   경로와 강제 경로의 동작을 일치시키기 위해 현행 동작을 답습했다(설계 결정 E). **사용자 결정에 따라
+   이 항목은 정상 경로와 강제 경로를 함께 다루는 별도 SPEC에서 처리한다** — 한쪽만 고치면 같은
+   결과를 남기는 두 경로가 서로 다른 부수효과를 내므로 반드시 동시에 수정해야 하며, 기존 쿼리 카운트
+   상한 조정이 동반된다.
+2. **정상 출고 경로의 동시성 보호와 배치 전체 거부 실패 모드** — v1.0.4에서 **강제 경로에는** 행 단위
+   락이 도입되어(REQ-FORCE-025, 설계 결정 O) 강제 요청끼리의 한도 초과 경합은 해소되었다. 남은 격차는
+   두 가지다.
+   (a) **정상 경로에는 여전히 잠금이 없다**(@MX:WARN `purchase_order_views.py:2802-2809`). 따라서
+   정상 출고 요청 두 건이 같은 LineItem을 동시에 처리하는 경우, 그리고 정상 경로와 강제 경로가 같은
+   LineItem을 동시에 건드리는 경우(강제 쪽만 잠금을 쥔다)는 보호되지 않는다. 두 경로의 락 관례를
+   통일할지는 코드베이스 전역 결정이므로 별도 SPEC에서 다룬다.
+   (b) 대상이 후보 조회 이후 `order_cancelled`가 되었거나 `sku`를 잃은 경우, 사전 게이트에 걸려
+   **요청 전체가 HTTP 400으로 거부**되므로(설계 결정 L) 함께 제출된 다른 유효한 행들도 반영되지
+   않는다. 이 실패 모드는 락으로 해소되지 않으며, 부분 반영 정책 도입 여부는 별도 SPEC의 판단이다.
 3. **위험 동작에 대한 권한 모델** — 되돌리기 어려운 동작 전반에 대한 통일된 권한 정책은 코드베이스
    전역 결정이며 이 SPEC의 범위가 아니다(설계 결정 F).
 4. **미국창고 완료 신호의 대상 지정 확장** — 매칭 실패한 0 수량 행을 사용자 지정 대상으로 완료
