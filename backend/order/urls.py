@@ -13,6 +13,8 @@ from .purchase_order_views import (
     LineItemRackNumberSummaryView,
     LineItemRackNumberUpdateView,
     LineItemStatusUpdateView,
+    OutboundForceCandidateView,
+    OutboundForceProcessView,
     OutboundProcessView,
     PurchaseOrderListView,
     RunComparisonView,
@@ -117,6 +119,21 @@ urlpatterns = [
         "purchase-orders/upload-outbound/",
         UploadOutboundView.as_view(),
         name="po-upload-outbound",
+    ),
+    # SPEC-ORDER-016: force outbound processing. Both paths are fully static
+    # (no <int:pk> segment), so the line-items/<int:pk>/... patterns above
+    # cannot shadow them — "outbound-force-candidates" is not an int, and those
+    # patterns carry an extra trailing segment besides. Placed next to the
+    # SPEC-ORDER-015 outbound pair for locality (same reasoning as that pair).
+    path(
+        "purchase-orders/line-items/outbound-force-candidates/",
+        OutboundForceCandidateView.as_view(),
+        name="po-line-item-outbound-force-candidates",
+    ),
+    path(
+        "purchase-orders/line-items/outbound-force-process/",
+        OutboundForceProcessView.as_view(),
+        name="po-line-item-outbound-force-process",
     ),
     path(
         "purchase-orders/upload-vendor-shipment/",

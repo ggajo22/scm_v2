@@ -3,13 +3,25 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { processOutboundManual, uploadOutbound } from '@/services/outboundApi'
-import type { OutboundProcessResponse } from '@/services/outboundApi'
-import { useProcessOutboundManual, useUploadOutbound } from './useOutboundQueries'
+import {
+  processOutboundManual,
+  uploadOutbound,
+  fetchOutboundForceCandidates,
+  processOutboundForce,
+} from '@/services/outboundApi'
+import type { OutboundProcessResponse, OutboundForceCandidateGroup } from '@/services/outboundApi'
+import {
+  useProcessOutboundManual,
+  useUploadOutbound,
+  useOutboundForceCandidates,
+  useProcessOutboundForce,
+} from './useOutboundQueries'
 
 vi.mock('@/services/outboundApi', () => ({
   processOutboundManual: vi.fn(),
   uploadOutbound: vi.fn(),
+  fetchOutboundForceCandidates: vi.fn(),
+  processOutboundForce: vi.fn(),
 }))
 
 vi.mock('sonner', () => ({
@@ -18,6 +30,8 @@ vi.mock('sonner', () => ({
 
 const mockProcess = vi.mocked(processOutboundManual)
 const mockUpload = vi.mocked(uploadOutbound)
+const mockFetchCandidates = vi.mocked(fetchOutboundForceCandidates)
+const mockProcessForce = vi.mocked(processOutboundForce)
 
 function buildResponse(
   overrides: Partial<OutboundProcessResponse> = {}
@@ -168,6 +182,86 @@ describe('useUploadOutbound — SPEC-ORDER-015 REQ-OUTBOUND-013/016', () => {
     const { result } = renderHook(() => useUploadOutbound(), { wrapper })
 
     result.current.mutate(new FormData())
+
+    await waitFor(() => expect(result.current.isError).toBe(true))
+    expect(toast.error).toHaveBeenCalledTimes(1)
+    expect(toast.success).not.toHaveBeenCalled()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// SPEC-ORDER-016: force outbound processing (REQ-FORCE-003/015/016)
+// ---------------------------------------------------------------------------
+
+describe('useOutboundForceCandidates — SPEC-ORDER-016 REQ-FORCE-003', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('fetches candidates exactly once for the batched order-name list', async () => {
+    const results: OutboundForceCandidateGroup[] = [{ order_name: '#37349', candidates: [] }]
+    mockFetchCandidates.mockResolvedValueOnce(results)
+
+    const { result } = renderHook(() => useOutboundForceCandidates(['#37349', '#37350']), {
+      wrapper,
+    })
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(mockFetchCandidates).toHaveBeenCalledTimes(1)
+    expect(mockFetchCandidates).toHaveBeenCalledWith(['#37349', '#37350'])
+    expect(result.current.data).toEqual(results)
+  })
+
+  it('AC-FORCE-003: does not fetch when there are no eligible order names', () => {
+    const { result } = renderHook(() => useOutboundForceCandidates([]), { wrapper })
+
+    expect(result.current.fetchStatus).toBe('idle')
+    expect(mockFetchCandidates).not.toHaveBeenCalled()
+  })
+})
+
+describe('useProcessOutboundForce — SPEC-ORDER-016 REQ-FORCE-015/016', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('calls processOutboundForce with the submitted rows', async () => {
+    mockProcessForce.mockResolvedValueOnce(buildResponse())
+    const { result } = renderHook(() => useProcessOutboundForce(), { wrapper })
+
+    const rows = [{ name: '#37349', sku: 'ISBN001', total: 4, line_item_id: 11 }]
+    result.current.mutate(rows)
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(mockProcessForce).toHaveBeenCalledTimes(1)
+    expect(mockProcessForce.mock.calls[0][0]).toEqual(rows)
+  })
+
+  it('exposes the 3-category response as mutation data (REQ-FORCE-016 client reuse)', async () => {
+    const payload = buildResponse()
+    mockProcessForce.mockResolvedValueOnce(payload)
+    const { result } = renderHook(() => useProcessOutboundForce(), { wrapper })
+
+    result.current.mutate([{ name: '#37349', sku: 'ISBN001', total: 4, line_item_id: 11 }])
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(result.current.data).toEqual(payload)
+  })
+
+  it('shows a success toast summarizing matched/unmatched/quantity_exceeded counts', async () => {
+    mockProcessForce.mockResolvedValueOnce(buildResponse())
+    const { result } = renderHook(() => useProcessOutboundForce(), { wrapper })
+
+    result.current.mutate([{ name: '#37349', sku: 'ISBN001', total: 4, line_item_id: 11 }])
+
+    await waitFor(() => expect(toast.success).toHaveBeenCalledTimes(1))
+  })
+
+  it('shows an error toast and no success toast when the force request is rejected (e.g. HTTP 400 gate violation)', async () => {
+    mockProcessForce.mockRejectedValueOnce(new Error('400'))
+    const { result } = renderHook(() => useProcessOutboundForce(), { wrapper })
+
+    result.current.mutate([{ name: '#37349', sku: 'ISBN001', total: 4, line_item_id: 11 }])
 
     await waitFor(() => expect(result.current.isError).toBe(true))
     expect(toast.error).toHaveBeenCalledTimes(1)
