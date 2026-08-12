@@ -1,9 +1,9 @@
 ---
 id: SPEC-PURCHASE-ORDER-008
-version: 1.0.0
+version: 1.1.0
 status: completed
 created: 2026-07-25
-updated: 2026-07-26
+updated: 2026-08-11
 author: ggajo
 priority: High
 issue_number: ~
@@ -16,6 +16,7 @@ issue_number: ~
 | 버전 | 날짜 | 작성자 | 변경 내용 |
 |------|------|--------|-----------|
 | 1.0.0 | 2026-07-25 | ggajo | 최초 작성 |
+| 1.1.0 | 2026-08-11 | ggajo | 프로덕션 버그 수정 및 문서 동기화 — commit d22818f. REQ-PO8-018 (cross-order SKU 충돌 안전성) 및 REQ-PO8-019 (PurchaseOrder 상태 초기값 "confirmed") 신규 추가. UploadDailyReviewView에 order-name 필수 컬럼 요구사항 반영. |
 
 ---
 
@@ -244,6 +245,12 @@ If 이 Daily Review 업로드 경로가 `Yes24Data`를 upsert하면, then the sy
 
 ---
 
+### REQ-PO8-019 — UploadDailyReviewView에서 생성된 PurchaseOrder의 초기 상태
+
+When `UploadDailyReviewView.post()`가 신규 `PurchaseOrder`를 생성할 때 (distributor_code가 booxen/kyobo/yes24/warehouse 중 하나이고 해당 분기에서 PO를 생성하는 경우), the system shall `status="confirmed"`로 초기화해야 한다 — "pending" 상태로 시작하는 기존 `ConfirmOrderView`(사용자가 발주를 "확정"하기 전 staging 단계)와 달리, Daily Review 업로드는 벤더로부터의 **이미 확정된 응답**을 반영하는 특성을 가지므로, 생성 시점에 즉시 확정 상태로 설정되어야 한다.
+
+---
+
 ## 구현 범위 (수정·생성 대상 파일)
 
 | 파일 | 변경 유형 | 변경 내용 요약 |
@@ -385,6 +392,14 @@ If 이 Daily Review 업로드 경로가 `Yes24Data`를 upsert하면, then the sy
 **Given** 이 SPEC의 구현이 완료된 상태일 때
 **When** `backend/order/tests/test_daily_review_upload.py` 전체(SPEC-PURCHASE-ORDER-005/007 관련 기존 테스트 포함)를 실행하면
 **Then** 모든 기존 테스트가 변경 없이 통과해야 하며 REQ-PO8-* 관련 코드 변경으로 인한 회귀가 없어야 한다
+
+---
+
+### AC-016 — UploadDailyReviewView에서 생성된 PurchaseOrder 초기 상태 검증
+
+**Given** SKU가 미발주 상태이고, Daily Review 업로드 파일에 해당 SKU 행의 `선택="BOOXEN"`이 기재되어 있을 때
+**When** 업로드가 처리되고 새 `PurchaseOrder`가 생성되면
+**Then** 해당 `PurchaseOrder.status`는 `"confirmed"`여야 하며, `"pending"` 상태로 생성되지 않아야 한다.
 
 ---
 

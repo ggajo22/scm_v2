@@ -3,7 +3,7 @@
 Coverage targets (backend only — T1~T10; frontend T11 is a separate cycle):
   T1   LineItem.logistics_status field + Order.status choices
   T4   _recompute_order_aggregates() aggregation + N+1 query-count regression
-  T5   excel_utils SKU-only placeholder parsers
+  T5   excel_utils (order_name, sku) parsers
   T6   UploadVendorShipmentView
   T7   UploadWarehouseReceiptView
   T8   LineItemLogisticsStatusUpdateView / BulkUpdateView
@@ -73,13 +73,28 @@ def _make_line_item(order: Order, shopify_line_item_id: int = 1, sku: str = "SKU
 
 
 def _make_sku_only_excel(skus: list, header=("SKU", "기타컬럼")) -> bytes:
-    """Build a SKU-only placeholder .xlsx file. `None` entries produce a
-    blank-SKU row (used to test blank-row-skipped-uncounted behavior)."""
+    """Build a SKU-only .xlsx file (no order-name column) — used to test the
+    missing-required-column validation path now that both upload endpoints
+    require (order_name, SKU)."""
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.append(list(header))
     for sku in skus:
         ws.append([sku, "ignored"])
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def _make_name_sku_excel(rows: list, header=("주문번호", "SKU", "기타컬럼")) -> bytes:
+    """Build an (order_name, SKU) .xlsx file. `rows` is a list of
+    (name, sku) tuples; a `None` entry in either position produces a blank
+    cell (used to test blank-row-skip behavior)."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(list(header))
+    for name, sku in rows:
+        ws.append([name, sku, "ignored"])
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
@@ -180,44 +195,67 @@ class TestOrderStatusChoices:
 
 
 # ---------------------------------------------------------------------------
-# T5: excel_utils SKU-only placeholder parsers
+# T5: excel_utils (order_name, sku) parsers
 # ---------------------------------------------------------------------------
 
 
-class TestParseSkuOnlyExcel:
-    def test_parse_vendor_shipment_excel_returns_sku_rows(self):
-        file_bytes = _make_sku_only_excel(["SKU-P1", "SKU-P2"])
+class TestParseNameSkuExcel:
+    def test_parse_vendor_shipment_excel_returns_name_sku_rows(self):
+        file_bytes = _make_name_sku_excel([("#P1", "SKU-P1"), ("#P2", "SKU-P2")])
         rows = parse_vendor_shipment_excel(file_bytes)
-        assert [r["sku"] for r in rows] == ["SKU-P1", "SKU-P2"]
+        assert [(r["name"], r["sku"]) for r in rows] == [("#P1", "SKU-P1"), ("#P2", "SKU-P2")]
 
-    def test_parse_warehouse_receipt_excel_returns_sku_rows(self):
-        file_bytes = _make_sku_only_excel(["SKU-P3"])
+    def test_parse_warehouse_receipt_excel_returns_name_sku_rows(self):
+        """REQ-LOGI-016: parse_warehouse_receipt_excel now delegates to
+        _parse_name_sku_xlsx (no quantity column) — each row is one received
+        unit, so a repeated (name, sku) pair simply appears as multiple
+        identical rows."""
+        file_bytes = _make_name_sku_excel([("#P3", "SKU-P3"), ("#P3", "SKU-P3")])
         rows = parse_warehouse_receipt_excel(file_bytes)
-        assert [r["sku"] for r in rows] == ["SKU-P3"]
+        assert rows == [
+            {"name": "#P3", "sku": "SKU-P3"},
+            {"name": "#P3", "sku": "SKU-P3"},
+        ]
 
     def test_blank_sku_row_skipped(self):
-        file_bytes = _make_sku_only_excel(["SKU-P4", None, "SKU-P5"])
+        file_bytes = _make_name_sku_excel([("#P4", "SKU-P4"), ("#P4b", None), ("#P5", "SKU-P5")])
         rows = parse_vendor_shipment_excel(file_bytes)
         assert [r["sku"] for r in rows] == ["SKU-P4", "SKU-P5"]
+
+    def test_blank_name_row_still_included(self):
+        """A blank order-name cell on an otherwise-valid SKU row is NOT
+        dropped by the parser — it flows through so the calling view can
+        count it as skipped (no Order match), same convention as
+        parse_outbound_excel/parse_rack_number_excel."""
+        file_bytes = _make_name_sku_excel([(None, "SKU-P6")])
+        rows = parse_vendor_shipment_excel(file_bytes)
+        assert rows == [{"name": "", "sku": "SKU-P6"}]
 
     def test_isbn_header_also_matched_case_insensitive(self):
         wb = openpyxl.Workbook()
         ws = wb.active
-        ws.append(["Isbn", "기타"])
-        ws.append(["9788900000000", "x"])
+        ws.append(["주문번호", "Isbn", "기타"])
+        ws.append(["#ISBN1", "9788900000000", "x"])
         buf = io.BytesIO()
         wb.save(buf)
         rows = parse_vendor_shipment_excel(buf.getvalue())
-        assert rows == [{"sku": "9788900000000"}]
+        assert rows == [{"name": "#ISBN1", "sku": "9788900000000"}]
 
     def test_missing_sku_or_isbn_header_raises_value_error(self):
         wb = openpyxl.Workbook()
         ws = wb.active
-        ws.append(["제목", "수량"])
+        ws.append(["주문번호", "제목", "수량"])
         buf = io.BytesIO()
         wb.save(buf)
         with pytest.raises(ValueError):
             parse_vendor_shipment_excel(buf.getvalue())
+
+    def test_missing_name_column_raises_value_error(self):
+        """REQ-LOGI-003b/005b: the order-name column is now required, same
+        dual-column validation as parse_outbound_excel."""
+        file_bytes = _make_sku_only_excel(["SKU-NONAME"])
+        with pytest.raises(ValueError):
+            parse_vendor_shipment_excel(file_bytes)
 
     def test_empty_file_raises_value_error(self):
         wb = openpyxl.Workbook()
@@ -325,11 +363,11 @@ class TestRecomputeOrderStatusQueryCount:
 class TestUploadVendorShipmentView:
     def test_matches_eligible_lineitem_and_transitions(self, auth_client):
         """REQ-LOGI-003/AC-LOGI-003 — 시나리오1."""
-        order = _make_order(shopify_order_id=89001)
+        order = _make_order(shopify_order_id=89001, name="#89001")
         li = _make_line_item(
             order, shopify_line_item_id=1, sku="SKU-VS-1", purchase_status="in_stock"
         )
-        file_bytes = _make_sku_only_excel(["SKU-VS-1"])
+        file_bytes = _make_name_sku_excel([("#89001", "SKU-VS-1")])
 
         res = auth_client.post(
             UPLOAD_VENDOR_SHIPMENT_URL, data={"file": _file_obj(file_bytes)}, format="multipart"
@@ -340,13 +378,20 @@ class TestUploadVendorShipmentView:
 
     def test_upload_response_counts(self, auth_client):
         """REQ-LOGI-004/AC-LOGI-004 — 시나리오1b: matched + skipped ==
-        distinct SKU count in the file."""
-        order = _make_order(shopify_order_id=89002)
+        distinct (order_name, sku) pair count in the file."""
+        order = _make_order(shopify_order_id=89002, name="#89002")
         for i in range(3):
             _make_line_item(
                 order, shopify_line_item_id=i + 1, sku=f"SKU-VS-M{i}", purchase_status="in_stock"
             )
-        file_bytes = _make_sku_only_excel(["SKU-VS-M0", "SKU-VS-M1", "SKU-VS-M2", "SKU-VS-UNMATCHED"])
+        file_bytes = _make_name_sku_excel(
+            [
+                ("#89002", "SKU-VS-M0"),
+                ("#89002", "SKU-VS-M1"),
+                ("#89002", "SKU-VS-M2"),
+                ("#89002", "SKU-VS-UNMATCHED"),
+            ]
+        )
 
         res = auth_client.post(
             UPLOAD_VENDOR_SHIPMENT_URL, data={"file": _file_obj(file_bytes)}, format="multipart"
@@ -357,14 +402,14 @@ class TestUploadVendorShipmentView:
         assert res.data["matched_count"] + res.data["skipped_count"] == 4
 
     def test_duplicate_sku_rows_deduplicated_before_matching(self, auth_client):
-        """REQ-LOGI-003a/AC-LOGI-003a — 시나리오1c: duplicate SKU rows collapse
-        to a single distinct SKU entry (last-row-wins dedup happens before
-        matching, so matched+skipped counts the SKU once, not twice)."""
-        order = _make_order(shopify_order_id=89003)
+        """REQ-LOGI-003a/AC-LOGI-003a — 시나리오1c: duplicate (order_name, sku)
+        rows collapse to a single distinct pair (set-based dedup happens
+        before matching, so matched+skipped counts the pair once, not twice)."""
+        order = _make_order(shopify_order_id=89003, name="#89003")
         li = _make_line_item(
             order, shopify_line_item_id=1, sku="SKU-VS-DUP", purchase_status="in_stock"
         )
-        file_bytes = _make_sku_only_excel(["SKU-VS-DUP", "SKU-VS-DUP"])
+        file_bytes = _make_name_sku_excel([("#89003", "SKU-VS-DUP"), ("#89003", "SKU-VS-DUP")])
 
         res = auth_client.post(
             UPLOAD_VENDOR_SHIPMENT_URL, data={"file": _file_obj(file_bytes)}, format="multipart"
@@ -378,11 +423,11 @@ class TestUploadVendorShipmentView:
     def test_unordered_purchase_status_excluded(self, auth_client):
         """REQ-LOGI-003/AC-LOGI-003 — 시나리오2c: purchase_status='unordered'
         SKUs are not matched (still counted as skipped)."""
-        order = _make_order(shopify_order_id=89004)
+        order = _make_order(shopify_order_id=89004, name="#89004")
         li = _make_line_item(
             order, shopify_line_item_id=1, sku="SKU-VS-UNORD", purchase_status="unordered"
         )
-        file_bytes = _make_sku_only_excel(["SKU-VS-UNORD"])
+        file_bytes = _make_name_sku_excel([("#89004", "SKU-VS-UNORD")])
 
         res = auth_client.post(
             UPLOAD_VENDOR_SHIPMENT_URL, data={"file": _file_obj(file_bytes)}, format="multipart"
@@ -396,7 +441,7 @@ class TestUploadVendorShipmentView:
     def test_already_shipment_confirmed_not_rematched(self, auth_client):
         """REQ-LOGI-003: only logistics_status='not_shipped' is eligible —
         already-confirmed LineItems are skipped, not re-transitioned."""
-        order = _make_order(shopify_order_id=89005)
+        order = _make_order(shopify_order_id=89005, name="#89005")
         li = _make_line_item(
             order,
             shopify_line_item_id=1,
@@ -404,7 +449,7 @@ class TestUploadVendorShipmentView:
             purchase_status="in_stock",
             logistics_status="shipment_confirmed",
         )
-        file_bytes = _make_sku_only_excel(["SKU-VS-ALREADY"])
+        file_bytes = _make_name_sku_excel([("#89005", "SKU-VS-ALREADY")])
 
         res = auth_client.post(
             UPLOAD_VENDOR_SHIPMENT_URL, data={"file": _file_obj(file_bytes)}, format="multipart"
@@ -417,11 +462,11 @@ class TestUploadVendorShipmentView:
     def test_atomicity_no_partial_update_on_failure(self, auth_client):
         """REQ-LOGI-003b/AC-LOGI-003b — 시나리오1d: a mid-transaction failure
         leaves no LineItem partially updated."""
-        order = _make_order(shopify_order_id=89006)
+        order = _make_order(shopify_order_id=89006, name="#89006")
         li = _make_line_item(
             order, shopify_line_item_id=1, sku="SKU-VS-ATOMIC", purchase_status="in_stock"
         )
-        file_bytes = _make_sku_only_excel(["SKU-VS-ATOMIC"])
+        file_bytes = _make_name_sku_excel([("#89006", "SKU-VS-ATOMIC")])
 
         with patch(
             "order.purchase_order_views.LineItem.objects.bulk_update",
@@ -433,6 +478,31 @@ class TestUploadVendorShipmentView:
         assert res.status_code == 500
         li.refresh_from_db()
         assert li.logistics_status == "not_shipped"
+
+    def test_same_sku_different_orders_only_named_order_transitions(self, auth_client):
+        """REQ-LOGI-003b safety-fix regression test: two LineItems share the
+        same SKU across two different orders. An upload naming only ONE of
+        those orders must transition only that order's LineItem — matching
+        by SKU alone previously flipped both."""
+        order_a = _make_order(shopify_order_id=89007, name="#89007A")
+        order_b = _make_order(shopify_order_id=89008, name="#89007B")
+        li_a = _make_line_item(
+            order_a, shopify_line_item_id=1, sku="SKU-VS-SHARED", purchase_status="in_stock"
+        )
+        li_b = _make_line_item(
+            order_b, shopify_line_item_id=1, sku="SKU-VS-SHARED", purchase_status="in_stock"
+        )
+        file_bytes = _make_name_sku_excel([("#89007A", "SKU-VS-SHARED")])
+
+        res = auth_client.post(
+            UPLOAD_VENDOR_SHIPMENT_URL, data={"file": _file_obj(file_bytes)}, format="multipart"
+        )
+        assert res.status_code == 200
+        assert res.data["matched_count"] == 1
+        li_a.refresh_from_db()
+        li_b.refresh_from_db()
+        assert li_a.logistics_status == "shipment_confirmed"
+        assert li_b.logistics_status == "not_shipped"
 
     def test_missing_file_returns_400(self, auth_client):
         res = auth_client.post(UPLOAD_VENDOR_SHIPMENT_URL, data={}, format="multipart")
@@ -457,7 +527,7 @@ class TestUploadVendorShipmentView:
         assert res.status_code == 422
 
     def test_unauthenticated_returns_401(self, anon_client):
-        file_bytes = _make_sku_only_excel(["SKU-VS-ANON"])
+        file_bytes = _make_name_sku_excel([("#89099", "SKU-VS-ANON")])
         res = anon_client.post(
             UPLOAD_VENDOR_SHIPMENT_URL, data={"file": _file_obj(file_bytes)}, format="multipart"
         )
@@ -471,63 +541,193 @@ class TestUploadVendorShipmentView:
 
 @pytest.mark.django_db
 class TestUploadWarehouseReceiptView:
-    def test_transitions_from_shipment_confirmed_to_received(self, auth_client):
-        """REQ-LOGI-005/AC-LOGI-005b — 시나리오2."""
-        order = _make_order(shopify_order_id=90001)
+    """REQ-LOGI-016: row-per-unit model — the real warehouse-receiving file
+    has NO quantity column. Each row represents exactly one received unit,
+    so a repeated (order_name, sku) pair across N rows expresses a quantity
+    of N (see `_make_name_sku_excel`). REQ-LOGI-015's accumulation/threshold
+    semantics — received_quantity accumulates across uploads, received_at is
+    stamped on every write, logistics_status only advances to "received"
+    once received_quantity reaches LineItem.quantity — are unchanged."""
+
+    def test_single_row_with_quantity_one_completes(self, auth_client):
+        """REQ-LOGI-016: one row == one received unit. LineItem.quantity == 1
+        -> a single row completes it in one upload."""
+        order = _make_order(shopify_order_id=90001, name="#90001")
         li = _make_line_item(
-            order, shopify_line_item_id=1, sku="SKU-WR-1", logistics_status="shipment_confirmed"
+            order,
+            shopify_line_item_id=1,
+            sku="SKU-WR-1",
+            quantity=1,
+            logistics_status="shipment_confirmed",
         )
-        file_bytes = _make_sku_only_excel(["SKU-WR-1"])
-
-        res = auth_client.post(
-            UPLOAD_WAREHOUSE_RECEIPT_URL, data={"file": _file_obj(file_bytes)}, format="multipart"
-        )
-        assert res.status_code == 200
-        li.refresh_from_db()
-        assert li.logistics_status == "received"
-
-    def test_direct_path_from_not_shipped_to_received(self, auth_client):
-        """REQ-LOGI-005/AC-LOGI-005a — 시나리오2b: skips shipment_confirmed
-        when the vendor never sent a shipment confirmation."""
-        order = _make_order(shopify_order_id=90002)
-        li = _make_line_item(order, shopify_line_item_id=1, sku="SKU-WR-2")  # not_shipped default
-        file_bytes = _make_sku_only_excel(["SKU-WR-2"])
-
-        res = auth_client.post(
-            UPLOAD_WAREHOUSE_RECEIPT_URL, data={"file": _file_obj(file_bytes)}, format="multipart"
-        )
-        assert res.status_code == 200
-        li.refresh_from_db()
-        assert li.logistics_status == "received"
-
-    def test_duplicate_sku_and_atomicity(self, auth_client):
-        """REQ-LOGI-005a/AC-LOGI-005c — 시나리오2b2: same dedup + all-or-
-        nothing behavior as the vendor-shipment upload."""
-        order = _make_order(shopify_order_id=90003)
-        li = _make_line_item(order, shopify_line_item_id=1, sku="SKU-WR-DUP")
-        file_bytes = _make_sku_only_excel(["SKU-WR-DUP", "SKU-WR-DUP"])
+        file_bytes = _make_name_sku_excel([("#90001", "SKU-WR-1")])
 
         res = auth_client.post(
             UPLOAD_WAREHOUSE_RECEIPT_URL, data={"file": _file_obj(file_bytes)}, format="multipart"
         )
         assert res.status_code == 200
         assert res.data["matched_count"] == 1
+        assert res.data["skipped_count"] == 0
         li.refresh_from_db()
+        assert li.received_quantity == 1
+        assert li.received_at is not None
         assert li.logistics_status == "received"
 
+    def test_n_repeated_rows_equal_quantity_completes_in_one_upload(self, auth_client):
+        """REQ-LOGI-016: N repeated rows for the same (order, sku) express N
+        received units. N == LineItem.quantity -> completes in one upload —
+        mirrors REQ-OUTBOUND-010's completion behavior under the row-count
+        model."""
+        order = _make_order(shopify_order_id=90002, name="#90002")
+        li = _make_line_item(
+            order,
+            shopify_line_item_id=1,
+            sku="SKU-WR-N",
+            quantity=5,
+            logistics_status="shipment_confirmed",
+        )
+        file_bytes = _make_name_sku_excel([("#90002", "SKU-WR-N")] * 5)
+
+        res = auth_client.post(
+            UPLOAD_WAREHOUSE_RECEIPT_URL, data={"file": _file_obj(file_bytes)}, format="multipart"
+        )
+        assert res.status_code == 200
+        assert res.data["matched_count"] == 1
+        assert res.data["skipped_count"] == 0
+        li.refresh_from_db()
+        assert li.received_quantity == 5
+        assert li.received_at is not None
+        assert li.logistics_status == "received"
+
+    def test_direct_path_from_not_shipped_to_received(self, auth_client):
+        """REQ-LOGI-015a: skips shipment_confirmed when the vendor never
+        sent a shipment confirmation (Decision C, unchanged)."""
+        order = _make_order(shopify_order_id=90009, name="#90009")
+        li = _make_line_item(
+            order, shopify_line_item_id=1, sku="SKU-WR-2", quantity=3
+        )  # not_shipped default
+        file_bytes = _make_name_sku_excel([("#90009", "SKU-WR-2")] * 3)
+
+        res = auth_client.post(
+            UPLOAD_WAREHOUSE_RECEIPT_URL, data={"file": _file_obj(file_bytes)}, format="multipart"
+        )
+        assert res.status_code == 200
+        li.refresh_from_db()
+        assert li.received_quantity == 3
+        assert li.logistics_status == "received"
+
+    def test_partial_receipt_accumulates_without_transitioning(self, auth_client):
+        """REQ-LOGI-015a: fewer repeated rows than LineItem.quantity ->
+        received_quantity accumulates, received_at stamped, logistics_status
+        stays whatever it was — not yet 'received'."""
+        order = _make_order(shopify_order_id=90010, name="#90010")
+        li = _make_line_item(
+            order, shopify_line_item_id=1, sku="SKU-WR-PARTIAL", quantity=10
+        )
+        file_bytes = _make_name_sku_excel([("#90010", "SKU-WR-PARTIAL")] * 4)
+
+        res = auth_client.post(
+            UPLOAD_WAREHOUSE_RECEIPT_URL, data={"file": _file_obj(file_bytes)}, format="multipart"
+        )
+        assert res.status_code == 200
+        assert res.data["matched_count"] == 1
+        assert res.data["skipped_count"] == 0
+        li.refresh_from_db()
+        assert li.received_quantity == 4
+        assert li.received_at is not None
+        assert li.logistics_status == "not_shipped"
+
+    def test_two_uploads_complete_a_partial_receipt(self, auth_client):
+        """REQ-LOGI-015a: first upload partial, second upload brings it to
+        completion -> logistics_status flips only on the second."""
+        order = _make_order(shopify_order_id=90011, name="#90011")
+        li = _make_line_item(
+            order,
+            shopify_line_item_id=1,
+            sku="SKU-WR-TWOSTEP",
+            quantity=10,
+            logistics_status="shipment_confirmed",
+        )
+        file_bytes_1 = _make_name_sku_excel([("#90011", "SKU-WR-TWOSTEP")] * 6)
+        res1 = auth_client.post(
+            UPLOAD_WAREHOUSE_RECEIPT_URL, data={"file": _file_obj(file_bytes_1)}, format="multipart"
+        )
+        assert res1.status_code == 200
+        li.refresh_from_db()
+        assert li.received_quantity == 6
+        assert li.logistics_status == "shipment_confirmed"
+
+        file_bytes_2 = _make_name_sku_excel([("#90011", "SKU-WR-TWOSTEP")] * 4)
+        res2 = auth_client.post(
+            UPLOAD_WAREHOUSE_RECEIPT_URL, data={"file": _file_obj(file_bytes_2)}, format="multipart"
+        )
+        assert res2.status_code == 200
+        li.refresh_from_db()
+        assert li.received_quantity == 10
+        assert li.logistics_status == "received"
+
+    def test_over_receipt_rejected_as_quantity_exceeded(self, auth_client):
+        """REQ-LOGI-015a: repeated rows that would push received_quantity
+        past quantity are rejected — no partial write, existing
+        received_quantity unchanged."""
+        order = _make_order(shopify_order_id=90012, name="#90012")
+        li = _make_line_item(
+            order,
+            shopify_line_item_id=1,
+            sku="SKU-WR-OVER",
+            quantity=5,
+            received_quantity=2,
+        )
+        file_bytes = _make_name_sku_excel([("#90012", "SKU-WR-OVER")] * 4)
+
+        res = auth_client.post(
+            UPLOAD_WAREHOUSE_RECEIPT_URL, data={"file": _file_obj(file_bytes)}, format="multipart"
+        )
+        assert res.status_code == 200
+        assert res.data["matched_count"] == 0
+        assert res.data["skipped_count"] == 1
+        li.refresh_from_db()
+        assert li.received_quantity == 2
+        assert li.received_at is None
+        assert li.logistics_status == "not_shipped"
+
+    def test_blank_order_name_row_skipped(self, auth_client):
+        """REQ-LOGI-016: a row with a blank order-name cell cannot form a
+        grouping key and is rejected (invalid_row), no write."""
+        order = _make_order(shopify_order_id=90024, name="#90024")
+        li = _make_line_item(order, shopify_line_item_id=1, sku="SKU-WR-BLANKNAME", quantity=1)
+        file_bytes = _make_name_sku_excel([(None, "SKU-WR-BLANKNAME")])
+
+        res = auth_client.post(
+            UPLOAD_WAREHOUSE_RECEIPT_URL, data={"file": _file_obj(file_bytes)}, format="multipart"
+        )
+        assert res.status_code == 200
+        assert res.data["matched_count"] == 0
+        assert res.data["skipped_count"] == 1
+        li.refresh_from_db()
+        assert li.received_quantity == 0
+        assert li.received_at is None
+
+    def test_atomicity_no_partial_update_on_failure(self, auth_client):
+        """All-or-nothing: a mid-transaction failure leaves no LineItem
+        partially updated (mirrors SPEC-ORDER-015's atomicity guarantee)."""
         with patch(
             "order.purchase_order_views.LineItem.objects.bulk_update",
             side_effect=Exception("boom"),
         ):
-            order2 = _make_order(shopify_order_id=90004)
-            li2 = _make_line_item(order2, shopify_line_item_id=1, sku="SKU-WR-ATOMIC")
-            file_bytes2 = _make_sku_only_excel(["SKU-WR-ATOMIC"])
+            order2 = _make_order(shopify_order_id=90004, name="#90004")
+            li2 = _make_line_item(
+                order2, shopify_line_item_id=1, sku="SKU-WR-ATOMIC", quantity=5
+            )
+            file_bytes2 = _make_name_sku_excel([("#90004", "SKU-WR-ATOMIC")] * 5)
             res2 = auth_client.post(
                 UPLOAD_WAREHOUSE_RECEIPT_URL, data={"file": _file_obj(file_bytes2)}, format="multipart"
             )
         assert res2.status_code == 500
         li2.refresh_from_db()
         assert li2.logistics_status == "not_shipped"
+        assert li2.received_quantity == 0
+        assert li2.received_at is None
 
     def test_warehouse_stock_untouched(self, auth_client):
         """REQ-LOGI-006/AC-LOGI-006 — 시나리오2d: WarehouseStock.quantity is
@@ -535,9 +735,9 @@ class TestUploadWarehouseReceiptView:
         from order.models import WarehouseStock
 
         WarehouseStock.objects.create(isbn="SKU-WR-STOCK", location="korea", quantity=10)
-        order = _make_order(shopify_order_id=90005)
-        li = _make_line_item(order, shopify_line_item_id=1, sku="SKU-WR-STOCK")
-        file_bytes = _make_sku_only_excel(["SKU-WR-STOCK"])
+        order = _make_order(shopify_order_id=90005, name="#90005")
+        li = _make_line_item(order, shopify_line_item_id=1, sku="SKU-WR-STOCK", quantity=2)
+        file_bytes = _make_name_sku_excel([("#90005", "SKU-WR-STOCK")] * 2)
 
         res = auth_client.post(
             UPLOAD_WAREHOUSE_RECEIPT_URL, data={"file": _file_obj(file_bytes)}, format="multipart"
@@ -551,11 +751,15 @@ class TestUploadWarehouseReceiptView:
     def test_already_received_or_shipped_not_rematched(self, auth_client):
         """Only not_shipped/shipment_confirmed are eligible source states —
         received/outbound_scheduled/shipped are skipped."""
-        order = _make_order(shopify_order_id=90006)
+        order = _make_order(shopify_order_id=90006, name="#90006")
         li = _make_line_item(
-            order, shopify_line_item_id=1, sku="SKU-WR-SHIPPED", logistics_status="shipped"
+            order,
+            shopify_line_item_id=1,
+            sku="SKU-WR-SHIPPED",
+            quantity=1,
+            logistics_status="shipped",
         )
-        file_bytes = _make_sku_only_excel(["SKU-WR-SHIPPED"])
+        file_bytes = _make_name_sku_excel([("#90006", "SKU-WR-SHIPPED")])
 
         res = auth_client.post(
             UPLOAD_WAREHOUSE_RECEIPT_URL, data={"file": _file_obj(file_bytes)}, format="multipart"
@@ -564,9 +768,135 @@ class TestUploadWarehouseReceiptView:
         assert res.data["skipped_count"] == 1
         li.refresh_from_db()
         assert li.logistics_status == "shipped"
+        assert li.received_quantity == 0
+
+    def test_same_sku_different_orders_only_named_order_transitions(self, auth_client):
+        """REQ-LOGI-005b safety-fix regression test: two LineItems share the
+        same SKU across two different orders. An upload naming only ONE of
+        those orders must transition only that order's LineItem — matching
+        by SKU alone previously flipped both. Must not regress under the
+        row-count model."""
+        order_a = _make_order(shopify_order_id=90007, name="#90007A")
+        order_b = _make_order(shopify_order_id=90008, name="#90007B")
+        li_a = _make_line_item(order_a, shopify_line_item_id=1, sku="SKU-WR-SHARED", quantity=1)
+        li_b = _make_line_item(order_b, shopify_line_item_id=1, sku="SKU-WR-SHARED", quantity=1)
+        file_bytes = _make_name_sku_excel([("#90007A", "SKU-WR-SHARED")])
+
+        res = auth_client.post(
+            UPLOAD_WAREHOUSE_RECEIPT_URL, data={"file": _file_obj(file_bytes)}, format="multipart"
+        )
+        assert res.status_code == 200
+        assert res.data["matched_count"] == 1
+        li_a.refresh_from_db()
+        li_b.refresh_from_db()
+        assert li_a.logistics_status == "received"
+        assert li_a.received_quantity == 1
+        assert li_b.logistics_status == "not_shipped"
+        assert li_b.received_quantity == 0
+
+    def test_order_not_found_skipped_no_write(self, auth_client):
+        """order_not_found -> skipped, no write."""
+        file_bytes = _make_name_sku_excel([("#NOPE-90020", "SKU-WR-NOORDER")])
+
+        res = auth_client.post(
+            UPLOAD_WAREHOUSE_RECEIPT_URL, data={"file": _file_obj(file_bytes)}, format="multipart"
+        )
+        assert res.status_code == 200
+        assert res.data["matched_count"] == 0
+        assert res.data["skipped_count"] == 1
+
+    def test_line_item_not_found_skipped_no_write(self, auth_client):
+        """line_item_not_found -> skipped, no write."""
+        _make_order(shopify_order_id=90021, name="#90021")
+        file_bytes = _make_name_sku_excel([("#90021", "SKU-WR-MISSING")])
+
+        res = auth_client.post(
+            UPLOAD_WAREHOUSE_RECEIPT_URL, data={"file": _file_obj(file_bytes)}, format="multipart"
+        )
+        assert res.status_code == 200
+        assert res.data["matched_count"] == 0
+        assert res.data["skipped_count"] == 1
+
+    def test_multiple_line_items_skipped_no_write(self, auth_client):
+        """multiple_line_items (2+ candidates, ambiguous) -> skipped, no
+        write."""
+        order = _make_order(shopify_order_id=90022, name="#90022")
+        li1 = _make_line_item(order, shopify_line_item_id=1, sku="SKU-WR-DUPE", quantity=5)
+        li2 = _make_line_item(order, shopify_line_item_id=2, sku="SKU-WR-DUPE", quantity=5)
+        file_bytes = _make_name_sku_excel([("#90022", "SKU-WR-DUPE")] * 3)
+
+        res = auth_client.post(
+            UPLOAD_WAREHOUSE_RECEIPT_URL, data={"file": _file_obj(file_bytes)}, format="multipart"
+        )
+        assert res.status_code == 200
+        assert res.data["matched_count"] == 0
+        assert res.data["skipped_count"] == 1
+        li1.refresh_from_db()
+        li2.refresh_from_db()
+        assert li1.received_quantity == 0
+        assert li2.received_quantity == 0
+
+    def test_response_exposes_per_row_detail_lists(self, auth_client):
+        """REQ-LOGI-017: the response carries the three per-row detail lists
+        (matched / unmatched / quantity_exceeded) alongside the pre-existing
+        counts, so the UI can show WHICH rows were skipped and why — same
+        payload shape OutboundProcessView returns. `matched_count` /
+        `skipped_count` keep their previous meaning."""
+        order = _make_order(shopify_order_id=90023, name="#90023")
+        _make_line_item(order, shopify_line_item_id=1, sku="SKU-WR-SHAPE", quantity=1)
+        # One row that matches, one that names a nonexistent order, and one
+        # that over-receives an already-full LineItem — so all three lists
+        # come back non-empty in a single call.
+        full_li = _make_line_item(
+            order, shopify_line_item_id=2, sku="SKU-WR-FULL", quantity=1, received_quantity=1
+        )
+        file_bytes = _make_name_sku_excel([
+            ("#90023", "SKU-WR-SHAPE"),
+            ("#NOPE-90023", "SKU-WR-GHOST"),
+            ("#90023", "SKU-WR-FULL"),
+        ])
+
+        res = auth_client.post(
+            UPLOAD_WAREHOUSE_RECEIPT_URL, data={"file": _file_obj(file_bytes)}, format="multipart"
+        )
+        assert res.status_code == 200
+        assert set(res.data.keys()) == {
+            "matched_count",
+            "skipped_count",
+            "matched",
+            "unmatched",
+            "unmatched_count",
+            "quantity_exceeded",
+            "quantity_exceeded_count",
+        }
+
+        # skipped_count stays the sum of the two failure categories.
+        assert res.data["matched_count"] == 1
+        assert res.data["unmatched_count"] == 1
+        assert res.data["quantity_exceeded_count"] == 1
+        assert res.data["skipped_count"] == 2
+
+        matched_row = res.data["matched"][0]
+        assert matched_row["name"] == "#90023"
+        assert matched_row["sku"] == "SKU-WR-SHAPE"
+        assert matched_row["received_count"] == 1
+        assert matched_row["received_quantity"] == 1
+        assert matched_row["quantity"] == 1
+        assert matched_row["logistics_status"] == "received"
+
+        unmatched_row = res.data["unmatched"][0]
+        assert unmatched_row["sku"] == "SKU-WR-GHOST"
+        assert unmatched_row["reason"] == "order_not_found"
+
+        exceeded_row = res.data["quantity_exceeded"][0]
+        assert exceeded_row["sku"] == "SKU-WR-FULL"
+        assert exceeded_row["line_item_id"] == full_li.id
+        assert exceeded_row["reason"] == "quantity_exceeded"
+        assert exceeded_row["received_quantity"] == 1
+        assert exceeded_row["quantity"] == 1
 
     def test_unauthenticated_returns_401(self, anon_client):
-        file_bytes = _make_sku_only_excel(["SKU-WR-ANON"])
+        file_bytes = _make_name_sku_excel([("#90099", "SKU-WR-ANON")])
         res = anon_client.post(
             UPLOAD_WAREHOUSE_RECEIPT_URL, data={"file": _file_obj(file_bytes)}, format="multipart"
         )
@@ -585,8 +915,8 @@ class TestUploadWarehouseReceiptView:
     def test_missing_sku_column_returns_422(self, auth_client):
         wb = openpyxl.Workbook()
         ws = wb.active
-        ws.append(["제목", "수량"])
-        ws.append(["Book A", 1])
+        ws.append(["제목", "메모"])
+        ws.append(["Book A", "ignored"])
         buf = io.BytesIO()
         wb.save(buf)
         res = auth_client.post(
@@ -805,7 +1135,7 @@ class TestPurchaseOrderStatusIndependence:
         assert po.status == "confirmed"
 
     def test_upload_transition_does_not_touch_purchase_order_status(self, auth_client):
-        order = _make_order(shopify_order_id=93003)
+        order = _make_order(shopify_order_id=93003, name="#93003")
         li = _make_line_item(
             order, shopify_line_item_id=1, sku="SKU-PO-3", purchase_status="in_stock"
         )
@@ -814,7 +1144,7 @@ class TestPurchaseOrderStatusIndependence:
         )
         po.line_items.add(li)
 
-        file_bytes = _make_sku_only_excel(["SKU-PO-3"])
+        file_bytes = _make_name_sku_excel([("#93003", "SKU-PO-3")])
         res = auth_client.post(
             UPLOAD_VENDOR_SHIPMENT_URL, data={"file": _file_obj(file_bytes)}, format="multipart"
         )

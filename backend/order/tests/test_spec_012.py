@@ -76,12 +76,15 @@ def _make_line_item(
     )
 
 
-def _make_sku_only_excel(skus: list, header=("SKU", "기타컬럼")) -> bytes:
+def _make_name_sku_excel(rows: list, header=("주문번호", "SKU", "기타컬럼")) -> bytes:
+    """Build an (order_name, SKU) .xlsx file — both upload endpoints now
+    require the order-name column (SPEC-ORDER-011 REQ-LOGI-003b/005b safety
+    fix). `rows` is a list of (name, sku) tuples."""
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.append(list(header))
-    for sku in skus:
-        ws.append([sku, "ignored"])
+    for name, sku in rows:
+        ws.append([name, sku, "ignored"])
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
@@ -295,11 +298,11 @@ class TestExistingWritePathsRecomputeReadyToShip:
     """AC-RTS-003 — 시나리오5."""
 
     def test_upload_vendor_shipment_recomputes_ready_to_ship(self, auth_client):
-        order = _make_order(shopify_order_id=200301)
+        order = _make_order(shopify_order_id=200301, name="#200301")
         _make_line_item(
             order, shopify_line_item_id=1, sku="SKU-RTS-UV", purchase_status="in_stock"
         )
-        file_bytes = _make_sku_only_excel(["SKU-RTS-UV"])
+        file_bytes = _make_name_sku_excel([("#200301", "SKU-RTS-UV")])
         res = auth_client.post(
             UPLOAD_VENDOR_SHIPMENT_URL, data={"file": _file_obj(file_bytes)}, format="multipart"
         )
@@ -308,9 +311,13 @@ class TestExistingWritePathsRecomputeReadyToShip:
         assert order.ready_to_ship is True
 
     def test_upload_warehouse_receipt_recomputes_ready_to_ship(self, auth_client):
-        order = _make_order(shopify_order_id=200302)
-        _make_line_item(order, shopify_line_item_id=1, sku="SKU-RTS-UW")
-        file_bytes = _make_sku_only_excel(["SKU-RTS-UW"])
+        """REQ-LOGI-016: warehouse-receipt upload rows are (order_name, SKU)
+        only, no quantity column — each row is one received unit. A single
+        row against a LineItem.quantity == 1 still transitions it to
+        'received' and triggers the same Order.ready_to_ship recomputation."""
+        order = _make_order(shopify_order_id=200302, name="#200302")
+        _make_line_item(order, shopify_line_item_id=1, sku="SKU-RTS-UW", quantity=1)
+        file_bytes = _make_name_sku_excel([("#200302", "SKU-RTS-UW")])
         res = auth_client.post(
             UPLOAD_WAREHOUSE_RECEIPT_URL, data={"file": _file_obj(file_bytes)}, format="multipart"
         )
@@ -531,20 +538,20 @@ class TestUploadDailyReviewRecomputesReadyToShip:
         warehouse_sku = "9788901400002"
         nonwarehouse_sku = "9788901400003"
 
-        order_cs = _make_order(shopify_order_id=200701)
+        order_cs = _make_order(shopify_order_id=200701, name="#200701")
         _make_line_item(order_cs, shopify_line_item_id=1, sku=cs_sku, quantity=1)
 
-        order_wh = _make_order(shopify_order_id=200702)
+        order_wh = _make_order(shopify_order_id=200702, name="#200702")
         _make_line_item(order_wh, shopify_line_item_id=1, sku=warehouse_sku, quantity=1)
         WarehouseStock.objects.create(isbn=warehouse_sku, location="korea", quantity=10)
 
-        order_nw = _make_order(shopify_order_id=200703)
+        order_nw = _make_order(shopify_order_id=200703, name="#200703")
         _make_line_item(order_nw, shopify_line_item_id=1, sku=nonwarehouse_sku, quantity=1)
 
         file_bytes = _make_daily_review_excel([
-            {"isbn": cs_sku, "selected": "주문취소", "note": "고객 요청"},
-            {"isbn": warehouse_sku, "selected": "재고(한국)"},
-            {"isbn": nonwarehouse_sku, "selected": "북센"},
+            {"order_name": "#200701", "isbn": cs_sku, "selected": "주문취소", "note": "고객 요청"},
+            {"order_name": "#200702", "isbn": warehouse_sku, "selected": "재고(한국)"},
+            {"order_name": "#200703", "isbn": nonwarehouse_sku, "selected": "북센"},
         ])
         res = auth_client.post(
             UPLOAD_DAILY_URL, data={"file": _file_obj(file_bytes)}, format="multipart"
@@ -567,20 +574,20 @@ class TestUploadDailyReviewRecomputesReadyToShip:
         warehouse_sku = "9788901400012"
         nonwarehouse_sku = "9788901400013"
 
-        order_cs = _make_order(shopify_order_id=200711)
+        order_cs = _make_order(shopify_order_id=200711, name="#200711")
         _make_line_item(order_cs, shopify_line_item_id=1, sku=cs_sku, quantity=1)
 
-        order_wh = _make_order(shopify_order_id=200712)
+        order_wh = _make_order(shopify_order_id=200712, name="#200712")
         _make_line_item(order_wh, shopify_line_item_id=1, sku=warehouse_sku, quantity=1)
         WarehouseStock.objects.create(isbn=warehouse_sku, location="korea", quantity=10)
 
-        order_nw = _make_order(shopify_order_id=200713)
+        order_nw = _make_order(shopify_order_id=200713, name="#200713")
         _make_line_item(order_nw, shopify_line_item_id=1, sku=nonwarehouse_sku, quantity=1)
 
         file_bytes = _make_daily_review_excel([
-            {"isbn": cs_sku, "selected": "주문취소", "note": "고객 요청"},
-            {"isbn": warehouse_sku, "selected": "재고(한국)"},
-            {"isbn": nonwarehouse_sku, "selected": "북센"},
+            {"order_name": "#200711", "isbn": cs_sku, "selected": "주문취소", "note": "고객 요청"},
+            {"order_name": "#200712", "isbn": warehouse_sku, "selected": "재고(한국)"},
+            {"order_name": "#200713", "isbn": nonwarehouse_sku, "selected": "북센"},
         ])
         with patch(
             "order.purchase_order_views._recompute_order_aggregates",

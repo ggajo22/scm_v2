@@ -196,41 +196,74 @@ def _recompute_order_aggregates(order_ids) -> None:
 
 
 def _apply_logistics_transition(
-    matched_queryset,
-    all_skus: list[str],
+    rows: list[dict],
+    eligibility_filter: Q,
     target_status: str,
 ) -> tuple[int, int, set[int]]:
     """
-    Shared SKU-grouping/transition/bulk_update helper for
+    Shared (order_name, sku)-matching/transition/bulk_update helper for
     UploadVendorShipmentView (REQ-LOGI-003) and UploadWarehouseReceiptView
-    (REQ-LOGI-005). `matched_queryset` must already carry each view's own
-    eligibility filter plus `.select_for_update()`.
+    (REQ-LOGI-005). Safety fix: previously matched on SKU alone, which let a
+    shipment/receipt upload naming ONE order flip every LineItem sharing
+    that SKU across EVERY order (mirrors the SPEC-ORDER-015 outbound bug,
+    see _process_outbound_rows). `rows` is the parsed
+    {"name": str, "sku": str} list; `eligibility_filter` is each view's own
+    current-status Q gate, applied alongside the resolved order/sku filters.
 
     Counting convention mirrors UploadDailyReviewView (REQ-LOGI-004): counts
-    are per distinct SKU in `all_skus`, not per LineItem row — a SKU that
-    expands into multiple LineItem rows (bundle SKU) still counts once, and
-    `matched_count + skipped_count == len(all_skus)` always holds
-    (AC-LOGI-004).
+    are per distinct (order_name, sku) pair, not per LineItem row — a pair
+    that expands into multiple LineItem rows still counts once, and
+    `matched_count + skipped_count == len({(name, sku) for row in rows})`
+    always holds (AC-LOGI-004).
 
-    Returns (matched_sku_count, skipped_sku_count, affected_order_ids) —
+    Returns (matched_count, skipped_count, affected_order_ids) —
     `affected_order_ids` is collected from the already-fetched LineItem
     instances (zero extra queries), for the caller to pass to
     `_recompute_order_aggregates()`.
     """
-    lineitems_by_sku: dict[str, list] = defaultdict(list)
-    for li in matched_queryset:
-        lineitems_by_sku[li.sku].append(li)
+    pairs = {(row["name"], row["sku"]) for row in rows}
+
+    # Order.name carries no uniqueness constraint (unique_together is
+    # (shopify_order_id, store_type)), so several orders may share a name.
+    # `.order_by("pk")` + setdefault resolves that collision exactly like
+    # _process_outbound_rows does — oldest-wins — rather than inheriting
+    # whatever order MySQL happens to return rows in.
+    orders_by_name: dict[str, Order] = {}
+    names = {name for name, _ in pairs if name}
+    if names:
+        for candidate in Order.objects.filter(name__in=names).order_by("pk"):
+            orders_by_name.setdefault(candidate.name, candidate)
+
+    # One fetch for every eligible LineItem across all resolved orders,
+    # grouped by (order_id, sku) so the loop below is a dict lookup — mirrors
+    # _process_outbound_rows' single-fetch-then-python-group approach.
+    lineitems_by_key: dict[tuple[int, str], list] = defaultdict(list)
+    if orders_by_name:
+        skus = {sku for _, sku in pairs}
+        eligible = LineItem.objects.filter(
+            eligibility_filter,
+            order_id__in=[o.id for o in orders_by_name.values()],
+            sku__in=skus,
+        ).select_for_update()
+        for li in eligible:
+            lineitems_by_key[(li.order_id, li.sku)].append(li)
 
     matched_count = 0
     skipped_count = 0
     to_update: list = []
     affected_order_ids: set[int] = set()
 
-    for sku in all_skus:
-        lis = lineitems_by_sku.get(sku)
+    for name, sku in pairs:
+        order = orders_by_name.get(name) if name else None
+        if order is None:
+            skipped_count += 1
+            continue
+
+        lis = lineitems_by_key.get((order.id, sku))
         if not lis:
             skipped_count += 1
             continue
+
         for li in lis:
             li.logistics_status = target_status
             affected_order_ids.add(li.order_id)
@@ -1234,9 +1267,12 @@ class UploadDailyReviewView(APIView):
     Parses the Daily Review Excel file (legacy self-generated format or the
     external "Daily Order Review Template", auto-detected — SPEC-PURCHASE-ORDER-008),
     reads the '선택' column (Korean display name), and confirms purchase
-    orders for rows with a valid, recognized selection. Independently of that
-    selection, every row with a non-empty SKU also syncs BooxenData/KyoboData/
-    Yes24Data (Part B — REQ-PO8-014).
+    orders for rows with a valid, recognized selection. For non-warehouse
+    distributor codes (booxen/kyobo/yes24) this creates a new PurchaseOrder
+    with status="confirmed" — this upload IS the distributor's confirmed
+    response, unlike ConfirmOrderView's status="pending" staging step.
+    Independently of that selection, every row with a non-empty SKU also
+    syncs BooxenData/KyoboData/Yes24Data (Part B — REQ-PO8-014).
     Rows with empty or unrecognized '선택' are skipped from PO/CS/warehouse
     confirmation only.
 
@@ -1271,10 +1307,24 @@ class UploadDailyReviewView(APIView):
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
 
-        # Deduplicate by SKU — last row wins if same ISBN appears multiple times
+        # Deduplicate by SKU — last row wins if same ISBN appears multiple
+        # times. Part B (vendor-table sync, below) stays SKU-only: it's a
+        # per-book attribute (stock/price data), not an order-specific one.
         sku_map: dict[str, dict] = {}
+        # REQ-PO8-018: Part A (CS/warehouse/non-warehouse confirmation, the
+        # main loop further below) resolves independently per
+        # (order_name, sku) pair instead of collapsing by SKU alone — bug
+        # fix for real production data where two different orders sharing
+        # one SKU with DIFFERENT '선택' decisions silently lost one order's
+        # decision to the other's (the later row in the file won, and BOTH
+        # orders' LineItems ended up linked to the winning row's
+        # PurchaseOrder). Last-row-wins within the SAME (name, sku) pair is
+        # still fine — that is a genuine duplicate row, not a cross-order
+        # collision.
+        pair_map: dict[tuple[str, str], dict] = {}
         for row in parsed_rows:
             sku_map[row["sku"]] = row
+            pair_map[(row.get("name") or "", row["sku"])] = row
 
         confirmed_count = 0
         skipped_count = 0
@@ -1401,16 +1451,35 @@ class UploadDailyReviewView(APIView):
                     else {}
                 )
 
-                # REQ-PO9-004: a single filter(sku__in=...) query for every
-                # SKU's unordered LineItem set, grouped by SKU in Python,
-                # instead of one filter(sku=sku) query per SKU.
+                # REQ-PO8-018: Order.name resolution for the (order_name,
+                # sku)-scoped main loop below. Mirrors
+                # _apply_logistics_transition / _process_outbound_rows'
+                # oldest-pk-wins tie-break — Order.name carries no
+                # uniqueness constraint (unique_together is
+                # (shopify_order_id, store_type)), so several orders may
+                # share a name.
+                order_names = {name for name, _ in pair_map if name}
+                orders_by_name: dict[str, Order] = {}
+                if order_names:
+                    for candidate in Order.objects.filter(name__in=order_names).order_by("pk"):
+                        orders_by_name.setdefault(candidate.name, candidate)
+
+                # REQ-PO9-004 (REQ-PO8-018 update): a single filter query for
+                # every eligible LineItem across all resolved orders, grouped
+                # by (order_id, sku) in Python — an order-aware replacement
+                # for the previous SKU-only grouping that let one order's
+                # row apply its confirmation to every other order sharing
+                # the same SKU.
                 all_skus = list(sku_map.keys())
-                lineitems_by_sku: dict[str, list] = defaultdict(list)
-                for li in (
-                    _reorder_candidate_filter(LineItem.objects.filter(sku__in=all_skus))
-                    .select_for_update()
-                ):
-                    lineitems_by_sku[li.sku].append(li)
+                lineitems_by_key: dict[tuple[int, str], list] = defaultdict(list)
+                if orders_by_name:
+                    order_ids = [o.id for o in orders_by_name.values()]
+                    for li in (
+                        _reorder_candidate_filter(
+                            LineItem.objects.filter(sku__in=all_skus, order_id__in=order_ids)
+                        ).select_for_update()
+                    ):
+                        lineitems_by_key[(li.order_id, li.sku)].append(li)
 
                 # REQ-PO9-005: LineItemNote instances collected here and
                 # inserted with a single bulk_create() after the loop,
@@ -1428,20 +1497,34 @@ class UploadDailyReviewView(APIView):
                 # batched Case/When update after the loop — see the
                 # investigation note below the loop for why this is safe.
                 warehouse_stock_entries: list[tuple[str, str, int]] = []
-                # REQ-PO9-007: PurchaseOrder instances for the non-warehouse
-                # branch, collected here and inserted with a single
-                # bulk_create() after the loop instead of one create() call
-                # per SKU — see the investigation note below the loop for
-                # the M2M-linking strategy.
+                # REQ-PO9-007 (REQ-PO8-018 update): non-warehouse-branch
+                # LineItems, grouped by (sku, distributor) rather than by
+                # sku alone — this is what lets the PurchaseOrder-creation
+                # step below batch multiple orders that genuinely agree on
+                # the same distributor into one PurchaseOrder (preserving
+                # the pre-existing batching behavior), while no longer
+                # letting a DIFFERENT order's warehouse/CS/other-distributor
+                # choice for the same SKU get folded into that group.
+                # `po_creates` is built from this dict after the loop; see
+                # the investigation note below the loop for the M2M-linking
+                # strategy.
                 po_creates: list = []
-                po_lineitems_by_sku: dict[str, list] = {}
+                po_group_lineitems: dict[tuple[str, str], list] = defaultdict(list)
 
-                for sku, item in sku_map.items():
+                for (name, sku), item in pair_map.items():
+                    order = orders_by_name.get(name) if name else None
+                    if order is None:
+                        # Blank order-name cell, or a name that does not
+                        # match any Order — same skip convention as
+                        # _apply_logistics_transition / _process_outbound_rows.
+                        skipped_count += 1
+                        continue
+
                     distributor_code = item["distributor"]
                     note = item.get("note")
                     note_type = item.get("note_type")
 
-                    unordered_lis = lineitems_by_sku.get(sku, [])
+                    unordered_lis = lineitems_by_key.get((order.id, sku), [])
 
                     if not unordered_lis:
                         skipped_count += 1
@@ -1526,12 +1609,13 @@ class UploadDailyReviewView(APIView):
                                 )
 
                     else:
-                        # Non-warehouse: create PurchaseOrder. Prefer prices
-                        # from the Excel file; fall back to DB.
-                        # REQ-PO9-007: the PurchaseOrder itself is collected
-                        # here and bulk-created after the loop; the M2M
-                        # `line_items` link is deferred and batched too —
-                        # see the investigation note below the loop.
+                        # Non-warehouse: accumulate into this row's own
+                        # (sku, distributor) group instead of creating a
+                        # PurchaseOrder immediately (REQ-PO8-018) — the
+                        # actual PurchaseOrder rows are materialized from
+                        # `po_group_lineitems` after the loop, once every
+                        # row's own decision has been resolved. Prefer
+                        # prices from the Excel file; fall back to DB.
                         unit_price = None
                         if distributor_code == "booxen":
                             unit_price = item.get("bs_price")
@@ -1547,18 +1631,6 @@ class UploadDailyReviewView(APIView):
                             if unit_price is None:
                                 unit_price = yes24_price_by_sku.get(sku)
 
-                        po_creates.append(
-                            PurchaseOrder(
-                                sku=sku,
-                                title=title,
-                                distributor=distributor_code,
-                                quantity=total_qty,
-                                unit_price=unit_price,
-                                status="pending",
-                            )
-                        )
-                        po_lineitems_by_sku[sku] = unordered_lis
-
                         for li in unordered_lis:
                             li.confirmed_distributor = distributor_code
                             li.confirmed_price = unit_price
@@ -1568,6 +1640,12 @@ class UploadDailyReviewView(APIView):
                             if li.purchase_status == "damaged_exchange":
                                 li.purchase_status = "unordered"
                         nonwarehouse_li_updates.extend(unordered_lis)
+                        # First-processed row for a given (sku, distributor)
+                        # group determines the resulting PurchaseOrder's
+                        # title/unit_price — the post-loop build reads those
+                        # back off group_lis[0] (already set above) instead
+                        # of tracking a second per-group dict.
+                        po_group_lineitems[(sku, distributor_code)].extend(unordered_lis)
 
                     # REQ-PO5-007: Track confirmed by distributor
                     confirmed_by_distributor.setdefault(distributor_code, []).append(
@@ -1575,21 +1653,29 @@ class UploadDailyReviewView(APIView):
                     )
                     confirmed_count += 1
 
-                # REQ-PO9-006 investigation: the floor-at-0 deduction for a
-                # given WarehouseStock row depends only on that row's own
-                # current `quantity` (via Case/When quantity__gte=total_qty)
-                # — never on any other row's value. Within one upload,
-                # sku_map has already deduplicated by SKU (last row wins),
-                # and WarehouseStock.Meta.unique_together is (isbn,
-                # location) with isbn == sku here, so every (sku, location)
-                # pair collected into warehouse_stock_entries during this
-                # call is unique — no SKU/location combination can be
-                # deducted twice in the same upload. Batching into a single
-                # Case/When update is therefore safe.
+                # REQ-PO9-006 investigation (REQ-PO8-018 update): the
+                # floor-at-0 deduction for a given WarehouseStock row
+                # depends only on that row's own current `quantity` (via
+                # Case/When quantity__gte=total_qty) — never on any other
+                # row's value. This previously relied on sku_map's SKU-only
+                # dedup to guarantee each (sku, location) pair appeared at
+                # most once per upload; now that Part A resolves rows
+                # independently per (order_name, sku), two DIFFERENT orders
+                # can legitimately pick the SAME warehouse location for the
+                # SAME sku within one upload, so entries are aggregated by
+                # (sku, location) here before building the Case/When list —
+                # a duplicate When clause for the same isbn+location would
+                # otherwise only apply the FIRST matching entry (Case takes
+                # the first true When), silently dropping the other order's
+                # deduction.
                 if warehouse_stock_entries:
+                    aggregated_stock_entries: dict[tuple[str, str], int] = defaultdict(int)
+                    for entry_sku, loc, entry_qty in warehouse_stock_entries:
+                        aggregated_stock_entries[(entry_sku, loc)] += entry_qty
+
                     stock_filter = Q()
                     case_whens = []
-                    for entry_sku, loc, total_qty in warehouse_stock_entries:
+                    for (entry_sku, loc), total_qty in aggregated_stock_entries.items():
                         stock_filter |= Q(isbn=entry_sku, location=loc)
                         case_whens.append(
                             When(
@@ -1639,10 +1725,41 @@ class UploadDailyReviewView(APIView):
                 }
                 _recompute_order_aggregates(affected_order_ids)
 
-                # REQ-PO9-007: batch-create every non-warehouse-branch
-                # PurchaseOrder in a single bulk_create(), then batch-link
-                # the M2M `line_items` relation through the through-table's
-                # own bulk_create() instead of one `.add()` call per PO.
+                # REQ-PO8-018: materialize one PurchaseOrder per (sku,
+                # distributor) group now that non-warehouse rows accumulate
+                # by that key instead of by SKU alone — this is what
+                # preserves batching for orders that genuinely agree on the
+                # same distributor (quantity is the sum across every
+                # LineItem in the group, spanning however many orders
+                # contributed to it) while no longer letting a different
+                # order's warehouse/CS/other-distributor choice for the same
+                # SKU get folded in. group_lis[0] carries the
+                # first-processed row's own title/confirmed_price (already
+                # set in the loop above), reproducing the original per-SKU
+                # first-seen-wins fallback resolution without a second dict.
+                for (group_sku, group_distributor), group_lis in po_group_lineitems.items():
+                    first_li = group_lis[0]
+                    po_creates.append(
+                        PurchaseOrder(
+                            sku=group_sku,
+                            title=first_li.title or group_sku,
+                            distributor=group_distributor,
+                            quantity=sum(li.quantity or 0 for li in group_lis),
+                            unit_price=first_li.confirmed_price,
+                            # Daily Review upload reflects the distributor's
+                            # actual confirmed response, so the PO it creates
+                            # starts "confirmed" rather than "pending" — unlike
+                            # ConfirmOrderView, which stages a PO before that
+                            # response exists.
+                            status="confirmed",
+                        )
+                    )
+
+                # REQ-PO9-007 (REQ-PO8-018 update): batch-create every
+                # non-warehouse-branch PurchaseOrder in a single
+                # bulk_create(), then batch-link the M2M `line_items`
+                # relation through the through-table's own bulk_create()
+                # instead of one `.add()` call per PO.
                 #
                 # Empirically verified (throwaway test against this
                 # project's real MySQL backend, Django 5.1.6): objects
@@ -1658,17 +1775,20 @@ class UploadDailyReviewView(APIView):
                 #    call.
                 # 2. Re-query PurchaseOrder rows by
                 #    `sku__in=<this batch's SKUs>` AND
-                #    `created_at__gte=t_before`, which — combined with the
-                #    fact that `sku_map` (top of this method) has already
-                #    deduplicated the uploaded rows by SKU, so this branch
-                #    creates at most one PurchaseOrder per SKU per upload
-                #    call — reliably yields exactly one row per SKU in the
-                #    overwhelmingly common case.
-                # 3. If a SKU somehow yields more than one match in that
-                #    narrow window (e.g. a genuinely concurrent request
-                #    creating a PurchaseOrder for the same SKU), keep the
-                #    highest-pk (most recently inserted) row for that SKU,
-                #    since it is the one this call just inserted.
+                #    `created_at__gte=t_before`, grouped by (sku,
+                #    distributor) — REQ-PO8-018 update: the same SKU can now
+                #    legitimately have multiple simultaneous POs to
+                #    different distributors within one batch (structurally
+                #    possible before too, but now the primary grouping key
+                #    since `po_group_lineitems` is keyed by
+                #    (sku, distributor)), so disambiguation must include
+                #    distributor, not SKU alone.
+                # 3. If a (sku, distributor) pair somehow yields more than
+                #    one match in that narrow window (e.g. a genuinely
+                #    concurrent request creating a PurchaseOrder for the
+                #    same sku+distributor), keep the highest-pk (most
+                #    recently inserted) row for that pair, since it is the
+                #    one this call just inserted.
                 #
                 # This trades one extra SELECT for the batch (still O(1),
                 # not O(N)) in exchange for correctness without a fragile
@@ -1677,23 +1797,24 @@ class UploadDailyReviewView(APIView):
                     t_before_bulk_create = timezone.now()
                     PurchaseOrder.objects.bulk_create(po_creates)
 
-                    po_skus = list(po_lineitems_by_sku.keys())
-                    po_by_sku: dict[str, PurchaseOrder] = {}
+                    po_skus = {group_sku for group_sku, _ in po_group_lineitems}
+                    po_by_group: dict[tuple[str, str], PurchaseOrder] = {}
                     for po in PurchaseOrder.objects.filter(
                         sku__in=po_skus, created_at__gte=t_before_bulk_create
                     ):
-                        existing = po_by_sku.get(po.sku)
+                        group_key = (po.sku, po.distributor)
+                        existing = po_by_group.get(group_key)
                         if existing is None or po.pk > existing.pk:
-                            po_by_sku[po.sku] = po
+                            po_by_group[group_key] = po
 
                     through_model = PurchaseOrder.line_items.through
                     through_rows = [
                         through_model(
-                            purchaseorder_id=po_by_sku[sku].pk,
+                            purchaseorder_id=po_by_group[group_key].pk,
                             lineitem_id=li.pk,
                         )
-                        for sku, unordered_lis in po_lineitems_by_sku.items()
-                        for li in unordered_lis
+                        for group_key, group_lis in po_group_lineitems.items()
+                        for li in group_lis
                     ]
                     if through_rows:
                         through_model.objects.bulk_create(through_rows)
@@ -1726,11 +1847,12 @@ class UploadVendorShipmentView(APIView):
 
     Multipart: file (.xlsx)
     REQ-LOGI-003/004: parses a vendor-shipment-confirmation Excel file
-    (SKU-only PLACEHOLDER schema — see
-    excel_utils.parse_vendor_shipment_excel) and transitions matching
-    LineItems' logistics_status from "not_shipped" to "shipment_confirmed".
-    Matching rule: purchase_status != "unordered" AND
-    logistics_status == "not_shipped".
+    ((order_name, SKU) schema — see excel_utils.parse_vendor_shipment_excel)
+    and transitions matching LineItems' logistics_status from "not_shipped"
+    to "shipment_confirmed". Matching rule: (Order.name, sku) exact match
+    AND purchase_status != "unordered" AND logistics_status == "not_shipped"
+    (REQ-LOGI-003b safety fix — SKU alone previously matched every order
+    sharing that SKU; same-name collisions resolve oldest-Order-wins).
     """
 
     authentication_classes = [JWTAuthentication]
@@ -1754,21 +1876,13 @@ class UploadVendorShipmentView(APIView):
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
 
-        # REQ-LOGI-003a: last row wins per SKU
-        sku_map: dict[str, dict] = {}
-        for row in parsed_rows:
-            sku_map[row["sku"]] = row
-
         try:
             with transaction.atomic():
-                all_skus = list(sku_map.keys())
-                queryset = (
-                    LineItem.objects.filter(sku__in=all_skus, logistics_status="not_shipped")
-                    .exclude(purchase_status="unordered")
-                    .select_for_update()
+                eligibility_filter = Q(logistics_status="not_shipped") & ~Q(
+                    purchase_status="unordered"
                 )
                 matched_count, skipped_count, affected_order_ids = _apply_logistics_transition(
-                    queryset, all_skus, "shipment_confirmed"
+                    parsed_rows, eligibility_filter, "shipment_confirmed"
                 )
                 _recompute_order_aggregates(affected_order_ids)
         except Exception as exc:
@@ -1785,20 +1899,234 @@ class UploadVendorShipmentView(APIView):
         )
 
 
+def _process_warehouse_receipt_rows(rows: list[dict]) -> dict:
+    """
+    SPEC-ORDER-011 REQ-LOGI-015/016: match, judge and apply warehouse-
+    receiving counts for a batch of rows, atomically. Mirrors
+    `_process_outbound_rows` (SPEC-ORDER-015) structurally, but the row
+    shape is {"name": str, "sku": str} (see
+    `excel_utils.parse_warehouse_receipt_excel`, which now delegates to
+    `_parse_name_sku_xlsx`) — there is no quantity column. Each row is
+    exactly one physically received unit, so `received_count` below is a
+    COUNT of rows sharing an (order name, sku) key, not a summed `total`
+    column (REQ-LOGI-016, design correction — supersedes the REQ-LOGI-005c
+    3-column contract this function previously matched). Everything
+    downstream of that count is unchanged from REQ-LOGI-015:
+    `received_quantity` / `received_at` accumulation in place of
+    `shipped_quantity` / `shipped_at`, and logistics_status="received" in
+    place of "shipped".
+
+    Deliberately WITHOUT the outbound function's "total == 0 as a
+    US-warehouse completion signal" special case (REQ-OUTBOUND-009-area) —
+    a row-per-unit format has no cell that can read 0, so that branch has no
+    analog here.
+
+    Eligibility gate is unchanged from the pre-quantity-model behavior:
+    logistics_status IN ("not_shipped", "shipment_confirmed") — this is what
+    allows the direct 미입고 -> 입고 path when a vendor never sent a
+    shipment-confirmation upload, and it stays satisfied across multiple
+    partial-receipt uploads because logistics_status is left untouched below
+    the completion threshold (REQ-LOGI-015a).
+
+    Returns a dict with `matched` / `unmatched` / `quantity_exceeded` item
+    lists, their `*_count` totals, and `affected_order_ids` (only orders
+    whose LineItem was actually written, for the caller to pass to
+    `_recompute_order_aggregates()`). `UploadWarehouseReceiptView` collapses
+    this into the pre-existing {"matched_count", "skipped_count"} response
+    shape — the detailed categorization here is internal only.
+    """
+    matched: list[dict] = []
+    unmatched: list[dict] = []
+    quantity_exceeded: list[dict] = []
+    affected_order_ids: set[int] = set()
+
+    # REQ-LOGI-016: rows sharing an (order name, sku) key are COUNTED — each
+    # row is one received unit — before any matching or quantity judgement.
+    # Same grouping-before-matching structure as REQ-OUTBOUND-007's
+    # summation, just counting instead of summing a quantity cell.
+    grouped: dict[tuple[str, str], int] = {}
+    for row in rows:
+        order_name = str(row.get("name") or "").strip()
+        sku = str(row.get("sku") or "").strip()
+
+        # No quantity column exists to validate anymore; the only invalid
+        # shape left is a blank order name or blank SKU, neither of which
+        # can form a usable grouping key. `_parse_name_sku_xlsx` already
+        # drops blank-SKU rows before they reach here, but a blank
+        # order-name row still flows through (same convention as
+        # parse_outbound_excel/parse_rack_number_excel), so it is rejected
+        # here instead — reusing `_process_outbound_rows`' "invalid_row"
+        # reason for a row that cannot be processed.
+        if not order_name or not sku:
+            unmatched.append(
+                {
+                    "name": order_name,
+                    "sku": sku,
+                    "received_count": 0,
+                    "reason": "invalid_row",
+                }
+            )
+            continue
+
+        key = (order_name, sku)
+        grouped[key] = grouped.get(key, 0) + 1
+
+    # One transaction for the whole batch, so a failure part-way through
+    # leaves no partially-applied rows behind.
+    with transaction.atomic():
+        orders_by_name: dict[str, Order] = {}
+        if grouped:
+            name_matches = Order.objects.filter(
+                name__in={name for name, _ in grouped}
+            ).order_by("pk")
+            for candidate in name_matches:
+                orders_by_name.setdefault(candidate.name, candidate)
+
+        # REQ-LOGI-005b safety fix carries over: eligibility is gated by
+        # logistics_status here (unlike outbound, which has none), scoped to
+        # the resolved orders/skus in one query.
+        line_items_by_key: dict[tuple[int, str], list[LineItem]] = {}
+        if orders_by_name:
+            sku_matches = LineItem.objects.filter(
+                logistics_status__in=["not_shipped", "shipment_confirmed"],
+                order_id__in=[o.id for o in orders_by_name.values()],
+                sku__in={sku for _, sku in grouped},
+            ).order_by("pk")
+            for candidate_item in sku_matches:
+                line_items_by_key.setdefault(
+                    (candidate_item.order_id, candidate_item.sku), []
+                ).append(candidate_item)
+
+        to_update: list[LineItem] = []
+
+        for (order_name, sku), received_count in grouped.items():
+            order = orders_by_name.get(order_name)
+            if order is None:
+                unmatched.append(
+                    {
+                        "name": order_name,
+                        "sku": sku,
+                        "received_count": received_count,
+                        "reason": "order_not_found",
+                    }
+                )
+                continue
+
+            # Only an exact single match is actionable — zero matches and 2+
+            # matches are both reported unmatched, same as
+            # _process_outbound_rows (no rule for splitting a count across
+            # ambiguous candidates).
+            candidates = line_items_by_key.get((order.id, sku), [])
+            if len(candidates) != 1:
+                unmatched.append(
+                    {
+                        "name": order_name,
+                        "sku": sku,
+                        "received_count": received_count,
+                        "reason": (
+                            "line_item_not_found" if not candidates else "multiple_line_items"
+                        ),
+                    }
+                )
+                continue
+
+            line_item = candidates[0]
+            # NULL quantity == 0 capacity, same convention as REQ-OUTBOUND-009.
+            effective_quantity = line_item.quantity or 0
+
+            if line_item.received_quantity + received_count > effective_quantity:
+                quantity_exceeded.append(
+                    {
+                        "name": order_name,
+                        "sku": sku,
+                        "received_count": received_count,
+                        "line_item_id": line_item.id,
+                        "received_quantity": line_item.received_quantity,
+                        "quantity": line_item.quantity,
+                        "reason": "quantity_exceeded",
+                    }
+                )
+                continue
+
+            # REQ-LOGI-015: accumulate and stamp the processing time.
+            line_item.received_quantity += received_count
+            line_item.received_at = timezone.now()
+
+            # Advance to "received" only once the cumulative quantity reaches
+            # `quantity`; below that threshold logistics_status is left
+            # exactly as it was (so the eligibility filter above still
+            # matches it on a later partial-completing upload).
+            if line_item.received_quantity >= effective_quantity:
+                line_item.logistics_status = "received"
+
+            to_update.append(line_item)
+            affected_order_ids.add(order.id)
+            matched.append(
+                {
+                    "name": order_name,
+                    "sku": sku,
+                    "received_count": received_count,
+                    "line_item_id": line_item.id,
+                    "received_quantity": line_item.received_quantity,
+                    "quantity": line_item.quantity,
+                    "logistics_status": line_item.logistics_status,
+                }
+            )
+
+        if to_update:
+            LineItem.objects.bulk_update(
+                to_update, ["received_quantity", "received_at", "logistics_status"]
+            )
+
+    return {
+        "matched": matched,
+        "unmatched": unmatched,
+        "quantity_exceeded": quantity_exceeded,
+        "matched_count": len(matched),
+        "unmatched_count": len(unmatched),
+        "quantity_exceeded_count": len(quantity_exceeded),
+        "affected_order_ids": affected_order_ids,
+    }
+
+
 class UploadWarehouseReceiptView(APIView):
     """
     POST /api/purchase-orders/upload-warehouse-receipt/
 
     Multipart: file (.xlsx)
-    REQ-LOGI-005/006: parses a warehouse-receiving-results Excel file
-    (SKU-only PLACEHOLDER schema — see
-    excel_utils.parse_warehouse_receipt_excel) and transitions matching
-    LineItems' logistics_status to "received". Matching rule:
+    REQ-LOGI-016: parses a warehouse-receiving-results Excel file (order
+    name / SKU schema, NO quantity column — see
+    excel_utils.parse_warehouse_receipt_excel, which now delegates to
+    _parse_name_sku_xlsx). Each row represents exactly one physically
+    received unit, so repeated (order name, sku) rows express the received
+    quantity; _process_warehouse_receipt_rows COUNTS rows per key and
+    ACCUMULATES that count into LineItem.received_quantity
+    (SPEC-ORDER-015-style quantity model, otherwise unchanged), stamping
+    received_at on every matched row. logistics_status only advances to
+    "received" once received_quantity reaches quantity — a partial receipt
+    leaves logistics_status untouched, so a later upload can complete it
+    (REQ-LOGI-015a). Matching rule: (Order.name, sku) exact match AND
     logistics_status IN ("not_shipped", "shipment_confirmed") — allows the
     direct 미입고 -> 입고 path when the vendor never sent a shipment
-    confirmation (Decision C). Never touches WarehouseStock.quantity
-    (Decision B / REQ-LOGI-006) — this transition is a pure LineItem status
-    flag, not an inventory event.
+    confirmation (Decision C, unchanged from REQ-LOGI-005). REQ-LOGI-005b
+    safety fix still applies: SKU alone would match every order sharing
+    that SKU; same-name collisions resolve oldest-Order-wins. A row count
+    that would push received_quantity past quantity is rejected as
+    quantity_exceeded with no partial write; a row with a blank order name
+    or blank SKU is rejected as invalid_row before matching (REQ-LOGI-016).
+    Never touches WarehouseStock.quantity (Decision B / REQ-LOGI-006) — this
+    remains a pure LineItem field, not an inventory event.
+
+    Response carries the pre-existing counts plus, since REQ-LOGI-017, the
+    three per-row detail lists so the UI can show WHICH rows were skipped
+    and why: {"matched_count", "skipped_count", "matched", "unmatched",
+    "unmatched_count", "quantity_exceeded", "quantity_exceeded_count"} —
+    the same three-category payload OutboundProcessView returns
+    (REQ-OUTBOUND-014). matched_count counts distinct (name, sku) pairs that
+    accumulated some quantity this call (whether or not that crossed the
+    "received" threshold); skipped_count keeps its original meaning as the
+    sum of unmatched_count and quantity_exceeded_count — same per-pair
+    counting convention as REQ-LOGI-004.
     """
 
     authentication_classes = [JWTAuthentication]
@@ -1822,22 +2150,10 @@ class UploadWarehouseReceiptView(APIView):
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
 
-        # REQ-LOGI-005a: same last-row-wins dedup as REQ-LOGI-003a
-        sku_map: dict[str, dict] = {}
-        for row in parsed_rows:
-            sku_map[row["sku"]] = row
-
         try:
             with transaction.atomic():
-                all_skus = list(sku_map.keys())
-                queryset = LineItem.objects.filter(
-                    sku__in=all_skus,
-                    logistics_status__in=["not_shipped", "shipment_confirmed"],
-                ).select_for_update()
-                matched_count, skipped_count, affected_order_ids = _apply_logistics_transition(
-                    queryset, all_skus, "received"
-                )
-                _recompute_order_aggregates(affected_order_ids)
+                result = _process_warehouse_receipt_rows(parsed_rows)
+                _recompute_order_aggregates(result["affected_order_ids"])
         except Exception as exc:
             # REQ-LOGI-005a: same all-or-nothing behavior as REQ-LOGI-003b
             return Response(
@@ -1845,8 +2161,23 @@ class UploadWarehouseReceiptView(APIView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
+        # REQ-LOGI-017: the per-row detail lists `_process_warehouse_receipt_rows`
+        # already builds are now surfaced, so an operator can see WHICH rows were
+        # skipped and why instead of only a tally — same three-category payload
+        # OutboundProcessView returns (REQ-OUTBOUND-014), so the frontend can
+        # reuse its result-table rendering. `matched_count` / `skipped_count` are
+        # kept unchanged for backward compatibility; `skipped_count` remains the
+        # sum of the two failure categories broken out below.
         return Response(
-            {"matched_count": matched_count, "skipped_count": skipped_count},
+            {
+                "matched_count": result["matched_count"],
+                "skipped_count": result["unmatched_count"] + result["quantity_exceeded_count"],
+                "matched": result["matched"],
+                "unmatched": result["unmatched"],
+                "unmatched_count": result["unmatched_count"],
+                "quantity_exceeded": result["quantity_exceeded"],
+                "quantity_exceeded_count": result["quantity_exceeded_count"],
+            },
             status=status.HTTP_200_OK,
         )
 

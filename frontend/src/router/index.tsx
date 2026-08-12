@@ -120,6 +120,13 @@ export const router = createBrowserRouter([
             },
           },
           {
+            path: '/inbound',
+            lazy: async () => {
+              const { InboundPage } = await import('@/pages/InboundPage')
+              return { Component: InboundPage }
+            },
+          },
+          {
             path: '/outbound',
             lazy: async () => {
               const { OutboundPage } = await import('@/pages/OutboundPage')
