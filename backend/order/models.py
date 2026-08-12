@@ -315,7 +315,13 @@ class Refund(models.Model):
 
     class Meta:
         db_table = "orders_refund"
-        unique_together = [("order", "shopify_refund_id")]
+        # One row per REFUNDED LINE ITEM, not per Shopify refund. A single
+        # Shopify refund can cover several line items (e.g. a customer
+        # cancelling two books at once); keying on shopify_refund_id alone
+        # made every line item after the first unstorable, so their refunds
+        # were silently dropped and the items kept counting as live stock in
+        # every refund-netting query.
+        unique_together = [("order", "shopify_refund_id", "line_item_id")]
 
 
 class PurchaseOrder(models.Model):

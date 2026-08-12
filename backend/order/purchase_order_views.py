@@ -2622,21 +2622,55 @@ class LineItemRackNumberSummaryView(APIView):
     single unassigned bucket (REQ-RACKSUM-004a) rather than dropped.
     Also excludes LineItems with purchase_status="order_cancelled",
     mirroring the same exclusion used elsewhere for cancelled purchases.
+    Refunded (주문취소) quantities are netted out the same way
+    UnorderedItemsView does: a fully refunded LineItem is dropped entirely and
+    a partially refunded one reports only its remaining quantity.
     """
 
     authentication_classes = [JWTAuthentication]
     permission_classes = [IsAuthenticated]
 
     def get(self, request) -> Response:
+        # Total refunded qty per (order_id, shopify_line_item_id) — identical
+        # subquery to UnorderedItemsView's. Refund rows carry Shopify's
+        # line_item_id, not the local LineItem pk, so both keys are needed.
+        refund_sum_sq = (
+            Refund.objects.filter(
+                order_id=OuterRef("order_id"),
+                line_item_id=OuterRef("shopify_line_item_id"),
+            )
+            .values("order_id", "line_item_id")
+            .annotate(total=Sum("quantity"))
+            .values("total")[:1]
+        )
+
         line_items = (
             LineItem.objects.exclude(logistics_status="shipped")
             .exclude(purchase_status="order_cancelled")
+            .annotate(
+                refunded_qty=Coalesce(
+                    Subquery(refund_sum_sq, output_field=IntegerField()),
+                    0,
+                )
+            )
             .select_related("order")
             .order_by("rack_number", "order__order_number")
         )
 
         groups: dict[str, dict] = {}
         for li in line_items:
+            # REQ-RACKSUM-005: null quantity treated as 0, mirroring
+            # UnorderedItemsView's `li.quantity or 0` convention.
+            net_qty = max((li.quantity or 0) - li.refunded_qty, 0)
+            if li.refunded_qty and net_qty == 0:
+                # Fully refunded — the sale is cancelled, so the item is no
+                # longer sitting on a rack waiting to ship. Same skip
+                # UnorderedItemsView applies. Guarded on `refunded_qty` so an
+                # unrefunded LineItem with a NULL/0 quantity keeps its
+                # pre-existing behaviour (listed, counted as 0) — that case is
+                # a data gap, not a cancellation.
+                continue
+
             key = li.rack_number  # "" -> unassigned bucket (REQ-RACKSUM-004a)
             group = groups.setdefault(
                 key,
@@ -2647,16 +2681,17 @@ class LineItemRackNumberSummaryView(APIView):
                     "line_items": [],
                 },
             )
-            # REQ-RACKSUM-005: null quantity treated as 0, mirroring
-            # UnorderedItemsView's `li.quantity or 0` convention.
-            group["total_quantity"] += li.quantity or 0
+            group["total_quantity"] += net_qty
             group["line_items"].append(
                 {
                     "id": li.id,
                     "order_name": li.order.name,
                     "sku": li.sku,
                     "title": li.title,
-                    "quantity": li.quantity,
+                    # Unrefunded items pass `quantity` through verbatim
+                    # (NULL stays NULL, per the original contract); only a
+                    # partial refund substitutes the remaining amount.
+                    "quantity": net_qty if li.refunded_qty else li.quantity,
                     "logistics_status": li.logistics_status,
                 }
             )

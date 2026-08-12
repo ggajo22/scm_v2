@@ -24,7 +24,7 @@ from django.contrib.auth import get_user_model
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from order.models import LineItem, Order
+from order.models import LineItem, Order, Refund
 
 User = get_user_model()
 
@@ -328,6 +328,108 @@ class TestOrderCancelledExclusion:
         assert response.status_code == 200
         skus = {item["sku"] for item in _flatten_line_items(response.json()["groups"])}
         assert "SKU-NOT-CANCELLED" in skus
+
+
+@pytest.mark.django_db
+class TestRefundExclusion:
+    """Regression: a fully refunded (주문취소된) LineItem must not appear in the
+    rack-number summary, and a partially refunded one must contribute only its
+    net (quantity - refunded) amount.
+
+    Same rule UnorderedItemsView / the reorder-candidate views already apply —
+    the summary view was the only cross-order LineItem list that skipped it,
+    so cancelled items kept showing up under their rack number."""
+
+    def _refund(self, order, line_item, quantity, shopify_refund_id=900001):
+        return Refund.objects.create(
+            order=order,
+            shopify_refund_id=shopify_refund_id,
+            line_item_id=line_item.shopify_line_item_id,
+            quantity=quantity,
+        )
+
+    def test_fully_refunded_line_item_is_excluded(self, auth_client):
+        order = _make_order()
+        li = _make_line_item(
+            order,
+            sku="SKU-REFUNDED-FULL",
+            rack_number="R-1",
+            quantity=1,
+            logistics_status="not_shipped",
+        )
+        self._refund(order, li, 1)
+
+        response = auth_client.get(RACK_SUMMARY_URL)
+
+        assert response.status_code == 200
+        skus = {item["sku"] for item in _flatten_line_items(response.json()["groups"])}
+        assert "SKU-REFUNDED-FULL" not in skus
+
+    def test_partially_refunded_line_item_contributes_net_quantity(self, auth_client):
+        order = _make_order()
+        li = _make_line_item(
+            order,
+            sku="SKU-REFUNDED-PART",
+            rack_number="R-2",
+            quantity=3,
+            logistics_status="not_shipped",
+        )
+        self._refund(order, li, 1)
+
+        response = auth_client.get(RACK_SUMMARY_URL)
+
+        assert response.status_code == 200
+        group = _find_group(response.json()["groups"], "R-2")
+        assert group is not None
+        assert group["total_quantity"] == 2
+        assert group["line_items"][0]["quantity"] == 2
+
+    def test_unrefunded_line_item_keeps_full_quantity(self, auth_client):
+        order = _make_order()
+        _make_line_item(
+            order,
+            sku="SKU-NO-REFUND",
+            rack_number="R-3",
+            quantity=2,
+            logistics_status="not_shipped",
+        )
+
+        response = auth_client.get(RACK_SUMMARY_URL)
+
+        assert response.status_code == 200
+        group = _find_group(response.json()["groups"], "R-3")
+        assert group is not None
+        assert group["total_quantity"] == 2
+        assert group["line_items"][0]["quantity"] == 2
+
+    def test_refund_of_another_order_does_not_leak(self, auth_client):
+        """Refund rows are keyed by (order_id, shopify_line_item_id) — a refund
+        recorded under a different Order must not suppress this LineItem."""
+        order_a = _make_order(shopify_order_id=400901)
+        order_b = _make_order(shopify_order_id=400902)
+        li_a = _make_line_item(
+            order_a,
+            shopify_line_item_id=7001,
+            sku="SKU-CROSS-A",
+            rack_number="R-4",
+            quantity=1,
+            logistics_status="not_shipped",
+        )
+        _make_line_item(
+            order_b,
+            shopify_line_item_id=7001,
+            sku="SKU-CROSS-B",
+            rack_number="R-4",
+            quantity=1,
+            logistics_status="not_shipped",
+        )
+        self._refund(order_a, li_a, 1)
+
+        response = auth_client.get(RACK_SUMMARY_URL)
+
+        skus = {item["sku"] for item in _flatten_line_items(response.json()["groups"])}
+        assert "SKU-CROSS-A" not in skus
+        assert "SKU-CROSS-B" in skus
 
 
 @pytest.mark.django_db

@@ -269,20 +269,28 @@ def _sync_single_order(order_data, store_type, location_code="", line_item_locat
 
     order_obj.refunds.all().delete()
     for refund_data in order_data.get("refunds", []):
+        # One Refund row PER refund_line_item. A Shopify refund is a container
+        # that can hold several refunded line items at once; storing only
+        # `refund_line_items[0]` (the previous behaviour) dropped every
+        # additional item, so the refund-netting subqueries in
+        # purchase_order_views treated those items as never refunded.
         refund_line_items = refund_data.get("refund_line_items", [])
-        first_rli = refund_line_items[0] if refund_line_items else {}
-        Refund.objects.update_or_create(
-            order=order_obj,
-            shopify_refund_id=refund_data["id"],
-            defaults={
-                "note": refund_data.get("note"),
-                "shopify_created_at": refund_data.get("created_at"),
-                "line_item_id": first_rli.get("line_item_id"),
-                "quantity": first_rli.get("quantity"),
-                "subtotal": _decimal_or_none(first_rli.get("subtotal")),
-                "total_tax": _decimal_or_none(first_rli.get("total_tax")),
-            },
-        )
+        for rli in refund_line_items or [{}]:
+            # `or [{}]` keeps a refund with no line items (e.g. a pure
+            # shipping refund) recorded as a header-only row, matching what
+            # the previous code stored for that case.
+            Refund.objects.update_or_create(
+                order=order_obj,
+                shopify_refund_id=refund_data["id"],
+                line_item_id=rli.get("line_item_id"),
+                defaults={
+                    "note": refund_data.get("note"),
+                    "shopify_created_at": refund_data.get("created_at"),
+                    "quantity": rli.get("quantity"),
+                    "subtotal": _decimal_or_none(rli.get("subtotal")),
+                    "total_tax": _decimal_or_none(rli.get("total_tax")),
+                },
+            )
 
     return "created" if created else "updated"
 
