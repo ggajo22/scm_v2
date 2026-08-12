@@ -90,20 +90,6 @@ def _make_name_sku_excel(rows: list, header=("주문번호", "SKU", "기타컬�
     return buf.getvalue()
 
 
-def _make_name_sku_total_excel(rows: list, header=("주문번호", "SKU", "수량")) -> bytes:
-    """Build an (order_name, SKU, total) .xlsx file — REQ-LOGI-015 quantity-
-    accumulation schema used by UploadWarehouseReceiptView. `rows` is a list
-    of (name, sku, total) tuples."""
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.append(list(header))
-    for name, sku, total in rows:
-        ws.append([name, sku, total])
-    buf = io.BytesIO()
-    wb.save(buf)
-    return buf.getvalue()
-
-
 def _make_daily_review_excel(rows: list[dict]) -> bytes:
     """Mirrors test_daily_review_upload.py's `_make_daily_review_excel`."""
     wb = openpyxl.Workbook()
@@ -325,13 +311,13 @@ class TestExistingWritePathsRecomputeReadyToShip:
         assert order.ready_to_ship is True
 
     def test_upload_warehouse_receipt_recomputes_ready_to_ship(self, auth_client):
-        """REQ-LOGI-015: warehouse-receipt upload rows now carry a quantity
-        (order_name, SKU, total) — a full-quantity row still transitions the
-        LineItem to 'received' and triggers the same Order.ready_to_ship
-        recomputation."""
+        """REQ-LOGI-016: warehouse-receipt upload rows are (order_name, SKU)
+        only, no quantity column — each row is one received unit. A single
+        row against a LineItem.quantity == 1 still transitions it to
+        'received' and triggers the same Order.ready_to_ship recomputation."""
         order = _make_order(shopify_order_id=200302, name="#200302")
         _make_line_item(order, shopify_line_item_id=1, sku="SKU-RTS-UW", quantity=1)
-        file_bytes = _make_name_sku_total_excel([("#200302", "SKU-RTS-UW", 1)])
+        file_bytes = _make_name_sku_excel([("#200302", "SKU-RTS-UW")])
         res = auth_client.post(
             UPLOAD_WAREHOUSE_RECEIPT_URL, data={"file": _file_obj(file_bytes)}, format="multipart"
         )

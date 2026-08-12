@@ -1202,18 +1202,28 @@ def parse_vendor_shipment_excel(file_bytes: bytes) -> list[dict]:
 
 def parse_warehouse_receipt_excel(file_bytes: bytes) -> list[dict]:
     """
-    SPEC-ORDER-011 REQ-LOGI-005c: parse an uploaded warehouse-receiving-
-    results file. `UploadWarehouseReceiptView` now accumulates a per-row
-    quantity into `LineItem.received_quantity` (REQ-LOGI-015, same model as
-    SPEC-ORDER-015's outbound quantity accumulation) instead of doing a
-    boolean status flip, so the required column set — order name / SKU /
-    quantity — is now IDENTICAL to `parse_outbound_excel`'s contract.
-    Delegates directly rather than duplicating that parsing logic; the two
-    parsers are free to diverge again later if the two upload formats ever
-    need different columns.
+    SPEC-ORDER-011 REQ-LOGI-016 (design correction, supersedes REQ-LOGI-005c):
+    parse an uploaded warehouse-receiving-results file. The real receiving
+    report has NO quantity column — each row represents exactly one
+    physically received unit, so the same (order name, SKU) simply repeats
+    across N rows to express a quantity of N. `_process_warehouse_receipt_rows`
+    now COUNTS rows per (order name, sku) key instead of summing a `total`
+    column; REQ-LOGI-015's accumulation/threshold semantics downstream of
+    that count (received_quantity accumulation, received_at stamping, the
+    "received" transition) are unchanged.
+
+    Delegates to `_parse_name_sku_xlsx` (2-column: order name + SKU/ISBN) —
+    the same schema and parser already used by `parse_vendor_shipment_excel`
+    — rather than `parse_outbound_excel`'s 3-column (name/sku/quantity)
+    contract this function used until this correction. One practical side
+    effect worth noting: `_parse_name_sku_xlsx` matches its SKU column on
+    `"sku" in h or "isbn" in h` (case-insensitive substring), broader than
+    `parse_outbound_excel`'s `"sku" in h` only — so this also restores
+    acceptance of an ISBN-headed column, a better fit for this file.
 
     Returns:
-        List of dicts: {"name": str, "sku": str, "total": int | None} — see
-        `parse_outbound_excel` for the exact per-cell parsing rules.
+        List of dicts: {"name": str, "sku": str} — see _parse_name_sku_xlsx
+        for the exact per-cell parsing rules (blank-SKU rows dropped,
+        blank-order-name rows kept with name="").
     """
-    return parse_outbound_excel(file_bytes)
+    return _parse_name_sku_xlsx(file_bytes)
