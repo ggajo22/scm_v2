@@ -3254,13 +3254,19 @@ class OutboundForceCandidateView(APIView):
             # appear as candidates. `.order_by("order_id", "pk")` gives a
             # deterministic, repeatable ordering (REQ-FORCE-006) rather than
             # depending on MySQL's unordered-scan return order.
-            candidate_items = (
+            candidate_items = list(
                 LineItem.objects.filter(order_id__in=order_ids)
                 .exclude(purchase_status="order_cancelled")
                 .exclude(sku__isnull=True)
                 .order_by("order_id", "pk")
             )
+            # Fully refunded items are dropped on the same grounds — see
+            # _fully_refunded_line_item_ids. The apply gate applies the
+            # identical rule.
+            refunded_ids = _fully_refunded_line_item_ids(candidate_items)
             for li in candidate_items:
+                if li.pk in refunded_ids:
+                    continue
                 candidates_by_order_id[li.order_id].append(
                     {
                         "line_item_id": li.id,
@@ -3318,12 +3324,47 @@ _REQUIRED_FORCE_ROW_KEYS = ("name", "sku", "total", "line_item_id")
 # ownership check whenever the order fails to resolve, which is exactly the
 # hole this gate exists to close (a row could then target any LineItem by
 # id, in any Order, just by naming an Order that does not exist).
+def _fully_refunded_line_item_ids(line_items) -> set[int]:
+    """pks of the given LineItems whose entire ordered quantity has been
+    refunded.
+
+    A fully refunded item is as cancelled as `purchase_status="order_cancelled"`
+    — the customer is not owed the goods — so it is excluded from the force
+    outbound path on the same REQ-FORCE-005 grounds. Kept as one helper because
+    the candidate picker and the apply gate MUST agree on what a valid target
+    is; if they diverge, the picker offers a target the gate then rejects,
+    which fails the operator's whole batch (설계 결정 L).
+
+    Partial refunds deliberately do NOT reduce the reported capacity here: the
+    force path's quantity math is shared with `_process_outbound_rows`, and
+    netting only this side would make the two disagree about how much is left
+    to ship.
+    """
+    refund_sum_sq = (
+        Refund.objects.filter(
+            order_id=OuterRef("order_id"),
+            line_item_id=OuterRef("shopify_line_item_id"),
+        )
+        .values("order_id", "line_item_id")
+        .annotate(total=Sum("quantity"))
+        .values("total")[:1]
+    )
+    rows = (
+        LineItem.objects.filter(pk__in=[li.pk for li in line_items])
+        .annotate(refunded_qty=Coalesce(Subquery(refund_sum_sq, output_field=IntegerField()), 0))
+        .filter(refunded_qty__gt=0)
+        .values_list("pk", "quantity", "refunded_qty")
+    )
+    return {pk for pk, quantity, refunded in rows if (quantity or 0) - refunded <= 0}
+
+
 def _force_outbound_gate_violated(
     rows: list[dict],
     orders_by_name: dict[str, "Order"],
     targets_by_id: dict[int, "LineItem"],
 ) -> bool:
     """True iff at least one row fails REQ-FORCE-002's target validation."""
+    refunded_ids = _fully_refunded_line_item_ids(targets_by_id.values())
     for row in rows:
         if not isinstance(row, dict):
             return True
@@ -3347,6 +3388,8 @@ def _force_outbound_gate_violated(
         if target.purchase_status == "order_cancelled":
             return True
         if target.sku is None:
+            return True
+        if target.pk in refunded_ids:
             return True
 
     return False
