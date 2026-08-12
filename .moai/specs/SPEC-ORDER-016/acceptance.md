@@ -1,8 +1,8 @@
 ---
 id: SPEC-ORDER-016
 document: acceptance
-version: 1.0.4
-status: draft
+version: 1.0.5
+status: completed
 updated: 2026-08-12
 ---
 
@@ -323,9 +323,13 @@ Django pytest로 검증할 수 없으므로 백엔드 커버리지 게이트가 
   엔드포인트 응답 동등성, 음수/판독불가 total 불변식 계열, 미국창고 완료 신호 계열.
 - 프론트엔드 기존 테스트: `OutboundPage/index.test.tsx`(snake_case 금지 테스트 포함),
   `outboundApi.test.ts`(사유 코드 5개 assert 포함), `useOutboundQueries.test.tsx`.
-- 공유 결과 섹션 컴포넌트의 외부 호출부 회귀: `frontend/src/pages/InboundPage/index.tsx`(3개
-  호출부)와 `frontend/src/pages/PurchaseOrders/tabs/DailyReviewTab.tsx`(1개 호출부) 및 그 테스트
-  전량 통과 — 이 컴포넌트를 수정하지 않았으므로 무변경이 기대값이다.
+- 프론트엔드 전체 테스트 스위트 전량 통과.
+
+> **v1.0.5 정정.** 이전 판은 여기에 "공유 결과 섹션 컴포넌트의 외부 호출부 회귀:
+> `InboundPage/index.tsx`(3개 호출부)와 `DailyReviewTab.tsx`(1개 호출부) 및 그 테스트 전량 통과"를
+> 두었으나 그런 파일도 호출부도 저장소에 존재하지 않아 검증 대상이 없었다. `ResultSection`은
+> `OutboundPage/index.tsx` 안의 비-export 로컬 함수이며 호출부는 같은 파일 안 2곳뿐이므로,
+> 회귀 범위는 전체 프론트엔드 스위트 통과로 충분히 덮인다.
 
 ### 기타
 
@@ -337,23 +341,40 @@ Django pytest로 검증할 수 없으므로 백엔드 커버리지 게이트가 
 
 ## Definition of Done
 
-- [ ] 후보 배치 조회 구현 완료 — 1요청 배치, 빈 집합 빈 결과, 최저 `pk` tie-break, 취소·NULL SKU
+- [x] 후보 배치 조회 구현 완료 — 1요청 배치, 빈 집합 빈 결과, 최저 `pk` tie-break, 취소·NULL SKU
       제외, 잔여 용량 표시, 결정적 정렬
-- [ ] 강제 반영 구현 완료 — 사전 게이트(7종 위반 → HTTP 400), 음수·0·판독불가 행을 **그룹화
+- [x] 강제 반영 구현 완료 — 사전 게이트(7종 위반 → HTTP 400), 음수·0·판독불가 행을 **그룹화
       이전에** 제거(살아남은 행이 없는 대상은 그룹 미형성 → 판정·쓰기·보고 없음), 대상별 합산,
       **한도 검사 이전 대상 행 잠금**, 수량 한도, 불감소, 임계 전이, 쓰기 대상 3필드 제한, 원자성
-- [ ] 강제 경로 행 잠금 확인 — 동시 실행 2건이 합산으로 `quantity`를 넘기지 못함(AC-FORCE-023).
+- [x] 강제 경로 행 잠금 확인 — 동시 실행 2건이 합산으로 `quantity`를 넘기지 못함(AC-FORCE-023).
       정상 경로(`_process_outbound_rows`)는 무변경이며 락이 추가되지 않았음을 diff로 확인
-- [ ] 강제 응답이 기존 3분류 응답 계약을 필드까지 그대로 만족하고, 병합 항목이 대상 단위로
+      (백엔드 diff 425 삽입 / 0 삭제). 독립 평가에서 `select_for_update()`를 제거하니 동시성
+      테스트가 실패함을 확인해 잠금이 실제로 작동함을 검증
+- [x] 강제 응답이 기존 3분류 응답 계약을 필드까지 그대로 만족하고, 병합 항목이 대상 단위로
       보고되며 `sku`가 대상 LineItem 자신의 값임을 확인
-- [ ] REQ-FORCE-001~025 전량이 위 레이어별 게이트에 따라 테스트 통과, AC-FORCE-001~023 전량 검증
-- [ ] 매칭 실패 섹션 전용 컴포넌트 구현 완료 — 기존 섹션의 시각적 처리 재현, 공유 컴포넌트 무변경
-- [ ] 강제 실행 성공 시 결과 병합 규칙 동작 확인 — 제출한 행만 매칭 실패 목록에서 제거되고
+- [x] REQ-FORCE-001~025 전량이 위 레이어별 게이트에 따라 테스트 통과, AC-FORCE-001~023 전량 검증
+- [x] 매칭 실패 섹션 전용 컴포넌트 구현 완료 — 기존 섹션의 시각적 처리 재현, 공유 컴포넌트 무변경
+      (`UnmatchedForceSection.tsx` 신규, `ResultSection` 무변경)
+- [x] 강제 실행 성공 시 결과 병합 규칙 동작 확인 — 제출한 행만 매칭 실패 목록에서 제거되고
       재제출 불가, 미선택 행은 잔존·선택 가능, 강제 응답의 성공·수량초과 항목이 각 섹션에 추가,
       세 건수 재계산
-- [ ] SPEC-ORDER-015 기존 테스트 스위트 무수정 전량 통과
-- [ ] 공유 결과 섹션 컴포넌트의 4개 외부 호출부 및 그 테스트 무변경 통과
-- [ ] `product.md` 기능 목록에 SPEC-ORDER-016 항목 추가(sync 단계)
-- [ ] `spec.md` `status: draft → completed` 전이 및 HISTORY 갱신
-- [ ] 후속 과제 1(주문 집계 미갱신), 2(동시성 + 배치 전체 400 실패 모드), 4(완료 신호 대상 지정
+- [x] SPEC-ORDER-015 기존 테스트 스위트 무수정 전량 통과 (124 passed)
+- [x] 프론트엔드 전체 테스트 스위트 전량 통과 (23 files / 221 tests)
+      — v1.0.5에서 "공유 결과 섹션 컴포넌트의 4개 외부 호출부 및 그 테스트 무변경 통과"를 이
+      항목으로 대체했다. 그 호출부는 존재하지 않아 검증 대상이 없었다(설계 결정 M 정정 참조).
+- [x] `product.md` 기능 목록에 SPEC-ORDER-016 항목 추가(sync 단계)
+- [x] `spec.md` `status: draft → completed` 전이 및 HISTORY 갱신
+- [x] 후속 과제 1(주문 집계 미갱신), 2(동시성 + 배치 전체 400 실패 모드), 4(완료 신호 대상 지정
       확장)가 문서에 남아 있고 이번 범위에서 손대지 않았음을 확인
+
+### 검증 증거 (2026-08-12)
+
+| 게이트 | 결과 |
+|---|---|
+| `pytest order/tests/test_spec_016.py --no-cov -m "not concurrency"` | 36 passed |
+| `pytest order/tests/test_spec_016.py --no-cov -m "concurrency"` | 1 passed |
+| `pytest order/tests/test_spec_015.py --no-cov` | 124 passed (무수정) |
+| `npx vitest run` | 23 files / 221 tests passed |
+| `manage.py makemigrations --check --dry-run` | No changes detected |
+| `tsc -b` / `ruff` | 신규 에러 0 (기존 베이스라인 유지) |
+| evaluator-active 독립 평가 | PASS — Functionality 0.92 / Security 0.90 / Craft 0.82 / Consistency 0.78 |

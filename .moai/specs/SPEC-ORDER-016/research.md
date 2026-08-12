@@ -224,7 +224,9 @@ it('renders no raw snake_case reason code anywhere in the unmatched section', ()
 매칭 실패 섹션의 textContent 전체에 snake_case가 없어야 한다. 새 컬럼에 `logistics_status`
 ("not_shipped"), `purchase_status`("order_cancelled"), 또는 언더스코어 포함 SKU/타이틀을 그대로
 렌더하면 즉시 실패. (체크박스 `aria-label`은 textContent에 미포함이라 안전.)
-→ `InboundPage/index.tsx:30-32`의 `LOGISTICS_STATUS_LABELS` 방식으로 한국어 라벨링 필요.
+→ `OrderDetailPage.tsx:52` / `RackNumberPage/tabs/SummaryTab.tsx:12`의 `LOGISTICS_STATUS_LABELS`
+방식으로 한국어 라벨링 필요. [v1.0.5 정정: 이전 판은 `InboundPage/index.tsx:30-32`를 인용했으나
+그 파일은 저장소에 존재하지 않는다.]
 
 **(2) TS 컴파일 실패 위험 (테스트 fixture)**
 
@@ -428,7 +430,8 @@ SPEC-ORDER-016은 "기존 동작 답습" 또는 "함께 수정" 중 하나를 **
    수정 시 T8 상수 조정이 동반된다.
 3. **`index.test.tsx:218-223`의 snake_case 금지 정규식**이 매칭 실패 섹션 textContent 전체에 적용된다.
    피커 UI에 `logistics_status`/`purchase_status` 원값을 렌더하면 즉시 실패 —
-   `InboundPage/index.tsx:30-32` 방식의 한국어 라벨 매핑 필요.
+   `OrderDetailPage.tsx:52` / `RackNumberPage/tabs/SummaryTab.tsx:12` 방식의 한국어 라벨 매핑 필요.
+   [v1.0.5 정정: 이전 판이 인용한 `InboundPage/index.tsx:30-32`는 존재하지 않는 파일이다.]
 4. **`OutboundUnmatchedItem`에 필수 필드를 추가하면 두 테스트 fixture가 컴파일 실패**
    (`index.test.tsx:31-38`, `outboundApi.test.ts:33-36`). optional로 추가하면 무해.
 5. **`test_both_endpoints_return_identical_results_for_equivalent_input`(`:746`)이 딕셔너리 전체

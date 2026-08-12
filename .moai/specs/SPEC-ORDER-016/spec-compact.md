@@ -1,8 +1,8 @@
 ---
 id: SPEC-ORDER-016
 document: spec-compact
-version: 1.0.4
-status: draft
+version: 1.0.5
+status: completed
 updated: 2026-08-12
 ---
 
@@ -132,8 +132,8 @@ v1.0.4에서 강제 경로 행 잠금(REQ-FORCE-025)이 추가되어 001~025가 
 **프론트엔드**: `frontend/src/services/outboundApi.ts`(MODIFY — 강제 실행 함수는 기존
 `OutboundProcessResponse`를 그대로 반환, 기존 항목 타입 무수정) ·
 `frontend/src/hooks/useOutboundQueries.ts`(MODIFY, 기존 뮤테이션 팩토리 재사용) ·
-**`frontend/src/components/ResultSection.tsx`(EXISTING, 변경 없음 — `cells: string[]` 계약 유지,
-외부 호출부 4곳 보호, 설계 결정 M)** ·
+**`ResultSection`(EXISTING, 변경 없음 — `OutboundPage/index.tsx` 내부의 비-export 로컬 함수,
+`cells: string[]` 계약 유지, 설계 결정 M)** ·
 `frontend/src/pages/OutboundPage/` 하위 매칭 실패 섹션 전용 컴포넌트(NEW, colocate 테스트 동반) ·
 `frontend/src/pages/OutboundPage/` 하위 라벨 매핑 모듈(NEW, `logistics_status`만 — `purchase_status`
 맵은 만들지 않음) ·
@@ -142,8 +142,6 @@ OutboundPage` 유지) ·
 `frontend/src/pages/OutboundPage/index.test.tsx`(MODIFY) ·
 `frontend/src/services/outboundApi.test.ts`(MODIFY) ·
 `frontend/src/hooks/useOutboundQueries.test.tsx`(MODIFY) ·
-**`frontend/src/pages/InboundPage/index.tsx`(EXISTING, 회귀 검증 대상 — 공유 컴포넌트 호출부 3곳)** ·
-**`frontend/src/pages/PurchaseOrders/tabs/DailyReviewTab.tsx`(EXISTING, 회귀 검증 대상 — 호출부 1곳)** ·
 `frontend/src/router/index.tsx` · `frontend/src/components/Sidebar.tsx` ·
 `frontend/src/types/order.ts`(모두 EXISTING, 변경 없음)
 
@@ -166,7 +164,8 @@ OutboundPage` 유지) ·
 - 추가 권한 게이트 없음
 - 신규 매칭 실패 사유 코드 없음 — 대상 미지정 · 무효 · 타 주문 소속 · 구조 오류는 요청 전체 400
 - 부분 반영 없음 — 게이트 미통과 요청은 전량 거부(설계 결정 L)
-- 결과 섹션 공유 컴포넌트(`ResultSection`) 시그니처 변경 없음 — 외부 호출부 4곳 영향
+- 결과 섹션 공유 컴포넌트(`ResultSection`) 시그니처 변경 없음 — 같은 페이지의 성공·수량초과
+  섹션 2곳이 계속 소비
 - SKU · 도서명 등 데이터 값의 이스케이프 · 변환 없음 — 금지 대상은 상태 · 사유 코드값뿐
 - 라우팅 · 사이드바 변경 없음, 페이지 모듈 진입점 계약 유지
 - **정상** 출고 경로의 락 도입 없음 — 행 잠금은 강제 경로에만(REQ-FORCE-025, 설계 결정 O).

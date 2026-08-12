@@ -1,8 +1,8 @@
 ---
 id: SPEC-ORDER-016
 document: plan
-version: 1.0.4
-status: draft
+version: 1.0.5
+status: completed
 updated: 2026-08-12
 ---
 
@@ -48,7 +48,8 @@ optional 지정, 테스트 훅 유지, 섹션 시각적 일관성)을 이 문서
   매칭 실패 섹션 전용 컴포넌트, 선택 상태·피커·일괄 실행·결과 대체 배선, 한국어 라벨 매핑.
   커버 REQ: 001, 003(요청 횟수), 015, 019~024.
 - **M6 (Medium) — 프론트엔드 테스트 + 회귀**: AC-FORCE-001, 003, 015, 019~022 커버. 기존 3개 테스트
-  파일 + 공유 결과 섹션 컴포넌트의 4개 외부 호출부 테스트 전량 통과 확인.
+  파일 및 프론트엔드 전체 스위트 통과 확인(v1.0.5 정정 — "공유 결과 섹션 컴포넌트의 4개 외부
+  호출부"는 존재하지 않는다).
 - **M7 (Low) — 문서 동기화**: `product.md` 갱신, SPEC 상태 전이, HISTORY 갱신.
 
 의존 관계: M1 → M2 → M3 → M4, M2 → M5 → M6.
@@ -72,14 +73,13 @@ optional 지정, 테스트 훅 유지, 섹션 시각적 일관성)을 이 문서
 |---|---|---|
 | MODIFY | `frontend/src/services/outboundApi.ts` | 후보 조회 함수 + 강제 실행 함수 + 후보 타입 추가. **강제 실행 함수의 반환 타입은 기존 `OutboundProcessResponse`를 그대로 사용한다**(REQ-FORCE-016) — 서버가 같은 계약을 반환하므로 신규 응답 타입을 만들지 않는다. 기존 `OutboundUnmatchedItem`/`OutboundMatchedItem`/`OutboundQuantityExceededItem`(`:37-65`)은 수정하지 않는다. 불가피하게 기존 항목 타입에 필드를 추가해야 한다면 반드시 optional(`?`)로 선언한다 — 필수 필드는 `index.test.tsx:31-38` / `outboundApi.test.ts:33-36`의 리터럴 fixture를 컴파일 실패시킨다. `OutboundUnmatchedReason` union은 변경하지 않는다(`outboundApi.test.ts:67`이 정확히 5개임을 assert). 강제 실행 함수는 HTTP 400을 rejection으로 표면화한다. |
 | MODIFY | `frontend/src/hooks/useOutboundQueries.ts` | 후보 조회 `useQuery` + 강제 실행 뮤테이션. 뮤테이션은 기존 `useOutboundMutation` 팩토리(`:20-35`)를 그대로 재사용한다 — 이 팩토리는 `Promise<OutboundProcessResponse>`를 요구하므로 REQ-FORCE-016의 "기존 계약 전체 재사용"과 정합한다. `ORDER_DETAIL_QUERY_KEY` prefix 무효화(`:28`), 고정 한국어 에러 문구(`:31-33`), 성공 토스트 `buildOutboundSummary`(`:14-16`) 관례를 승계한다. 쿼리 키는 문자열 리터럴 배열 + 파라미터 형태로 두되, 파라미터 없는 예(`useRackNumberQueries.ts:76-81`)가 아니라 파라미터 있는 예(`frontend/src/features/order/hooks/useOrders.ts:11`, `queryKey: [...ORDERS_QUERY_KEY, params]`)를 따른다. 훅 위 `// REQ-FORCE-XXX:` 주석. |
-| **EXISTING** | **`frontend/src/components/ResultSection.tsx`** | **변경하지 않는다**(설계 결정 M). 행 계약이 `cells: string[]`(`:8-27`)이라 체크박스·피커를 담을 수 없고, 출고 페이지 외부에 4개 호출부(`InboundPage/index.tsx:176`, `:194`, `:211`, `PurchaseOrders/tabs/DailyReviewTab.tsx:153`)가 있어 시그니처 변경 시 무관한 화면과 그 테스트가 전부 회귀 대상이 된다. 성공·수량초과 섹션은 계속 이 컴포넌트가 렌더한다. |
+| **EXISTING** | **`ResultSection`** (`frontend/src/pages/OutboundPage/index.tsx` 내부의 비-export 로컬 함수) | **변경하지 않는다**(설계 결정 M). 행 계약이 `cells: string[]`이라 체크박스·피커를 담을 수 없다. 성공·수량초과 섹션은 계속 이 함수가 렌더한다. **v1.0.5 정정**: v1.0.4까지 이 컴포넌트를 `frontend/src/components/ResultSection.tsx` 파일이며 외부 호출부 4곳을 가진다고 서술했으나 그런 파일도 호출부도 존재하지 않는다 — 무변경 결론은 `cells: string[]` 제약만으로 유효하다. |
 | NEW | `frontend/src/pages/OutboundPage/` 하위 매칭 실패 섹션 컴포넌트 | 매칭 실패 섹션 전용 렌더링 + 행별 선택 컨트롤 + 대상 선택 피커(REQ-FORCE-019~021). **구현 지시**: (a) 기존 공유 컴포넌트의 마크업을 참조해 섹션 제목·건수 표기·톤 클래스·컬럼 헤더 구성을 동일하게 재현하되 그 컴포넌트를 import하거나 수정하지 않는다. (b) 기존 테스트 훅 `data-testid="outbound-unmatched"`(`OutboundPage/index.tsx:148`)를 그대로 유지한다 — `index.test.tsx:218-223`이 이 훅으로 섹션을 찾는다. colocate 테스트 파일 동반. |
-| NEW | `frontend/src/pages/OutboundPage/` 하위 라벨 매핑 모듈 | `logistics_status` 코드값 → 한국어 라벨 `Record`(`InboundPage/index.tsx:30-32` 방식). 매칭 실패 사유 라벨은 기존 `UNMATCHED_REASON_LABELS`를 재사용한다. **`purchase_status` 라벨 맵은 만들지 않는다** — 취소 품목은 후보에서 제외되고(REQ-FORCE-005) 후보 응답에 `purchase_status`가 실리지 않으므로(REQ-FORCE-006) 이 값은 섹션에 도달하지 않는다. |
+| NEW | `frontend/src/pages/OutboundPage/` 하위 라벨 매핑 모듈 | `logistics_status` 코드값 → 한국어 라벨 `Record`(`OrderDetailPage.tsx:52` / `RackNumberPage/tabs/SummaryTab.tsx:12`의 `LOGISTICS_STATUS_LABELS` 방식). 매칭 실패 사유 라벨은 기존 `UNMATCHED_REASON_LABELS`를 재사용한다. **`purchase_status` 라벨 맵은 만들지 않는다** — 취소 품목은 후보에서 제외되고(REQ-FORCE-005) 후보 응답에 `purchase_status`가 실리지 않으므로(REQ-FORCE-006) 이 값은 섹션에 도달하지 않는다. |
 | MODIFY | `frontend/src/pages/OutboundPage/index.tsx` | 매칭 실패 섹션 렌더링을 신규 전용 컴포넌트로 교체(성공·수량초과는 공유 컴포넌트 유지), 자격 판정·선택 상태(로컬 `useState`, 설계 결정 H)·후보 조회 배선·일괄 실행 컨트롤 연결. 강제 실행 성공 시 **기존 `result` 슬롯(`:31-33`)을 병합 결과로 `setResult`하고 선택 상태를 비운다**(REQ-FORCE-024, 설계 결정 N) — 슬롯 구조와 갱신 방식은 두 기존 제출 경로(`:42`, `:52`)와 같고, 넘기는 값만 응답 원본이 아니라 병합 결과다. **`export function OutboundPage` 명명과 폴더+`index.tsx` 모듈 해석을 유지해야 한다**(`router/index.tsx:129-135`, @MX:ANCHOR `OutboundPage/index.tsx:24-28`). |
 | MODIFY | `frontend/src/pages/OutboundPage/index.test.tsx` | 신규 AC 테스트 추가. 최상위 `describe('OutboundPage — SPEC-ORDER-016', ...)` 아래 `describe('AC-FORCE-0NN: <한국어 시나리오>', ...)` 관례(`:76, 81, 154, 268, 317`). 기존 snake_case 금지 테스트(`:218-223`)는 수정하지 않고 그대로 통과해야 한다. |
 | MODIFY | `frontend/src/services/outboundApi.test.ts` | 신규 함수의 요청 URL·payload·응답 매핑 테스트 추가. 기존 `ALL_UNMATCHED_REASONS` 5개 assert(`:67`)는 변경하지 않는다. |
 | MODIFY | `frontend/src/hooks/useOutboundQueries.test.tsx` | 신규 훅 테스트 추가. `renderHook` + 로컬 `QueryClientProvider`(`retry: false`) 관례(`:36-41`). |
-| EXISTING | `frontend/src/pages/InboundPage/index.tsx`, `frontend/src/pages/PurchaseOrders/tabs/DailyReviewTab.tsx` | 변경 없음. 공유 컴포넌트 외부 호출부이므로 **회귀 검증 대상**으로만 다룬다. |
 | EXISTING | `frontend/src/router/index.tsx`, `frontend/src/components/Sidebar.tsx`, `frontend/src/types/order.ts` | 변경 없음. `Sidebar.test.tsx:173-194`가 현재 메뉴 구성을 pin한다. `LineItemDetail`(`types/order.ts:112-136`)은 후보 타입으로 재사용하지 않는다. |
 
 ## 기술적 접근
@@ -217,7 +217,7 @@ SPEC이 관례를 새로 세운다. 열어 두지 않고 다음 기법을 지정
 | R10 | `unmatched` 항목에 `line_item_id`가 없음(`:2954-2980`) | 선택 상태 키 부재 | `(주문 식별자, sku)` 쌍을 선택 키로 사용(설계 결정 G) |
 | R11 | 주문 집계 미갱신이라는 선행 불일치 | 강제 경로만 고치면 두 경로가 서로 다른 부수효과를 냄 | 현행 동작 답습(설계 결정 E). REQ-FORCE-013으로 규범화하고 spy로 pin |
 | R12 | `OutboundPage` named export + 폴더 모듈 해석에 라우터가 의존(@MX:ANCHOR `index.tsx:24-28`) | 컴포넌트 분할 중 export 형태를 바꾸면 `/outbound` 라우트가 깨짐 | 진입점 파일과 export 이름 유지, 신규 컴포넌트는 형제 파일로 배치 |
-| R13 | 공유 결과 섹션 컴포넌트의 행 계약이 `cells: string[]`이며 외부 호출부 4곳 존재 | 시그니처 확장 시 무관한 두 화면과 그 테스트가 회귀 대상 | 공유 컴포넌트를 수정하지 않고 매칭 실패 섹션만 전용 컴포넌트로 분리(설계 결정 M). 4개 외부 호출부 테스트를 M6 회귀 대상으로 명시 |
+| R13 | 공유 결과 섹션 컴포넌트(`ResultSection`)의 행 계약이 `cells: string[]`이며 같은 페이지의 성공·수량초과 섹션 2곳이 소비 | 시그니처 확장 시 그 두 섹션과 기존 테스트가 회귀 대상 | 공유 컴포넌트를 수정하지 않고 매칭 실패 섹션만 전용 컴포넌트로 분리(설계 결정 M). **v1.0.5 정정**: 이전 판은 "외부 호출부 4곳"이라 했으나 그런 호출부는 존재하지 않는다 — 회귀 범위는 프론트엔드 전체 스위트로 대체 |
 | R14 | 0 수량 행이 `line_item_not_found`로 보고되어 강제 대상이 될 수 있음(`:2969-2980`이 `:2999`보다 먼저 실행) | 임의 대상의 `shipped_quantity`를 `quantity`까지 채우는 미요구 동작 | 자격 조건에 양수 수량 포함(REQ-FORCE-001), 서버에서도 0을 `invalid_total`로 거부(REQ-FORCE-011). 미국창고 대상에 0을 넣는 케이스를 M3 필수 포함 |
 | R15 | 두 매칭 실패 행이 같은 대상을 지정하면 각각은 한도를 통과하고 합산은 초과 | "수량 한도 우회 없음" 배제 조항 무력화 | 대상 식별자 기준 합산 후 1회 판정(REQ-FORCE-008). 개별 통과·합산 초과 시나리오를 M3 필수 포함 |
 | R16 | 대상이 다른 주문 소속이면 정상 경로가 금지하는 교차 주문 SKU 차용이 강제 경로로 재현됨 | 무관한 주문의 품목에 출고 수량이 기록됨 | 게이트에서 소유권 검증 후 요청 전체 400(REQ-FORCE-002). 교차 주문 지정과 주문 미해석 케이스를 M3 필수 포함 |
@@ -239,7 +239,7 @@ SPEC이 관례를 새로 세운다. 열어 두지 않고 다음 기법을 지정
 | 후보 조회 뷰의 주문 해석 구간 | `@MX:NOTE` | `Order.name`이 유일하지 않으며 최저 `pk` 선점이 정상 경로 및 대상 게이트와 반드시 일치해야 하는 이유를 기록(설계 결정 B) |
 | 후보 조회 뷰의 제외 필터 구간 | `@MX:NOTE` | `order_cancelled` 제외와 `sku is NULL` 제외의 서로 다른 근거를 기록 — 전자는 물류 대상 아님, 후자는 집계가 trackable 품목만 세어 "유령 출고"가 되는 것을 막기 위함(설계 결정 D) |
 | `OutboundPage/index.tsx:24-28`의 기존 `@MX:ANCHOR` | 유지 | 변경하지 않는다. 컴포넌트 분할 시에도 export 이름과 모듈 해석 형태를 보존(R12) |
-| 매칭 실패 섹션 전용 컴포넌트(신규) | `@MX:NOTE` | 공유 컴포넌트를 재사용하지 않고 분리한 이유(`cells: string[]` 계약으로는 체크박스·피커 표현 불가 + 외부 호출부 4곳 회귀 위험)와 시각적 일관성 제약을 기록(설계 결정 M) |
+| 매칭 실패 섹션 전용 컴포넌트(신규) | `@MX:NOTE` | 공유 컴포넌트를 재사용하지 않고 분리한 이유(`cells: string[]` 계약으로는 체크박스·피커를 표현할 수 없고, 그 계약을 넓히면 같은 페이지의 성공·수량초과 섹션이 회귀 대상이 됨)와 시각적 일관성 제약을 기록(설계 결정 M) |
 | 프론트 선택 상태 선언부 | `@MX:NOTE` | 선택 키가 `(주문 식별자, sku)`인 이유, 로컬 상태를 쓰는 이유, **서버 합산·응답 키는 대상 식별자로 다르다**는 사실을 기록(설계 결정 G/H/K) |
 | 신규 테스트 파일 | 태그 없음 | 테스트 코드에는 MX 태그를 부여하지 않는다(기존 관례) |
 
@@ -252,11 +252,17 @@ SPEC이 관례를 새로 세운다. 열어 두지 않고 다음 기법을 지정
 문서는 그것을 반복하지 않는다.
 
 **백엔드**: `test_spec_016.py`가 `acceptance.md` 백엔드 게이트가 열거한 REQ 전량에 최소 1개 테스트를
-매핑. `test_spec_015.py` 전량 무수정 통과. `makemigrations --check` 무변경. ruff 0 에러.
+매핑. `test_spec_015.py` 전량 무수정 통과. `makemigrations --check` 무변경. ruff **신규 에러 0**.
 
 **프론트엔드**: colocate 테스트가 `acceptance.md` 프론트엔드 게이트가 열거한 REQ 전량에 최소 1개
-테스트를 매핑. 기존 3개 테스트 파일 전량 통과. 공유 결과 섹션 컴포넌트 외부 호출부(`InboundPage` 3
-호출부, `DailyReviewTab` 1 호출부) 및 그 테스트 전량 통과. `tsc` / eslint 0 에러.
+테스트를 매핑. 기존 3개 테스트 파일 전량 통과. `tsc` / eslint **신규 에러 0**.
+
+> **v1.0.5 정정.** (a) "공유 결과 섹션 컴포넌트 외부 호출부(`InboundPage` 3, `DailyReviewTab` 1)
+> 통과" 항목을 삭제했다 — 그 호출부는 존재하지 않는다(설계 결정 M 정정 참조). (b) `ruff` /
+> `tsc` / `eslint` "0 에러"를 "신규 에러 0"으로 고쳤다 — 이 저장소에는 이 SPEC과 무관한 기존
+> 에러 베이스라인이 있어(ruff: `order/urls.py` E501 16건 등, tsc: `BookDetailPage.tsx` ·
+> `ConfirmOrderTab.tsx` 등) 절대 0은 달성 불가능하며, 달성 가능한 기준은 이번 변경 파일에
+> 에러를 추가하지 않는 것이다.
 
 **공통**: `spec.md` Exclusions 21개 항목 전수 확인 — 특히 신규 컬럼·감사 테이블·권한 클래스·라우팅
 변경·신규 사유 코드·공유 컴포넌트 시그니처 변경·부분 반영 경로가 diff에 존재하지 않을 것.
@@ -285,9 +291,10 @@ SPEC이 관례를 새로 세운다. 열어 두지 않고 다음 기법을 지정
   관례.
 - `frontend/src/pages/OutboundPage/index.tsx:31-33`, `:42`, `:52` — 단일 결과 슬롯과 두 제출 경로의
   갱신 패턴. 강제 실행도 같은 슬롯을 같은 방식으로 갱신하되 넘기는 값이 병합 결과다(설계 결정 N).
-- `frontend/src/components/ResultSection.tsx:8-27` — 공유 결과 섹션 컴포넌트의 행 계약. 참조만 하고
-  수정하지 않는다.
+- `frontend/src/pages/OutboundPage/index.tsx`의 `ResultSection` 로컬 함수 — 결과 섹션의 행 계약
+  (`cells: string[]`). 참조만 하고 수정하지 않는다.
 - `frontend/src/pages/RackNumberPage/tabs/SearchTab.tsx:28, :57, :64, :68-87, :155, :177-183,
   :243-249` — 로컬 선택 상태, 전체 선택, 일괄 적용, 선택 리셋, `aria-label` 관례.
-- `frontend/src/pages/InboundPage/index.tsx:30-32` — 코드값 → 한국어 라벨 매핑 관례.
+- `frontend/src/pages/OrderDetailPage.tsx:52`, `frontend/src/pages/RackNumberPage/tabs/SummaryTab.tsx:12`
+  — 코드값 → 한국어 라벨 매핑(`LOGISTICS_STATUS_LABELS`) 관례.
 - `frontend/src/features/order/hooks/useOrders.ts:11` — 파라미터를 포함한 쿼리 키 관례.

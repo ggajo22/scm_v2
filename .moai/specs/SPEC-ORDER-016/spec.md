@@ -1,7 +1,7 @@
 ---
 id: SPEC-ORDER-016
-version: 1.0.4
-status: draft
+version: 1.0.5
+status: completed
 created_at: 2026-08-12
 updated: 2026-08-12
 author: ggajo
@@ -23,6 +23,7 @@ labels: [order, logistics, outbound, force]
 | 1.0.3 | 2026-08-12 | ggajo | plan-auditor 리뷰(iteration 3, FAIL, 0.80, max_iterations 도달) 이후 사용자가 **major 2건만 수정하고 minor 8건(F3~F10)은 의도적으로 보류**하기로 결정 — 이번 수정 이후 plan-auditor 재실행 불필요. **F1(major)**: 어떤 대상의 모든 행이 REQ-FORCE-011로 제외되면 그 대상의 합산 수량이 0이 되고, 그 0이 REQ-FORCE-009의 조건절을 만족해 **쓰기를 강제**하는 구멍이 있었다 — `shipped_at`이 찍히고, `quantity`가 null(용량 0)이거나 이미 완료된 대상에서는 `0 >= 0`이 성립해 `logistics_status="shipped"`까지 전이되어, REQ-FORCE-007이 승계하지 않는다고 선언한 0 수량 완료 동작이 옆문으로 재진입했다. AC-FORCE-006("L3를 전혀 변경하지 않는다")·AC-FORCE-011("LA와 LB는 무변경")이 자기 픽스처로 이 모순을 이미 구성하고 있었다. 수정: 제외를 **그룹화 이전**에 수행함을 REQ-FORCE-011과 REQ-FORCE-008 본문에 명시(정상 경로가 `:2865-2898`에서 행을 거부한 뒤 `:2900-2901`의 합산에 도달하지 않는 것과 동일한 순서), 살아남은 행이 없는 대상은 **그룹 자체가 형성되지 않아** 판정·쓰기·보고 어디에도 등장하지 않음을 규범화, 그리고 "자격이 양수 수량을 요구하고 비양수·판독불가 행은 그룹화 이전에 제거되므로 평가되는 모든 그룹의 합산 수량은 최소 1이며 0은 구조적으로 도달 불가"라는 불변식을 REQ-FORCE-008에 명시. REQ-FORCE-009의 트리거는 이 불변식을 참조하도록 문구를 조정했고, AC-FORCE-006/011은 "그룹이 만들어지지만 아무것도 쓰지 않는다"가 아니라 "그룹이 만들어지지 않는다"를 주장하도록 재작성하면서 AC-FORCE-011 픽스처에 `quantity=null` 대상과 이미 완전 출고된 대상 두 변형을 추가해 `0 >= 0` 전이 경로를 테스트로 봉쇄했다. **F2(major)**: 결과 슬롯 통째 대체가 담당자가 **선택하지 않은** 자격 행과 이번 실행이 방금 만들어낸 수량초과 항목까지 기록 없이 지웠다(5건 중 2건 처리 시 나머지 3건 소실). 수정: REQ-FORCE-024를 병합 규칙(제출한 행만 `(주문 식별자, sku)` 키로 제거 / 미제출 행 유지 및 선택 가능 / 강제 응답의 성공·수량초과 항목을 대응 목록에 추가 / 세 건수 재계산 / 선택 리셋)으로 재작성하고, 설계 결정 N에 기각한 대안 2건과 수용된 대가를 기록, AC-FORCE-022를 3행 픽스처에서 네 결과(처리된 행 소멸 / 미선택 행 잔존 및 선택 가능 / 수량초과 항목 가시 / 건수 일치)를 모두 주장하도록 재작성. **보류(사용자 결정)**: F3(REQ-FORCE-007의 "exactly two deviations" — 구조 오류 행의 400 처리가 세 번째 편차), F4(EARS 단일 패턴 순도 — 3회 반복 지적된 정체 결함), F5(AC-FORCE-001의 "five rows" 오기), F6(AC-FORCE-005가 REQ-FORCE-006의 속성 집합 미주장), F7(REQ-FORCE-015의 "entire set" vs REQ-FORCE-023), F8("structurally malformed" 미정의), F9(읽기 전용성·시각적 일관성·임계 미달 무변경의 검증 부재), F10(인용 범위 시작점 off-by-one 3건). 이들은 구현을 차단하지 않는 minor 항목으로 판단되어 이번 범위에서 다루지 않는다. REQ/AC 개수와 번호는 변경 없음(24 REQ / 22 AC). |
 
 | 1.0.4 | 2026-08-12 | ggajo | 사용자 스코프 변경 — 보류했던 리스크를 재검토한 뒤 **강제 경로에 한해 행 단위 락을 도입**하기로 결정. 근거: (1) 이 기능의 확정 스코프가 "수량 한도 초과 불가"(Q6)를 하드 룰로 정했는데, 락이 없으면 같은 LineItem을 겨냥한 두 강제 요청이 같은 낡은 `shipped_quantity`를 읽고 각자 한도 검사를 통과해 합계가 `quantity`를 넘긴다 — 오용이 아니라 평범한 동시 사용으로 확정 규칙이 깨진다. (2) 강제 경로의 stale read 창은 구조적으로 더 넓다: 정상 경로는 한 요청 안에서 읽기·판정·쓰기가 연달아 일어나지만, 강제 경로는 후보 조회 → 담당자의 대상 선택 → 실행 사이에 사람의 판단이 끼어들어 한도 검사가 읽는 값이 수 초~수 분 낡을 수 있다. (3) 선례가 같은 모듈에 이미 있다(`_apply_logistics_transition`의 `select_for_update()`, `purchase_order_views.py:247`) — 한 파일에 두 관례가 이미 공존하므로 새 패턴이 아니다. (4) 비용이 낮다: 기존 대상 행 SELECT에 잠금을 붙이는 것이라 쿼리가 추가되지 않는다. 변경 내용 — REQ-FORCE-025 신설(모듈 3), AC-FORCE-023 신설(`[BE]`, 동시 실행 2건이 합산으로 한도를 넘기지 못함을 검증), Exclusions의 "동시성 락 도입 없음" 항목을 "강제 경로에 한정" 항목으로 교체, 후속 과제 2를 정상 경로 잔여 격차로 축소, 설계 결정 O 신설. **정상 경로(`_process_outbound_rows`)는 변경하지 않으며 두 경로의 락 관례 통일은 여전히 범위 밖이다.** 아울러 사용자 결정에 따라 후속 과제 1(주문 집계 미갱신)은 정상·강제 두 경로를 **함께** 다루는 별도 SPEC에서 처리함을 명시했다. REQ 24→25, AC 22→23, 모듈 수 5 유지. |
+| 1.0.5 | 2026-08-12 | ggajo | 구현 완료 후 sync — `status: draft → completed`. **문서 정합성 정정(중요)**: v1.0.0~v1.0.4가 결정 M의 근거로 인용한 `frontend/src/components/ResultSection.tsx`(외부 호출부 4곳: `InboundPage/index.tsx:176`/`:194`/`:211`, `PurchaseOrders/tabs/DailyReviewTab.tsx:153`)는 **저장소에 존재하지 않는 허구의 인용**이었다. 실제 `ResultSection`은 `OutboundPage/index.tsx` 안의 비-export 로컬 함수이며 호출부는 같은 파일 안 2곳뿐이고, `InboundPage`는 저장소에 없으며 `DailyReviewTab.tsx`는 `ResultSection`을 참조하지 않는다. plan-auditor 3회 감사가 이를 잡지 못했다(인용 파일의 실재 여부는 그 에이전트의 점검 항목이 아니다). 결정 M의 **결론은 유효**하다 — `cells: string[]` 제약은 실재하며 그것만으로 분리 근거가 성립한다. 무효화된 것은 "외부 호출부 4곳의 회귀 위험"이라는 근거뿐이다. 같은 인용을 `spec-compact.md`·`plan.md`·`acceptance.md`·`research.md`에서도 정정했고, `plan.md`의 라벨 매핑 선례 인용(`InboundPage/index.tsx:30-32`)은 실재하는 `OrderDetailPage.tsx:52` / `RackNumberPage/tabs/SummaryTab.tsx:12`로 교체했다. 아울러 DoD의 `ruff`/`tsc`/`eslint` "0 에러"를 "신규 에러 0"으로 정정했다 — 이 저장소에는 이 SPEC과 무관한 기존 에러 베이스라인이 있어 절대 0은 달성 불가능하다. 요구사항·인수 기준의 내용 변경 없음(25 REQ / 23 AC 유지). |
 
 ### v1.0.2 통합 내역 (N12)
 
@@ -270,11 +271,18 @@ SKU가 서로 다르므로 어느 `sku`를 실을지 — 는 다음과 같이 �
 
 ### 결정 M — 매칭 실패 섹션은 전용 컴포넌트로 렌더하고 공유 컴포넌트는 손대지 않는다
 
-현재 세 결과 섹션은 모두 하나의 공유 컴포넌트가 렌더하며, 그 행 계약은 `cells: string[]`이다
-(`frontend/src/components/ResultSection.tsx:8-27`) — 각 셀은 순수 텍스트로 출력되므로 체크박스나
-대상 선택기를 담을 수 없다. 이 컴포넌트에는 출고 페이지 외부에 4개의 호출부가 존재한다
-(`frontend/src/pages/InboundPage/index.tsx:176`, `:194`, `:211`,
-`frontend/src/pages/PurchaseOrders/tabs/DailyReviewTab.tsx:153`).
+현재 세 결과 섹션은 모두 하나의 공유 컴포넌트 `ResultSection`이 렌더하며, 그 행 계약은
+`cells: string[]`이다 — 각 셀은 순수 텍스트로 출력되므로 체크박스나 대상 선택기를 담을 수 없다.
+
+> **v1.0.5 정정.** v1.0.0~v1.0.4는 이 컴포넌트를 `frontend/src/components/ResultSection.tsx`에
+> 있는 파일이며 출고 페이지 외부에 4개 호출부(`InboundPage/index.tsx:176`/`:194`/`:211`,
+> `PurchaseOrders/tabs/DailyReviewTab.tsx:153`)를 가진다고 서술했으나, **그런 파일도 호출부도
+> 존재하지 않는다.** 실제로 `ResultSection`은 `frontend/src/pages/OutboundPage/index.tsx`
+> 안에 있는 **비-export 로컬 함수**이며 호출부는 같은 파일 안의 성공·수량초과 섹션 2곳뿐이다.
+> `InboundPage`는 저장소에 없고 `DailyReviewTab.tsx`는 `ResultSection`을 참조하지 않는다.
+> 이 결정의 결론은 유효하다 — `cells: string[]` 제약은 실재하며 그것만으로 분리 근거가 되고,
+> 이 컴포넌트가 같은 페이지 안 두 섹션에 공유된다는 사실도 그대로다. 무효가 된 것은 "외부
+> 호출부 4곳의 회귀 위험"이라는 근거뿐이다.
 
 따라서 공유 컴포넌트의 시그니처는 **변경하지 않는다.** 매칭 실패 섹션만 출고 페이지 하위의 전용
 컴포넌트로 분리하고, 성공·수량초과 섹션은 계속 공유 컴포넌트가 렌더한다. 전용 컴포넌트는 기존
