@@ -3136,6 +3136,431 @@ class UploadOutboundView(APIView):
 
 
 # ---------------------------------------------------------------------------
+# SPEC-ORDER-016: force outbound processing (line_item_not_found rows)
+# ---------------------------------------------------------------------------
+
+
+def _resolve_orders_by_name(names) -> dict[str, "Order"]:
+    """
+    REQ-FORCE-004: exact `Order.name` equality; same-name collisions resolved
+    by the lowest `pk` — the identical tie-break `_process_outbound_rows`
+    applies above (its `orders_by_name` block). Extracted as a shared helper
+    because both the candidate lookup (REQ-FORCE-003/004) and the force-apply
+    gate (REQ-FORCE-002/004) must resolve identically, or a picker could show
+    one Order's LineItems while the write lands on a different Order that
+    happens to share the same name.
+
+    One batched query regardless of how many names are requested; a no-op
+    (zero queries) for an empty `names`.
+    """
+    orders_by_name: dict[str, Order] = {}
+    if names:
+        for candidate in Order.objects.filter(name__in=set(names)).order_by("pk"):
+            orders_by_name.setdefault(candidate.name, candidate)
+    return orders_by_name
+
+
+# @MX:NOTE: [AUTO] Order resolution below reproduces REQ-FORCE-004's
+# tie-break exactly (via the shared `_resolve_orders_by_name` helper, also
+# used by the force-apply gate further down this section) — `Order.name`
+# carries no uniqueness constraint, so a different tie-break here would let
+# this picker display one Order's LineItems while the force-apply gate
+# resolves the same requested name to a different Order and writes there
+# instead (설계 결정 B).
+# @MX:NOTE: [AUTO] The two `.exclude()` filters below rest on different
+# grounds (설계 결정 D): `purchase_status="order_cancelled"` LineItems are
+# excluded because a cancelled purchase is never a logistics target; `sku is
+# NULL` LineItems are excluded because Order-aggregate recomputation only
+# ever counts trackable (sku not null) LineItems (see
+# `_recompute_order_aggregates` above), so marking a NULL-sku row "shipped"
+# would be a "ghost" outbound that never surfaces in any Order-level
+# aggregate.
+class OutboundForceCandidateView(APIView):
+    """
+    POST /api/purchase-orders/line-items/outbound-force-candidates/
+
+    REQ-FORCE-003~006: read-only batch lookup of the LineItems a force
+    outbound request may designate as a target, covering every requested
+    Order in one round trip. Body: {"order_names": [str, ...]}. An empty list
+    returns an empty result rather than an error and issues no query
+    (REQ-FORCE-003).
+
+    Modelled on `LineItemRackNumberSummaryView` above as the cross-order
+    read-only structural precedent and on `_process_outbound_rows`'s
+    `name__in` batched order lookup + Python grouping as the batching
+    precedent — but this view is fully separate code, so it adds zero
+    queries to the two existing outbound endpoints (REQ-FORCE-018, 설계
+    결정 A).
+    """
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request) -> Response:
+        order_names = request.data.get("order_names")
+        if not isinstance(order_names, list):
+            return Response(
+                {"error": "order_names must be a list."}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # REQ-FORCE-003: an empty set is not an error and touches no query.
+        # dict.fromkeys preserves first-seen order while de-duplicating, so
+        # the response order is deterministic and mirrors the request.
+        unique_names = list(dict.fromkeys(str(name) for name in order_names))
+        if not unique_names:
+            return Response({"results": []}, status=status.HTTP_200_OK)
+
+        orders_by_name = _resolve_orders_by_name(unique_names)
+
+        candidates_by_order_id: dict[int, list[dict]] = defaultdict(list)
+        order_ids = [o.id for o in orders_by_name.values()]
+        if order_ids:
+            # REQ-FORCE-005: order_cancelled and NULL-sku LineItems never
+            # appear as candidates. `.order_by("order_id", "pk")` gives a
+            # deterministic, repeatable ordering (REQ-FORCE-006) rather than
+            # depending on MySQL's unordered-scan return order.
+            candidate_items = (
+                LineItem.objects.filter(order_id__in=order_ids)
+                .exclude(purchase_status="order_cancelled")
+                .exclude(sku__isnull=True)
+                .order_by("order_id", "pk")
+            )
+            for li in candidate_items:
+                candidates_by_order_id[li.order_id].append(
+                    {
+                        "line_item_id": li.id,
+                        "title": li.title,
+                        "sku": li.sku,
+                        "quantity": li.quantity,
+                        "shipped_quantity": li.shipped_quantity,
+                        "logistics_status": li.logistics_status,
+                        # REQ-FORCE-006: set when the ordered quantity is
+                        # NULL (0 capacity, 설계 결정 B carried over from
+                        # SPEC-ORDER-015) or shipped_quantity has already
+                        # reached quantity.
+                        "no_remaining_capacity": (
+                            li.quantity is None or li.shipped_quantity >= li.quantity
+                        ),
+                    }
+                )
+
+        results = [
+            {
+                "order_name": name,
+                "candidates": (
+                    candidates_by_order_id.get(orders_by_name[name].id, [])
+                    if name in orders_by_name
+                    else []
+                ),
+            }
+            for name in unique_names
+        ]
+        return Response({"results": results}, status=status.HTTP_200_OK)
+
+
+class ForceOutboundGateViolation(Exception):
+    """Raised internally when REQ-FORCE-002's pre-gate rejects an entire
+    force outbound request. Caught by OutboundForceProcessView.post() and
+    turned into HTTP 400 — never propagates past the view."""
+
+
+_REQUIRED_FORCE_ROW_KEYS = ("name", "sku", "total", "line_item_id")
+
+
+# @MX:NOTE: [AUTO] REQ-FORCE-002 violations reject the ENTIRE request with
+# HTTP 400 rather than downgrading only the offending row the way
+# `_process_outbound_rows` degrades an unmatched row (설계 결정 L). The
+# picker (OutboundForceCandidateView above) only ever offers valid targets,
+# so an invalid target arriving here means the client's view of server state
+# is stale — e.g. the item was cancelled between candidate lookup and
+# submission — not an ordinary business-data mismatch. Because the whole
+# request is one atomic transaction (REQ-FORCE-014), rejecting it whole is
+# simpler and safer than reconstructing a partial-success picture against a
+# picker that is already known to be stale.
+#
+# `order is None` is deliberately its OWN branch below, never folded into
+# the ownership check with `and` — folding it in would silently SKIP the
+# ownership check whenever the order fails to resolve, which is exactly the
+# hole this gate exists to close (a row could then target any LineItem by
+# id, in any Order, just by naming an Order that does not exist).
+def _force_outbound_gate_violated(
+    rows: list[dict],
+    orders_by_name: dict[str, "Order"],
+    targets_by_id: dict[int, "LineItem"],
+) -> bool:
+    """True iff at least one row fails REQ-FORCE-002's target validation."""
+    for row in rows:
+        if not isinstance(row, dict):
+            return True
+        if any(key not in row for key in _REQUIRED_FORCE_ROW_KEYS):
+            return True
+
+        target_id = row.get("line_item_id")
+        if not isinstance(target_id, int) or isinstance(target_id, bool):
+            return True
+
+        order_name = row.get("name")
+        order = orders_by_name.get(str(order_name)) if order_name is not None else None
+        if order is None:
+            return True
+
+        target = targets_by_id.get(target_id)
+        if target is None:
+            return True
+        if target.order_id != order.id:
+            return True
+        if target.purchase_status == "order_cancelled":
+            return True
+        if target.sku is None:
+            return True
+
+    return False
+
+
+# @MX:WARN: [AUTO] What REQ-FORCE-025's row lock does NOT solve: if a
+# designated target becomes purchase_status="order_cancelled" or loses its
+# `sku` AFTER the candidate lookup response was generated but BEFORE this
+# gate runs, the lock never gets a chance to protect that row — the gate
+# above rejects the WHOLE batch with HTTP 400 first (설계 결정 L), so every
+# other row in the same request also goes unapplied even though its own
+# target is still perfectly valid; the operator must re-fetch candidates and
+# retry. Separately, the normal outbound path (`_process_outbound_rows`
+# above) still takes no lock at all, so normal-vs-normal and
+# normal-vs-force concurrent writes to the same LineItem remain
+# unprotected — only force-vs-force races are closed by this lock. Both
+# gaps are recorded as follow-up task 2 (spec.md 후속 과제 2).
+# @MX:REASON: documents the boundary of REQ-FORCE-025's guarantee so a
+# future "batch rejected despite the lock being there" report is diagnosed
+# against a known, accepted limitation instead of investigated as a new bug.
+#
+# @MX:ANCHOR: [AUTO] Sole holder of the invariant contract SHARED with the
+# normal outbound path (`_process_outbound_rows` above) — per-target
+# summation, the quantity limit, rejection of negative/zero/unreadable
+# amounts before summation, non-decreasing shipped_quantity, the threshold
+# status transition, the 3-field write surface, and single-transaction
+# atomicity. REQ-FORCE-007 declares exactly two deviations from that shared
+# contract: the `(order, sku)` matching step is replaced by the caller's
+# explicit `line_item_id` designation, and the normal path's post-match
+# zero-quantity completion signal (US-warehouse close-out) is NOT inherited
+# (see the zero-quantity @MX:NOTE below). fan_in here is 1 — only
+# OutboundForceProcessView.post() calls this — below the project's
+# fan_in>=3 ANCHOR threshold, but it is tagged anyway because its purpose is
+# pinning this shared invariant contract, not marking a fan-in hotspot.
+# @MX:REASON: sole normative reference for what the force path is and is not
+# allowed to diverge from the normal path on; an edit to either path that
+# would break this contract should update this comment in the same change.
+def _process_force_outbound_rows(rows: list[dict]) -> dict:
+    """
+    SPEC-ORDER-016 REQ-FORCE-002/007~014/016/025: gate, group, lock, judge
+    and apply a force outbound request atomically.
+
+    Row shape: {"name": str, "sku": str, "total": <int-coercible>,
+    "line_item_id": int} — `line_item_id` designates the target LineItem the
+    caller explicitly chose (REQ-FORCE-002's replacement for `(order, sku)`
+    matching); `name`/`sku` are carried through for gate validation and
+    response reporting only.
+
+    Raises `ForceOutboundGateViolation` when any row fails REQ-FORCE-002 —
+    the caller (`OutboundForceProcessView.post()`) turns that into HTTP 400.
+    Otherwise returns the same matched/unmatched/quantity_exceeded/*_count
+    shape `_process_outbound_rows` returns (REQ-FORCE-016).
+    """
+    order_names = {
+        str(row["name"]) for row in rows if isinstance(row, dict) and row.get("name") is not None
+    }
+    target_ids = {
+        row["line_item_id"]
+        for row in rows
+        if isinstance(row, dict)
+        and isinstance(row.get("line_item_id"), int)
+        and not isinstance(row.get("line_item_id"), bool)
+    }
+
+    with transaction.atomic():
+        orders_by_name = _resolve_orders_by_name(order_names)
+
+        # @MX:NOTE: [AUTO] Deliberate divergence from the sibling function
+        # `_process_outbound_rows` above, which reads/writes LineItems
+        # WITHOUT select_for_update() (see its @MX:WARN). The force path
+        # locks its designated targets here — before evaluating the quantity
+        # limit below — and judges REQ-FORCE-009/010 against the values read
+        # under that lock (REQ-FORCE-025, 설계 결정 O). Rationale: this
+        # feature's confirmed scope hard-rules out exceeding the quantity
+        # limit, and the force path's stale-read window is structurally
+        # wider than the normal path's — a human chooses the target between
+        # candidate lookup and execution, so the value the limit check reads
+        # can be seconds-to-minutes old, not just query-latency old.
+        # `_apply_logistics_transition` above already uses the same
+        # lock-then-judge pattern in this same file, so this is not a new
+        # convention. The lock is attached to this SELECT — the one query
+        # that already has to fetch these targets for the gate below — so it
+        # adds no extra round trip. Locking in ascending target-id order
+        # avoids deadlock between two requests that touch an overlapping
+        # target set in a different order. Unifying the normal path onto
+        # this convention is follow-up task 2 (spec.md 후속 과제 2) — do not
+        # add select_for_update() to `_process_outbound_rows` here; its
+        # lock-free behaviour is pinned by test_spec_015.py and
+        # REQ-FORCE-018/M4.
+        targets_by_id: dict[int, LineItem] = {}
+        if target_ids:
+            locked_targets = (
+                LineItem.objects.select_for_update().filter(pk__in=target_ids).order_by("pk")
+            )
+            for li in locked_targets:
+                targets_by_id[li.id] = li
+
+        if _force_outbound_gate_violated(rows, orders_by_name, targets_by_id):
+            raise ForceOutboundGateViolation(
+                "One or more rows failed target validation; the entire "
+                "request was rejected without modifying any LineItem."
+            )
+
+        # REQ-FORCE-011: negative, zero and unreadable amounts are removed
+        # HERE, strictly before REQ-FORCE-008's grouping step, mirroring
+        # `_process_outbound_rows`'s pre-grouping rejection order (its
+        # `if total < 0` branch above). Removing AFTER grouping would let a
+        # target whose every row got removed still form a group summing to
+        # 0 — and, as the zero-quantity @MX:NOTE below explains, a 0 must
+        # never reach evaluation on this path at all.
+        unmatched: list[dict] = []
+        groups: dict[int, int] = {}
+        group_row_name: dict[int, str] = {}
+        for row in rows:
+            name = str(row["name"])
+            sku = str(row.get("sku") or "")
+            total, total_ok = _parse_total(row.get("total"))
+            target_id = row["line_item_id"]
+
+            # @MX:NOTE: [AUTO] `_process_outbound_rows` treats a SUMMED total
+            # of exactly 0 as a possible US-warehouse completion signal,
+            # judged AFTER matching against the matched LineItem's
+            # confirmed_distributor (see that function's @MX:NOTE above).
+            # The force path does NOT inherit that branch (REQ-FORCE-007,
+            # 설계 결정 I): the caller picks an arbitrary target, and letting
+            # a 0-quantity force row auto-complete it would be a new
+            # business rule nobody asked for. So here — unlike the normal
+            # path — `total == 0` is rejected in the SAME branch as
+            # negative/unreadable; there is no post-grouping zero-quantity
+            # judgement anywhere on this path.
+            if not total_ok or total <= 0:
+                unmatched.append(
+                    {"name": name, "sku": sku, "total": total, "reason": "invalid_total"}
+                )
+                continue
+
+            groups[target_id] = groups.get(target_id, 0) + total
+            group_row_name.setdefault(target_id, name)
+
+        # REQ-FORCE-008: judged in ascending target-id order (matching the
+        # lock-acquisition order above). Every group here carries a combined
+        # quantity of at least 1 by construction — the loop above never lets
+        # a non-positive or unreadable row survive into `groups`.
+        matched: list[dict] = []
+        quantity_exceeded: list[dict] = []
+        to_update: list[LineItem] = []
+        for target_id in sorted(groups):
+            total = groups[target_id]
+            target = targets_by_id[target_id]
+            # REQ-FORCE-009/010 (설계 결정 B carried over): NULL quantity ==
+            # 0 capacity.
+            effective_quantity = target.quantity or 0
+
+            if target.shipped_quantity + total > effective_quantity:
+                quantity_exceeded.append(
+                    {
+                        "name": group_row_name[target_id],
+                        "sku": target.sku,
+                        "total": total,
+                        "line_item_id": target.id,
+                        "shipped_quantity": target.shipped_quantity,
+                        "quantity": target.quantity,
+                        "reason": "quantity_exceeded",
+                    }
+                )
+                continue
+
+            target.shipped_quantity += total
+            target.shipped_at = timezone.now()
+            if target.shipped_quantity >= effective_quantity:
+                target.logistics_status = "shipped"
+
+            to_update.append(target)
+            matched.append(
+                {
+                    "name": group_row_name[target_id],
+                    "sku": target.sku,
+                    "total": total,
+                    "line_item_id": target.id,
+                    "shipped_quantity": target.shipped_quantity,
+                    "quantity": target.quantity,
+                    "logistics_status": target.logistics_status,
+                }
+            )
+
+        # REQ-FORCE-013: the ONLY fields this path ever writes.
+        # @MX:NOTE: [AUTO] No call to _recompute_order_aggregates() here —
+        # deliberate, matching the normal outbound path's existing behaviour
+        # (`_process_outbound_rows` above never calls it either, despite
+        # writing logistics_status="shipped"). The sibling logistics paths
+        # (UploadVendorShipmentView, UploadWarehouseReceiptView above) DO
+        # call it. This is a known, pinned inconsistency (설계 결정 E) —
+        # fixing it requires touching BOTH the normal and force outbound
+        # paths together (follow-up task 1, spec.md 후속 과제 1) so they
+        # never diverge from each other; do not add the call here alone.
+        if to_update:
+            LineItem.objects.bulk_update(
+                to_update, ["shipped_quantity", "shipped_at", "logistics_status"]
+            )
+
+    return {
+        "matched": matched,
+        "unmatched": unmatched,
+        "quantity_exceeded": quantity_exceeded,
+        "matched_count": len(matched),
+        "unmatched_count": len(unmatched),
+        "quantity_exceeded_count": len(quantity_exceeded),
+    }
+
+
+class OutboundForceProcessView(APIView):
+    """
+    POST /api/purchase-orders/line-items/outbound-force-process/
+
+    REQ-FORCE-002/007~018/025: applies a batch of caller-designated force
+    outbound rows (see `_process_force_outbound_rows` for the full
+    invariant contract) and returns the same matched/unmatched/
+    quantity_exceeded/*_count response shape `OutboundProcessView` returns
+    (REQ-FORCE-016), so the client can reuse its existing result-rendering
+    path unchanged.
+
+    Body: {"rows": [{"name": str, "sku": str, "total": int,
+    "line_item_id": int}, ...]}
+    """
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request) -> Response:
+        rows = request.data.get("rows", [])
+        if not isinstance(rows, list):
+            return Response(
+                {"error": "rows must be a list."}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            result = _process_force_outbound_rows(rows)
+        except ForceOutboundGateViolation as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as exc:
+            return Response(
+                {"detail": f"처리 중 오류가 발생했습니다: {exc}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        return Response(result, status=status.HTTP_200_OK)
+
+
+# ---------------------------------------------------------------------------
 # M6: Distributor vendor rules
 # ---------------------------------------------------------------------------
 

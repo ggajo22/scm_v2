@@ -1,20 +1,70 @@
-import { useRef, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { ResultSection } from '@/components/ResultSection'
-import { useProcessOutboundManual, useUploadOutbound } from '@/hooks/useOutboundQueries'
-import type { OutboundProcessResponse, OutboundUnmatchedReason } from '@/services/outboundApi'
+import {
+  useProcessOutboundManual,
+  useUploadOutbound,
+  useOutboundForceCandidates,
+  useProcessOutboundForce,
+} from '@/hooks/useOutboundQueries'
+import type {
+  OutboundForceCandidate,
+  OutboundForceRowInput,
+  OutboundProcessResponse,
+  OutboundUnmatchedReason,
+} from '@/services/outboundApi'
 import { parseManualRows } from './parseManualRows'
+import {
+  UnmatchedForceSection,
+  buildForceSelectionKey,
+  isForceEligible,
+} from './UnmatchedForceSection'
 
 // REQ-OUTBOUND-017: each backend `reason` code gets its own Korean label so a
 // failed row tells the operator *why* it failed, not just that it did.
 // Record (not Partial) so adding a reason code to the union without a label
 // here is a compile error rather than a raw snake_case string in the UI.
-const UNMATCHED_REASON_LABELS: Record<OutboundUnmatchedReason, string> = {
+// Exported so UnmatchedForceSection (SPEC-ORDER-016) can reuse the same
+// labels instead of duplicating this map (REQ-FORCE-021).
+// eslint-disable-next-line react-refresh/only-export-components
+export const UNMATCHED_REASON_LABELS: Record<OutboundUnmatchedReason, string> = {
   order_not_found: '주문 없음',
   line_item_not_found: 'SKU 불일치',
   multiple_line_items: '동일 SKU 복수 품목',
   invalid_total: '수량 오류',
   invalid_row: '행 형식 오류',
+}
+
+// SPEC-ORDER-016 REQ-FORCE-024/설계 결정 N: merges a successful force-execute
+// response into the existing single result slot instead of appending to it
+// (which would let the same physical shipment be recorded twice on a
+// resubmit) or replacing it wholesale (which would silently discard
+// unselected eligible rows and any pre-existing matched/quantity_exceeded
+// entries — rejected alternatives recorded in 설계 결정 N). Only the value
+// passed to the existing single `setResult` slot changes; the slot itself
+// and its update mechanism are unchanged from the two existing submit paths.
+function mergeForceOutboundResult(
+  prev: OutboundProcessResponse,
+  submittedRows: OutboundForceRowInput[],
+  forceResult: OutboundProcessResponse
+): OutboundProcessResponse {
+  const submittedKeys = new Set(
+    submittedRows.map((row) => buildForceSelectionKey(row.name, row.sku))
+  )
+  const unmatched = prev.unmatched.filter(
+    (item) => !submittedKeys.has(buildForceSelectionKey(item.name, item.sku))
+  )
+  const matched = [...prev.matched, ...forceResult.matched]
+  const quantity_exceeded = [...prev.quantity_exceeded, ...forceResult.quantity_exceeded]
+
+  return {
+    matched,
+    matched_count: matched.length,
+    unmatched,
+    unmatched_count: unmatched.length,
+    quantity_exceeded,
+    quantity_exceeded_count: quantity_exceeded.length,
+  }
 }
 
 // SPEC-ORDER-015: standalone outbound processing page (REQ-OUTBOUND-015).
@@ -63,6 +113,101 @@ export function OutboundPage() {
   }
 
   const isBusy = processMutation.isPending || uploadMutation.isPending
+
+  // SPEC-ORDER-016 설계 결정 G/H/K: force-outbound selection state lives
+  // here as local `useState` (RackNumberPage/tabs/SearchTab.tsx convention),
+  // never the global order store. The selection key is (order identifier,
+  // sku) — NOT an array index; the render key `${name}-${sku}-${index}`
+  // used below is a separate, purely presentational key. This selection key
+  // exists only for client-side bookkeeping: the SERVER's own
+  // aggregation/response key for a force request is different again — the
+  // operator-designated target LineItem id (설계 결정 K) — so this key is
+  // never sent in the request body. Both maps reset whenever a new result
+  // lands, which also satisfies REQ-FORCE-024(e)'s "clear selection"
+  // requirement after a successful force merge. Reset happens during render
+  // (React's "adjusting state when a prop changes" pattern), not inside a
+  // useEffect — an effect here would fire an extra, avoidable render:
+  // https://react.dev/learn/you-might-not-need-an-effect#adjusting-state-when-a-prop-changes
+  const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set())
+  const [targetByKey, setTargetByKey] = useState<Record<string, number>>({})
+  const [prevResult, setPrevResult] = useState(result)
+  if (result !== prevResult) {
+    setPrevResult(result)
+    setSelectedKeys(new Set())
+    setTargetByKey({})
+  }
+
+  const eligibleItems = useMemo(
+    () => (result?.unmatched ?? []).filter(isForceEligible),
+    [result]
+  )
+  // REQ-FORCE-003: the full, de-duplicated set of eligible rows' order
+  // identifiers — recomputed only when the settled result changes, so the
+  // candidate query below fires once per result, never per row.
+  const eligibleOrderNames = useMemo(
+    () => Array.from(new Set(eligibleItems.map((item) => item.name))),
+    [eligibleItems]
+  )
+  const { data: candidateGroups } = useOutboundForceCandidates(eligibleOrderNames)
+  const candidatesByOrder = useMemo(() => {
+    const map = new Map<string, OutboundForceCandidate[]>()
+    for (const group of candidateGroups ?? []) {
+      map.set(group.order_name, group.candidates)
+    }
+    return map
+  }, [candidateGroups])
+
+  const toggleSelect = (key: string) => {
+    setSelectedKeys((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
+
+  const toggleSelectAll = () => {
+    const eligibleKeys = eligibleItems.map((item) => buildForceSelectionKey(item.name, item.sku))
+    const allSelected =
+      eligibleKeys.length > 0 && eligibleKeys.every((key) => selectedKeys.has(key))
+    setSelectedKeys(allSelected ? new Set() : new Set(eligibleKeys))
+  }
+
+  const assignTarget = (key: string, lineItemId: number | undefined) => {
+    setTargetByKey((prev) => {
+      const next = { ...prev }
+      if (lineItemId === undefined) delete next[key]
+      else next[key] = lineItemId
+      return next
+    })
+  }
+
+  // REQ-FORCE-022/023: only rows that are simultaneously eligible, selected
+  // and target-assigned are ever included in the force-execute payload.
+  const forceExecutableRows = useMemo<OutboundForceRowInput[]>(() => {
+    const rows: OutboundForceRowInput[] = []
+    for (const item of eligibleItems) {
+      const key = buildForceSelectionKey(item.name, item.sku)
+      if (!selectedKeys.has(key)) continue
+      const lineItemId = targetByKey[key]
+      if (lineItemId === undefined) continue
+      rows.push({ name: item.name, sku: item.sku, total: item.total, line_item_id: lineItemId })
+    }
+    return rows
+  }, [eligibleItems, selectedKeys, targetByKey])
+
+  const forceMutation = useProcessOutboundForce()
+
+  const handleForceExecute = () => {
+    if (forceExecutableRows.length === 0) return
+    forceMutation.mutate(forceExecutableRows, {
+      onSuccess: (forceResult) => {
+        setResult((prev) =>
+          prev ? mergeForceOutboundResult(prev, forceExecutableRows, forceResult) : prev
+        )
+      },
+    })
+  }
 
   return (
     <div className="p-6 max-w-5xl mx-auto space-y-6">
@@ -144,22 +289,32 @@ export function OutboundPage() {
             }))}
           />
 
-          <ResultSection
-            testId="outbound-unmatched"
-            title="매칭 실패"
-            count={result.unmatched_count}
-            toneClassName="border-amber-300 bg-amber-50"
-            columns={['주문번호', 'SKU', '요청 수량', '사유']}
-            rows={result.unmatched.map((item, index) => ({
-              key: `${item.name}-${item.sku}-${index}`,
-              cells: [
-                item.name,
-                item.sku,
-                String(item.total),
-                UNMATCHED_REASON_LABELS[item.reason] ?? item.reason,
-              ],
-            }))}
+          {/* SPEC-ORDER-016: unmatched rows whose failure reason is
+              line_item_not_found and whose quantity is positive can be
+              force-outbounded against an operator-designated target
+              (REQ-FORCE-001/019~021). */}
+          <UnmatchedForceSection
+            items={result.unmatched}
+            reasonLabels={UNMATCHED_REASON_LABELS}
+            candidatesByOrder={candidatesByOrder}
+            selectedKeys={selectedKeys}
+            targetByKey={targetByKey}
+            onToggleSelect={toggleSelect}
+            onToggleSelectAll={toggleSelectAll}
+            onAssignTarget={assignTarget}
           />
+          {/* REQ-FORCE-022/023: enabled only once at least one row is
+              simultaneously eligible, selected and target-assigned; the
+              payload carries exactly those rows (REQ-FORCE-015). */}
+          <div className="flex justify-end">
+            <Button
+              size="sm"
+              onClick={handleForceExecute}
+              disabled={forceExecutableRows.length === 0 || forceMutation.isPending}
+            >
+              강제 출고 처리 실행
+            </Button>
+          </div>
 
           <ResultSection
             testId="outbound-quantity-exceeded"

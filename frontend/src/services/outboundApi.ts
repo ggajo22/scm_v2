@@ -91,3 +91,63 @@ export async function uploadOutbound(formData: FormData): Promise<OutboundProces
   })
   return res.data
 }
+
+// ---------------------------------------------------------------------------
+// SPEC-ORDER-016: force outbound processing (REQ-FORCE-001~025)
+// ---------------------------------------------------------------------------
+
+// REQ-FORCE-006: one force-eligible candidate LineItem for a given order, as
+// returned by the batch candidate lookup. `no_remaining_capacity` is true
+// when `quantity` is null (capacity 0, 설계 결정 B) or `shipped_quantity`
+// has already reached `quantity`.
+export interface OutboundForceCandidate {
+  line_item_id: number
+  title: string | null
+  sku: string
+  quantity: number | null
+  shipped_quantity: number
+  logistics_status: string
+  no_remaining_capacity: boolean
+}
+
+// REQ-FORCE-006: one order's candidate list within a batch response.
+export interface OutboundForceCandidateGroup {
+  order_name: string
+  candidates: OutboundForceCandidate[]
+}
+
+// One force-outbound row as submitted by the operator: the original
+// order/sku (carried through for gate validation and response reporting
+// only, per backend contract) plus the operator-designated target
+// LineItem id, which replaces `(order, sku)` matching (REQ-FORCE-002/007).
+export interface OutboundForceRowInput {
+  name: string
+  sku: string
+  total: number
+  line_item_id: number
+}
+
+// REQ-FORCE-003: batch candidate lookup for every order identifier the
+// caller passes, in a single round trip. An empty list still round-trips
+// (the server returns an empty `results` array rather than an error).
+export async function fetchOutboundForceCandidates(
+  orderNames: string[]
+): Promise<OutboundForceCandidateGroup[]> {
+  const res = await api.post('/api/purchase-orders/line-items/outbound-force-candidates/', {
+    order_names: orderNames,
+  })
+  return res.data.results
+}
+
+// REQ-FORCE-015/016: force-execute a batch of operator-designated rows.
+// Reuses `OutboundProcessResponse` verbatim — the server returns the same
+// matched/unmatched/quantity_exceeded/*_count contract the two existing
+// outbound endpoints return, so no new response type is introduced here.
+// A gate violation (REQ-FORCE-002) surfaces as an HTTP 400 rejection, same
+// as every other outbound submit path.
+export async function processOutboundForce(
+  rows: OutboundForceRowInput[]
+): Promise<OutboundProcessResponse> {
+  const res = await api.post('/api/purchase-orders/line-items/outbound-force-process/', { rows })
+  return res.data
+}

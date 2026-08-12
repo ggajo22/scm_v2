@@ -7,8 +7,17 @@ vi.mock('@/lib/axios', () => ({
 }))
 
 import { api } from '@/lib/axios'
-import { processOutboundManual, uploadOutbound } from './outboundApi'
-import type { OutboundProcessResponse, OutboundUnmatchedReason } from './outboundApi'
+import {
+  processOutboundManual,
+  uploadOutbound,
+  fetchOutboundForceCandidates,
+  processOutboundForce,
+} from './outboundApi'
+import type {
+  OutboundProcessResponse,
+  OutboundUnmatchedReason,
+  OutboundForceCandidateGroup,
+} from './outboundApi'
 
 const mockPost = vi.mocked(api.post)
 
@@ -160,5 +169,111 @@ describe('uploadOutbound — SPEC-ORDER-015 REQ-OUTBOUND-013/016', () => {
     mockPost.mockRejectedValueOnce(new Error('422'))
 
     await expect(uploadOutbound(new FormData())).rejects.toThrow('422')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// SPEC-ORDER-016: force outbound processing (REQ-FORCE-003/004/005/006/015/016)
+// ---------------------------------------------------------------------------
+
+describe('fetchOutboundForceCandidates — SPEC-ORDER-016 REQ-FORCE-003/004/005/006', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('POSTs the batched order_names to the force-candidates endpoint', async () => {
+    mockPost.mockResolvedValueOnce({ data: { results: [] } })
+
+    await fetchOutboundForceCandidates(['#37349', '#37350'])
+
+    expect(mockPost).toHaveBeenCalledWith(
+      '/api/purchase-orders/line-items/outbound-force-candidates/',
+      { order_names: ['#37349', '#37350'] }
+    )
+  })
+
+  it('returns the results array unwrapped from res.data.results, candidate fields included', async () => {
+    const results: OutboundForceCandidateGroup[] = [
+      {
+        order_name: '#37349',
+        candidates: [
+          {
+            line_item_id: 1,
+            title: '도서',
+            sku: 'ISBN001',
+            quantity: 10,
+            shipped_quantity: 4,
+            logistics_status: 'received',
+            no_remaining_capacity: false,
+          },
+        ],
+      },
+    ]
+    mockPost.mockResolvedValueOnce({ data: { results } })
+
+    const result = await fetchOutboundForceCandidates(['#37349'])
+
+    expect(result).toEqual(results)
+  })
+
+  it('AC-FORCE-003: an empty order name list still round-trips to a single request', async () => {
+    mockPost.mockResolvedValueOnce({ data: { results: [] } })
+
+    const result = await fetchOutboundForceCandidates([])
+
+    expect(mockPost).toHaveBeenCalledTimes(1)
+    expect(result).toEqual([])
+  })
+
+  it('propagates a rejected candidate lookup to the caller', async () => {
+    mockPost.mockRejectedValueOnce(new Error('boom'))
+
+    await expect(fetchOutboundForceCandidates(['#37349'])).rejects.toThrow('boom')
+  })
+})
+
+describe('processOutboundForce — SPEC-ORDER-016 REQ-FORCE-015/016', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('POSTs the operator-designated rows to the force-process endpoint', async () => {
+    mockPost.mockResolvedValueOnce({ data: buildResponse() })
+    const rows = [{ name: '#37349', sku: 'ISBN001', total: 4, line_item_id: 11 }]
+
+    await processOutboundForce(rows)
+
+    expect(mockPost).toHaveBeenCalledWith(
+      '/api/purchase-orders/line-items/outbound-force-process/',
+      { rows }
+    )
+  })
+
+  it('AC-FORCE-016 (client reuse): returns the existing 3-category response shape unwrapped from res.data', async () => {
+    const payload = buildResponse()
+    mockPost.mockResolvedValueOnce({ data: payload })
+
+    const result = await processOutboundForce([
+      { name: '#37349', sku: 'ISBN001', total: 4, line_item_id: 11 },
+    ])
+
+    expect(result).toEqual(payload)
+    expect(result.matched_count).toBe(1)
+    expect(result.unmatched_count).toBe(1)
+    expect(result.quantity_exceeded_count).toBe(1)
+  })
+
+  it('surfaces an HTTP 400 gate violation (REQ-FORCE-002) as a rejection', async () => {
+    const badRequest = Object.assign(new Error('Request failed with status code 400'), {
+      response: {
+        status: 400,
+        data: { error: 'One or more rows failed target validation.' },
+      },
+    })
+    mockPost.mockRejectedValueOnce(badRequest)
+
+    await expect(
+      processOutboundForce([{ name: '#37349', sku: 'ISBN001', total: 4, line_item_id: 11 }])
+    ).rejects.toThrow('Request failed with status code 400')
   })
 })
