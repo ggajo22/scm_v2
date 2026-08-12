@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
+import { ResultSection } from '@/components/ResultSection'
 import { useProcessOutboundManual, useUploadOutbound } from '@/hooks/useOutboundQueries'
 import type { OutboundProcessResponse, OutboundUnmatchedReason } from '@/services/outboundApi'
 import { parseManualRows } from './parseManualRows'
@@ -179,68 +180,5 @@ export function OutboundPage() {
         </div>
       )}
     </div>
-  )
-}
-
-interface ResultRow {
-  key: string
-  cells: string[]
-}
-
-function ResultSection({
-  testId,
-  title,
-  count,
-  toneClassName,
-  columns,
-  rows,
-}: {
-  testId: string
-  title: string
-  count: number
-  toneClassName: string
-  columns: string[]
-  rows: ResultRow[]
-}) {
-  return (
-    <section
-      data-testid={testId}
-      aria-label={title}
-      className={`rounded border ${toneClassName} p-3 space-y-2`}
-    >
-      <div className="flex items-center gap-2">
-        <h3 className="text-sm font-semibold">{title}</h3>
-        <span className="text-sm text-muted-foreground">{`${count}건`}</span>
-      </div>
-
-      {rows.length === 0 ? (
-        <p className="text-sm text-muted-foreground">해당 항목이 없습니다.</p>
-      ) : (
-        <div className="overflow-x-auto rounded border bg-background">
-          <table className="w-full text-sm border-collapse">
-            <thead>
-              <tr className="border-b bg-muted/50">
-                {columns.map((column) => (
-                  <th key={column} className="py-2 px-3 text-left font-medium">
-                    {column}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row) => (
-                <tr key={row.key} className="border-b last:border-0">
-                  {row.cells.map((cell, index) => (
-                    <td key={columns[index]} className="py-2 px-3 font-mono text-xs">
-                      {cell}
-                    </td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </section>
   )
 }

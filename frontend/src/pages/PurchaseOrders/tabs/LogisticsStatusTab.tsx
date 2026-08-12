@@ -1,10 +1,35 @@
 import { useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
+import { ResultSection } from '@/components/ResultSection'
 import {
   useUploadVendorShipment,
   useUploadWarehouseReceipt,
 } from '@/hooks/usePurchaseOrderQueries'
-import type { UploadLogisticsResponse } from '@/services/purchaseOrderApi'
+import {
+  LOGISTICS_STATUS_OPTIONS,
+  type UploadLogisticsResponse,
+  type UploadWarehouseReceiptResponse,
+  type WarehouseReceiptUnmatchedReason,
+} from '@/services/purchaseOrderApi'
+
+// REQ-LOGI-017: each backend `reason` code (unmatched category only —
+// quantity_exceeded's reason is a fixed constant) gets its own Korean
+// label, mirroring OutboundPage's UNMATCHED_REASON_LABELS. Record (not
+// Partial) so adding a reason code to the union without a label here is a
+// compile error rather than a raw snake_case string in the UI.
+const WAREHOUSE_RECEIPT_REASON_LABELS: Record<WarehouseReceiptUnmatchedReason, string> = {
+  order_not_found: '주문 없음',
+  line_item_not_found: 'SKU 불일치',
+  multiple_line_items: '동일 SKU 복수 품목',
+  invalid_row: '행 형식 오류',
+}
+
+// REQ-LOGI-017: reuse the existing logistics_status Korean labels
+// (LOGISTICS_STATUS_OPTIONS, SPEC-ORDER-011 REQ-LOGI-001) instead of
+// defining a second status label map.
+const LOGISTICS_STATUS_LABELS: Record<string, string> = Object.fromEntries(
+  LOGISTICS_STATUS_OPTIONS.map((option) => [option.value, option.label])
+)
 
 // SPEC-ORDER-011 T11: two upload cards for the logistics_status pipeline
 // (REQ-LOGI-003 vendor shipment confirmation, REQ-LOGI-005 warehouse
@@ -18,7 +43,11 @@ export function LogisticsStatusTab() {
 
   const [vendorResult, setVendorResult] = useState<UploadLogisticsResponse | null>(null)
   const [vendorError, setVendorError] = useState<string | null>(null)
-  const [warehouseResult, setWarehouseResult] = useState<UploadLogisticsResponse | null>(null)
+  // REQ-LOGI-017: warehouse receipt result carries the per-row detail lists;
+  // the vendor shipment card's response shape is unchanged (counts only).
+  const [warehouseResult, setWarehouseResult] = useState<UploadWarehouseReceiptResponse | null>(
+    null
+  )
   const [warehouseError, setWarehouseError] = useState<string | null>(null)
 
   const handleVendorFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -45,7 +74,7 @@ export function LogisticsStatusTab() {
     setWarehouseResult(null)
     setWarehouseError(null)
     uploadWarehouseReceiptMutation.mutate(formData, {
-      onSuccess: (data: UploadLogisticsResponse) => setWarehouseResult(data),
+      onSuccess: (data: UploadWarehouseReceiptResponse) => setWarehouseResult(data),
       onError: () => setWarehouseError('창고 입고결과 파일 업로드에 실패했습니다.'),
       onSettled: () => {
         if (warehouseFileInputRef.current) warehouseFileInputRef.current.value = ''
@@ -129,6 +158,65 @@ export function LogisticsStatusTab() {
             </div>
           )}
           {warehouseError && <div className="text-xs text-destructive">{warehouseError}</div>}
+
+          {/* REQ-LOGI-017: all three categories render together, each with
+              its own count, so an empty category is visibly empty rather
+              than absent — mirrors OutboundPage's result rendering. */}
+          {warehouseResult && (
+            <div className="space-y-3">
+              <ResultSection
+                testId="warehouse-matched"
+                title="성공"
+                count={warehouseResult.matched_count}
+                toneClassName="border-green-300 bg-green-50"
+                columns={['주문번호', 'SKU', '이번 입고', '누적/주문 수량', '상태']}
+                rows={warehouseResult.matched.map((item) => ({
+                  key: `${item.line_item_id}`,
+                  cells: [
+                    item.name,
+                    item.sku,
+                    String(item.received_count),
+                    `${item.received_quantity} / ${item.quantity ?? 0}`,
+                    LOGISTICS_STATUS_LABELS[item.logistics_status] ?? item.logistics_status,
+                  ],
+                }))}
+              />
+
+              <ResultSection
+                testId="warehouse-unmatched"
+                title="매칭 실패"
+                count={warehouseResult.unmatched_count}
+                toneClassName="border-amber-300 bg-amber-50"
+                columns={['주문번호', 'SKU', '행 수', '사유']}
+                rows={warehouseResult.unmatched.map((item, index) => ({
+                  key: `${item.name}-${item.sku}-${index}`,
+                  cells: [
+                    item.name,
+                    item.sku,
+                    String(item.received_count),
+                    WAREHOUSE_RECEIPT_REASON_LABELS[item.reason] ?? item.reason,
+                  ],
+                }))}
+              />
+
+              <ResultSection
+                testId="warehouse-quantity-exceeded"
+                title="수량초과"
+                count={warehouseResult.quantity_exceeded_count}
+                toneClassName="border-red-300 bg-red-50"
+                columns={['주문번호', 'SKU', '행 수', '누적/주문 수량']}
+                rows={warehouseResult.quantity_exceeded.map((item) => ({
+                  key: `${item.line_item_id}`,
+                  cells: [
+                    item.name,
+                    item.sku,
+                    String(item.received_count),
+                    `${item.received_quantity} / ${item.quantity ?? 0}`,
+                  ],
+                }))}
+              />
+            </div>
+          )}
         </div>
       </div>
     </div>

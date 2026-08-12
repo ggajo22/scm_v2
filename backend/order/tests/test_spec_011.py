@@ -566,7 +566,8 @@ class TestUploadWarehouseReceiptView:
             UPLOAD_WAREHOUSE_RECEIPT_URL, data={"file": _file_obj(file_bytes)}, format="multipart"
         )
         assert res.status_code == 200
-        assert res.data == {"matched_count": 1, "skipped_count": 0}
+        assert res.data["matched_count"] == 1
+        assert res.data["skipped_count"] == 0
         li.refresh_from_db()
         assert li.received_quantity == 1
         assert li.received_at is not None
@@ -591,7 +592,8 @@ class TestUploadWarehouseReceiptView:
             UPLOAD_WAREHOUSE_RECEIPT_URL, data={"file": _file_obj(file_bytes)}, format="multipart"
         )
         assert res.status_code == 200
-        assert res.data == {"matched_count": 1, "skipped_count": 0}
+        assert res.data["matched_count"] == 1
+        assert res.data["skipped_count"] == 0
         li.refresh_from_db()
         assert li.received_quantity == 5
         assert li.received_at is not None
@@ -628,7 +630,8 @@ class TestUploadWarehouseReceiptView:
             UPLOAD_WAREHOUSE_RECEIPT_URL, data={"file": _file_obj(file_bytes)}, format="multipart"
         )
         assert res.status_code == 200
-        assert res.data == {"matched_count": 1, "skipped_count": 0}
+        assert res.data["matched_count"] == 1
+        assert res.data["skipped_count"] == 0
         li.refresh_from_db()
         assert li.received_quantity == 4
         assert li.received_at is not None
@@ -681,7 +684,8 @@ class TestUploadWarehouseReceiptView:
             UPLOAD_WAREHOUSE_RECEIPT_URL, data={"file": _file_obj(file_bytes)}, format="multipart"
         )
         assert res.status_code == 200
-        assert res.data == {"matched_count": 0, "skipped_count": 1}
+        assert res.data["matched_count"] == 0
+        assert res.data["skipped_count"] == 1
         li.refresh_from_db()
         assert li.received_quantity == 2
         assert li.received_at is None
@@ -698,7 +702,8 @@ class TestUploadWarehouseReceiptView:
             UPLOAD_WAREHOUSE_RECEIPT_URL, data={"file": _file_obj(file_bytes)}, format="multipart"
         )
         assert res.status_code == 200
-        assert res.data == {"matched_count": 0, "skipped_count": 1}
+        assert res.data["matched_count"] == 0
+        assert res.data["skipped_count"] == 1
         li.refresh_from_db()
         assert li.received_quantity == 0
         assert li.received_at is None
@@ -797,7 +802,8 @@ class TestUploadWarehouseReceiptView:
             UPLOAD_WAREHOUSE_RECEIPT_URL, data={"file": _file_obj(file_bytes)}, format="multipart"
         )
         assert res.status_code == 200
-        assert res.data == {"matched_count": 0, "skipped_count": 1}
+        assert res.data["matched_count"] == 0
+        assert res.data["skipped_count"] == 1
 
     def test_line_item_not_found_skipped_no_write(self, auth_client):
         """line_item_not_found -> skipped, no write."""
@@ -808,7 +814,8 @@ class TestUploadWarehouseReceiptView:
             UPLOAD_WAREHOUSE_RECEIPT_URL, data={"file": _file_obj(file_bytes)}, format="multipart"
         )
         assert res.status_code == 200
-        assert res.data == {"matched_count": 0, "skipped_count": 1}
+        assert res.data["matched_count"] == 0
+        assert res.data["skipped_count"] == 1
 
     def test_multiple_line_items_skipped_no_write(self, auth_client):
         """multiple_line_items (2+ candidates, ambiguous) -> skipped, no
@@ -822,25 +829,71 @@ class TestUploadWarehouseReceiptView:
             UPLOAD_WAREHOUSE_RECEIPT_URL, data={"file": _file_obj(file_bytes)}, format="multipart"
         )
         assert res.status_code == 200
-        assert res.data == {"matched_count": 0, "skipped_count": 1}
+        assert res.data["matched_count"] == 0
+        assert res.data["skipped_count"] == 1
         li1.refresh_from_db()
         li2.refresh_from_db()
         assert li1.received_quantity == 0
         assert li2.received_quantity == 0
 
-    def test_response_shape_is_matched_count_and_skipped_count_only(self, auth_client):
-        """The frontend only reads {matched_count, skipped_count} — the
-        response body must not expose the internal matched/unmatched/
-        quantity_exceeded detail lists (unlike UploadOutboundView)."""
+    def test_response_exposes_per_row_detail_lists(self, auth_client):
+        """REQ-LOGI-017: the response carries the three per-row detail lists
+        (matched / unmatched / quantity_exceeded) alongside the pre-existing
+        counts, so the UI can show WHICH rows were skipped and why — same
+        payload shape OutboundProcessView returns. `matched_count` /
+        `skipped_count` keep their previous meaning."""
         order = _make_order(shopify_order_id=90023, name="#90023")
         _make_line_item(order, shopify_line_item_id=1, sku="SKU-WR-SHAPE", quantity=1)
-        file_bytes = _make_name_sku_excel([("#90023", "SKU-WR-SHAPE")])
+        # One row that matches, one that names a nonexistent order, and one
+        # that over-receives an already-full LineItem — so all three lists
+        # come back non-empty in a single call.
+        full_li = _make_line_item(
+            order, shopify_line_item_id=2, sku="SKU-WR-FULL", quantity=1, received_quantity=1
+        )
+        file_bytes = _make_name_sku_excel([
+            ("#90023", "SKU-WR-SHAPE"),
+            ("#NOPE-90023", "SKU-WR-GHOST"),
+            ("#90023", "SKU-WR-FULL"),
+        ])
 
         res = auth_client.post(
             UPLOAD_WAREHOUSE_RECEIPT_URL, data={"file": _file_obj(file_bytes)}, format="multipart"
         )
         assert res.status_code == 200
-        assert set(res.data.keys()) == {"matched_count", "skipped_count"}
+        assert set(res.data.keys()) == {
+            "matched_count",
+            "skipped_count",
+            "matched",
+            "unmatched",
+            "unmatched_count",
+            "quantity_exceeded",
+            "quantity_exceeded_count",
+        }
+
+        # skipped_count stays the sum of the two failure categories.
+        assert res.data["matched_count"] == 1
+        assert res.data["unmatched_count"] == 1
+        assert res.data["quantity_exceeded_count"] == 1
+        assert res.data["skipped_count"] == 2
+
+        matched_row = res.data["matched"][0]
+        assert matched_row["name"] == "#90023"
+        assert matched_row["sku"] == "SKU-WR-SHAPE"
+        assert matched_row["received_count"] == 1
+        assert matched_row["received_quantity"] == 1
+        assert matched_row["quantity"] == 1
+        assert matched_row["logistics_status"] == "received"
+
+        unmatched_row = res.data["unmatched"][0]
+        assert unmatched_row["sku"] == "SKU-WR-GHOST"
+        assert unmatched_row["reason"] == "order_not_found"
+
+        exceeded_row = res.data["quantity_exceeded"][0]
+        assert exceeded_row["sku"] == "SKU-WR-FULL"
+        assert exceeded_row["line_item_id"] == full_li.id
+        assert exceeded_row["reason"] == "quantity_exceeded"
+        assert exceeded_row["received_quantity"] == 1
+        assert exceeded_row["quantity"] == 1
 
     def test_unauthenticated_returns_401(self, anon_client):
         file_bytes = _make_name_sku_excel([("#90099", "SKU-WR-ANON")])

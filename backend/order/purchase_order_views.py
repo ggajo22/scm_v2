@@ -2117,12 +2117,16 @@ class UploadWarehouseReceiptView(APIView):
     Never touches WarehouseStock.quantity (Decision B / REQ-LOGI-006) — this
     remains a pure LineItem field, not an inventory event.
 
-    Response shape is unchanged from the pre-quantity-model version:
-    {"matched_count": int, "skipped_count": int}. matched_count counts
-    distinct (name, sku) pairs that accumulated some quantity this call
-    (whether or not that crossed the "received" threshold); skipped_count
-    folds every unmatched (any reason) and quantity_exceeded outcome into
-    one count — same per-pair counting convention as REQ-LOGI-004.
+    Response carries the pre-existing counts plus, since REQ-LOGI-017, the
+    three per-row detail lists so the UI can show WHICH rows were skipped
+    and why: {"matched_count", "skipped_count", "matched", "unmatched",
+    "unmatched_count", "quantity_exceeded", "quantity_exceeded_count"} —
+    the same three-category payload OutboundProcessView returns
+    (REQ-OUTBOUND-014). matched_count counts distinct (name, sku) pairs that
+    accumulated some quantity this call (whether or not that crossed the
+    "received" threshold); skipped_count keeps its original meaning as the
+    sum of unmatched_count and quantity_exceeded_count — same per-pair
+    counting convention as REQ-LOGI-004.
     """
 
     authentication_classes = [JWTAuthentication]
@@ -2157,10 +2161,22 @@ class UploadWarehouseReceiptView(APIView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
+        # REQ-LOGI-017: the per-row detail lists `_process_warehouse_receipt_rows`
+        # already builds are now surfaced, so an operator can see WHICH rows were
+        # skipped and why instead of only a tally — same three-category payload
+        # OutboundProcessView returns (REQ-OUTBOUND-014), so the frontend can
+        # reuse its result-table rendering. `matched_count` / `skipped_count` are
+        # kept unchanged for backward compatibility; `skipped_count` remains the
+        # sum of the two failure categories broken out below.
         return Response(
             {
                 "matched_count": result["matched_count"],
                 "skipped_count": result["unmatched_count"] + result["quantity_exceeded_count"],
+                "matched": result["matched"],
+                "unmatched": result["unmatched"],
+                "unmatched_count": result["unmatched_count"],
+                "quantity_exceeded": result["quantity_exceeded"],
+                "quantity_exceeded_count": result["quantity_exceeded_count"],
             },
             status=status.HTTP_200_OK,
         )

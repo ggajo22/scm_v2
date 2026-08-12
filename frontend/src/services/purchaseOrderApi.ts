@@ -211,9 +211,71 @@ export interface BulkLogisticsStatusResponse {
   missing_ids: number[]
 }
 
+// Shared minimal shape for both logistics upload endpoints. The vendor
+// shipment endpoint (uploadVendorShipment) returns exactly this — counts
+// only, no per-row detail.
 export interface UploadLogisticsResponse {
   matched_count: number
   skipped_count: number
+}
+
+// REQ-LOGI-017: failure reason codes returned by
+// `_process_warehouse_receipt_rows` for the `unmatched` category. No
+// quantity column exists on this upload (rows are counted, not summed), so
+// there is no `invalid_total` analog here — unlike OutboundUnmatchedReason.
+//
+// Keep this union in sync with the reason strings in
+// backend/order/purchase_order_views.py — an unlisted code falls through to
+// the raw snake_case fallback in LogisticsStatusTab.
+export type WarehouseReceiptUnmatchedReason =
+  | 'order_not_found'
+  | 'line_item_not_found'
+  | 'multiple_line_items'
+  // Blank order name or blank SKU, rejected before matching.
+  | 'invalid_row'
+
+export interface WarehouseReceiptMatchedItem {
+  name: string
+  sku: string
+  // Number of rows counted for this (order, sku) key in THIS upload — not a
+  // summed quantity column (there isn't one).
+  received_count: number
+  line_item_id: number
+  // Post-update cumulative received quantity (REQ-LOGI-015).
+  received_quantity: number
+  // Nullable on the model — null is treated as capacity 0.
+  quantity: number | null
+  logistics_status: string
+}
+
+export interface WarehouseReceiptUnmatchedItem {
+  name: string
+  sku: string
+  received_count: number
+  reason: WarehouseReceiptUnmatchedReason
+}
+
+export interface WarehouseReceiptQuantityExceededItem {
+  name: string
+  sku: string
+  received_count: number
+  line_item_id: number
+  // Pre-update values — nothing was written for this row (REQ-LOGI-015).
+  received_quantity: number
+  quantity: number | null
+  reason: 'quantity_exceeded'
+}
+
+// REQ-LOGI-017: uploadWarehouseReceipt's response, extending the shared
+// counts-only shape with the three per-row detail lists so the UI can show
+// WHICH rows were skipped and why — same three-category payload
+// OutboundProcessResponse carries (REQ-OUTBOUND-014).
+export interface UploadWarehouseReceiptResponse extends UploadLogisticsResponse {
+  matched: WarehouseReceiptMatchedItem[]
+  unmatched: WarehouseReceiptUnmatchedItem[]
+  unmatched_count: number
+  quantity_exceeded: WarehouseReceiptQuantityExceededItem[]
+  quantity_exceeded_count: number
 }
 
 // REQ-LOGI-007/007a: single LineItem logistics_status update.
@@ -247,8 +309,10 @@ export async function uploadVendorShipment(formData: FormData): Promise<UploadLo
   return res.data
 }
 
-// REQ-LOGI-005/006: warehouse receiving results upload → received.
-export async function uploadWarehouseReceipt(formData: FormData): Promise<UploadLogisticsResponse> {
+// REQ-LOGI-005/006/017: warehouse receiving results upload → received.
+export async function uploadWarehouseReceipt(
+  formData: FormData
+): Promise<UploadWarehouseReceiptResponse> {
   const res = await api.post('/api/purchase-orders/upload-warehouse-receipt/', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
   })
