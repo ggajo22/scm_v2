@@ -1,7 +1,7 @@
 ---
 id: SPEC-ORDER-017
 document: acceptance
-version: 1.0.4
+version: 1.0.5
 status: completed
 updated: 2026-08-13
 ---

@@ -6,6 +6,11 @@
 **구현 커밋**: `30f8608` (feat: SPEC-ORDER-017 렉번호 엑셀 업로드 배치 처리)  
 **기획 커밋**: `3f7babe` (docs: SPEC-ORDER-017 SPEC 문서)
 
+> **[2026-08-13 정정]** 아래 5-A의 `test_spec_008.py` 3건 실패 원인 분석은 틀렸다.
+> 동시 세션의 refund-netting 작업과 무관하며, 실제 원인은 master 자체의 시간대
+> 픽스처 버그(환율 픽스처가 `date.today()`, 주문 픽스처가 `timezone.now()`)로
+> 매일 KST 00:00~09:00에만 재현된다. PR #21로 master에 수정 병합됨.
+
 ---
 
 ## 1. 발산 분석 (Divergence Analysis)
@@ -129,7 +134,7 @@
 
 **상태**: 알려진, 수용된 결함. SPEC-ORDER-017 구현과 직접 무관.
 
-**원인**: 동시 세션의 미커밋 변경 (refund-netting 기능, SPEC-ORDER-014 관련 모델 변경)
+**원인**(정정됨): master의 시간대 픽스처 버그. 아래 목록은 당시의 잘못된 추정이며 실제 원인이 아니다.
 - `backend/order/models.py`: Refund 모델 필드 추가
 - `backend/order/purchase_order_views.py`: LineItemRackNumberSummaryView 수정
 - 신규 마이그레이션 2개
@@ -174,13 +179,13 @@
 | **product.md** | 변경 불필요 (사용자 가시적 변화 없음) ✅ |
 | **CHANGELOG.md** | 변경 불필요 (SPEC-016 관례 준수) ✅ |
 | **알려진 동작 변화** | dedup 예외의 응답 형식 변경 (500 계열 동일, 기록됨) ✅ |
-| **미해결 아이템** | test_spec_008.py 3개 실패 (SPEC-017 범위 외, refund-netting 세션의 미커밋) ⚠️ |
+| **미해결 아이템** | test_spec_008.py 3개 실패 → 원인 규명 후 PR #21로 master 병합 완료 ✅ |
 
 ---
 
 ## 8. 다음 단계
 
-1. **다른 세션의 refund-netting 커밋** — test_spec_008.py 실패 자동 해결
+1. ~~다른 세션의 refund-netting 커밋 대기~~ → 오귀인. 시간대 픽스처 버그를 PR #21로 직접 수정·병합 완료
 2. **SPEC-017 PR 생성** — commit `30f8608` + `3f7babe` 포함
 3. **마스터 브랜치 merge** — 모든 특성화 테스트 통과 확인
 
