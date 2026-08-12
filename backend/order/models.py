@@ -220,6 +220,13 @@ class LineItem(models.Model):
     # and from `book.Info.qty` / `WarehouseStock` (untouched by this SPEC).
     shipped_quantity = models.IntegerField(default=0)
     shipped_at = models.DateTimeField(null=True, blank=True)
+    # SPEC-ORDER-011 REQ-LOGI-015: same quantity-accumulation model as
+    # shipped_quantity/shipped_at above, applied one step earlier in the
+    # pipeline — `UploadWarehouseReceiptView` accumulates uploaded receiving
+    # quantities here and only advances logistics_status to "received" once
+    # received_quantity reaches `quantity` (see _process_warehouse_receipt_rows).
+    received_quantity = models.IntegerField(default=0)
+    received_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         db_table = "orders_line_item"

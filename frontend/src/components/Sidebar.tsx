@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link, useNavigate, useLocation } from 'react-router-dom'
-import { Users, LogOut, BookOpen, ChevronDown, ShoppingCart, Package, Warehouse, StickyNote, Tag, MapPin, Truck } from 'lucide-react'
+import { Users, LogOut, BookOpen, ChevronDown, ShoppingCart, Package, Warehouse, StickyNote, Tag, MapPin, Truck, PackageCheck } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useAuthStore } from '@/store/authStore'
 import { cn } from '@/lib/utils'
@@ -64,6 +64,14 @@ const flatNavItems: FlatNavItem[] = [
     label: '렉번호 관리',
     href: '/rack-number',
     icon: MapPin,
+  },
+  {
+    // Promoted from a buried PurchaseOrders tab ("입고/출고 물류 상태") to a
+    // standalone page, placed directly before 출고 처리 so the warehouse-floor
+    // flow (입고 → 출고) reads in order in the nav.
+    label: '입고 처리',
+    href: '/inbound',
+    icon: PackageCheck,
   },
   {
     // SPEC-ORDER-015 REQ-OUTBOUND-015: standalone outbound page, placed next
