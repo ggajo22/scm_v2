@@ -48,6 +48,56 @@ function filterNotes(notes: LineItemNoteUnresolved[], tab: Tab): LineItemNoteUnr
   return Array.from(latestByLineItem.values()).filter((n) => n.assignee === tab)
 }
 
+// @MX:NOTE: [AUTO] filterNotes' output (tabNotes) is the sole input to order-number grouping below.
+// filterNotes itself (타출판사 filter, latest-per-line-item collapse) is unmodified by SPEC-ORDER-020 —
+// grouping must run strictly after tab filtering, or notes from other assignees would leak into a group.
+
+// ---------------------------------------------------------------------------
+// Order-number grouping (SPEC-ORDER-020) — groups tabNotes by order_id for display.
+// ---------------------------------------------------------------------------
+interface NoteOrderGroup {
+  orderId: number
+  orderName: string | null
+  notes: LineItemNoteUnresolved[]
+}
+
+// @MX:NOTE: [AUTO] Single comparator reused for both group-level sort (by each group's newest note)
+// and intra-group sort, so the created_at/id tie-break cannot drift between the two levels.
+// Both sorts are created_at descending with id descending as the tie-break (REQ-GROUP-005/006) —
+// backend LineItemNoteUnresolvedListView.get_queryset() (backend/order/views.py:277-282) sorts by
+// "-created_at" alone with no secondary key, so equal-timestamp rows arrive in a non-deterministic
+// order; the id tie-break here makes the display order deterministic without a backend change.
+function compareByCreatedAtThenIdDesc(
+  a: Pick<LineItemNoteUnresolved, 'created_at' | 'id'>,
+  b: Pick<LineItemNoteUnresolved, 'created_at' | 'id'>,
+): number {
+  if (a.created_at !== b.created_at) {
+    return a.created_at > b.created_at ? -1 : 1
+  }
+  return b.id - a.id
+}
+
+function groupNotesByOrder(notes: LineItemNoteUnresolved[]): NoteOrderGroup[] {
+  const byOrder = new Map<number, LineItemNoteUnresolved[]>()
+  for (const note of notes) {
+    const existing = byOrder.get(note.order_id)
+    if (existing) {
+      existing.push(note)
+    } else {
+      byOrder.set(note.order_id, [note])
+    }
+  }
+
+  const groups: NoteOrderGroup[] = Array.from(byOrder.entries()).map(([orderId, groupNotes]) => {
+    const sortedNotes = [...groupNotes].sort(compareByCreatedAtThenIdDesc)
+    return { orderId, orderName: sortedNotes[0].order_name, notes: sortedNotes }
+  })
+
+  groups.sort((a, b) => compareByCreatedAtThenIdDesc(a.notes[0], b.notes[0]))
+
+  return groups
+}
+
 // ---------------------------------------------------------------------------
 // NoteHistory — unresolved note thread for a line item, always expanded
 // ---------------------------------------------------------------------------
@@ -397,16 +447,33 @@ export function LineItemNotesPage() {
         </div>
       )}
 
-      <div className="space-y-2">
-        {tabNotes.map((note) => (
-          <NoteCard
-            key={note.id}
-            note={note}
-            onResolve={resolveNote}
-            isResolving={isResolving}
-            showAddForm={activeTab === 'CS' || activeTab === '발주'}
-            currentTabAssignee={activeTab === '발주' ? '발주' : 'CS'}
-          />
+      <div className="space-y-3">
+        {groupNotesByOrder(tabNotes).map((group) => (
+          <div
+            key={group.orderId}
+            data-testid={`order-group-${group.orderId}`}
+            className="border rounded-lg p-3 bg-muted/10 space-y-2"
+          >
+            <div
+              data-testid="order-group-header"
+              className="flex items-center gap-1.5 text-sm font-medium text-muted-foreground"
+            >
+              <span className="font-mono">{group.orderName ?? `주문 #${group.orderId}`}</span>
+              <span>({group.notes.length})</span>
+            </div>
+            <div className="space-y-2">
+              {group.notes.map((note) => (
+                <NoteCard
+                  key={note.id}
+                  note={note}
+                  onResolve={resolveNote}
+                  isResolving={isResolving}
+                  showAddForm={activeTab === 'CS' || activeTab === '발주'}
+                  currentTabAssignee={activeTab === '발주' ? '발주' : 'CS'}
+                />
+              ))}
+            </div>
+          </div>
         ))}
       </div>
     </div>
