@@ -5,6 +5,7 @@ from .purchase_order_views import (
     DailyReviewExcelView,
     DistributorVendorRuleDeleteView,
     DistributorVendorRuleListCreateView,
+    ExcludedItemsView,
     GenerateOrderFileView,
     LineItemBulkRackNumberUpdateView,
     LineItemBulkStatusUpdateView,
@@ -64,6 +65,12 @@ urlpatterns = [
     path("purchase-orders/daily-review-excel/", DailyReviewExcelView.as_view(), name="po-daily-review-excel"),
     path("purchase-orders/upload-daily-review/", UploadDailyReviewView.as_view(), name="po-upload-daily-review"),
     path("purchase-orders/unordered/", UnorderedItemsView.as_view(), name="po-unordered"),
+    # SPEC-ORDER-018: read-only excluded-items list (restore candidates).
+    # Fully static path, so the line-items/<int:pk>/... patterns below cannot
+    # shadow it — "excluded-items" is not an int (same reasoning as the
+    # SPEC-ORDER-014 rack-number-summary path). Must stay above the generic
+    # "purchase-orders/" list at the bottom of this block.
+    path("purchase-orders/excluded-items/", ExcludedItemsView.as_view(), name="po-excluded-items"),
     path("purchase-orders/generate-order-file/", GenerateOrderFileView.as_view(), name="po-generate"),
     path("purchase-orders/upload-vendor-file/", UploadVendorFileView.as_view(), name="po-upload"),
     path("purchase-orders/run-comparison/", RunComparisonView.as_view(), name="po-run-comparison"),

@@ -348,6 +348,114 @@ class UnorderedItemsView(APIView):
 
 
 # ---------------------------------------------------------------------------
+# SPEC-ORDER-018: excluded (on_hold / order_cancelled / cs_required /
+# other_publisher) line items — read-only restore-candidate list
+# ---------------------------------------------------------------------------
+
+# The four purchase_status codes that _reorder_candidate_filter above drops,
+# leaving them invisible on every purchase screen (SPEC-ORDER-018 문제 정의).
+EXCLUDED_PURCHASE_STATUSES = (
+    "on_hold",
+    "order_cancelled",
+    "cs_required",
+    "other_publisher",
+)
+
+
+class ExcludedItemsView(APIView):
+    """
+    GET /api/purchase-orders/excluded-items/
+
+    REQ-RESTORE-001~008: read-only cross-order list of LineItems whose
+    purchase_status is one of the four excluded states, so an operator can
+    see them and restore them to "unordered" through the pre-existing
+    LineItemStatusUpdateView / LineItemBulkStatusUpdateView endpoints
+    (REQ-RESTORE-012 — this SPEC adds no write endpoint).
+
+    Modelled on UnorderedItemsView above for the response envelope and row
+    field set, and on LineItemRackNumberSummaryView for the guarded refund
+    netting — but it is fully separate code, so it adds zero queries to the
+    four existing reorder-queue call sites (설계 결정 A).
+    """
+
+    # @MX:NOTE: [AUTO] SPEC-ORDER-018 설계 결정 A: this view deliberately does
+    # NOT call _reorder_candidate_filter(). That helper's fan-in is 4
+    # (UnorderedItemsView, RunComparisonView, DailyReviewExcelView,
+    # UploadDailyReviewView) and widening it to admit these four statuses
+    # would silently re-admit cancelled items into the Daily Review upload's
+    # SKU batch matching. Starting from LineItem.objects directly keeps the
+    # regression surface of this SPEC at zero — same rationale the
+    # OutboundForceCandidateView docstring records. If a future change makes
+    # this view call the shared helper, that is a design violation, not a
+    # cleanup.
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request) -> Response:
+        # Total refunded qty per (order_id, shopify_line_item_id) — identical
+        # subquery to UnorderedItemsView's. Refund rows carry Shopify's
+        # line_item_id, not the local LineItem pk, so both keys are needed.
+        refund_sum_sq = (
+            Refund.objects.filter(
+                order_id=OuterRef("order_id"),
+                line_item_id=OuterRef("shopify_line_item_id"),
+            )
+            .values("order_id", "line_item_id")
+            .annotate(total=Sum("quantity"))
+            .values("total")[:1]
+        )
+
+        line_items = (
+            LineItem.objects.filter(purchase_status__in=EXCLUDED_PURCHASE_STATUSES)
+            .exclude(sku__isnull=True)
+            .annotate(
+                refunded_qty=Coalesce(
+                    Subquery(refund_sum_sq, output_field=IntegerField()),
+                    0,
+                )
+            )
+            .select_related("order")
+            # REQ-RESTORE-007: newest-order-first is what operators expect,
+            # but `shopify_created_at` alone ties often enough to make the
+            # order depend on MySQL's unordered-scan return order. The `pk`
+            # tie-break makes it deterministic and repeatable — same reason
+            # OutboundForceCandidateView orders by ("order_id", "pk").
+            .order_by("-order__shopify_created_at", "pk")
+        )
+
+        results = []
+        for li in line_items:
+            net_qty = max((li.quantity or 0) - li.refunded_qty, 0)
+            # @MX:NOTE: [AUTO] SPEC-ORDER-018 설계 결정 D: the skip is guarded on
+            # `refunded_qty`, following LineItemRackNumberSummaryView rather
+            # than UnorderedItemsView's unconditional `if net_qty == 0`. A
+            # fully refunded sale genuinely should not be restorable, but an
+            # unrefunded LineItem with a NULL/0 quantity is a data gap, and
+            # dropping it here would reproduce the exact invisibility problem
+            # this endpoint exists to fix.
+            if li.refunded_qty and net_qty == 0:
+                continue
+            order = li.order
+            order_name = order.name or (f"#{order.order_number}" if order.order_number else None)
+            results.append(
+                {
+                    "id": li.pk,
+                    "order_name": order_name,
+                    "sku": li.sku,
+                    "title": li.title or "",
+                    "vendor": li.vendor or "",
+                    "quantity": net_qty,
+                    "purchase_status": li.purchase_status,
+                }
+            )
+
+        # REQ-RESTORE-006 (설계 결정 G): same unpaginated {count, results}
+        # envelope UnorderedItemsView returns — no next/previous cursor.
+        return Response({"count": len(results), "results": results})
+
+
+# ---------------------------------------------------------------------------
 # M3: Generate order Excel file
 # ---------------------------------------------------------------------------
 

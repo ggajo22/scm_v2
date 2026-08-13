@@ -13,6 +13,21 @@ export interface UnorderedItem {
   purchase_status: string
 }
 
+// SPEC-ORDER-018 REQ-RESTORE-003: a row of the excluded-items list. Same
+// shape as UnorderedItem minus `auto_distributor` (a purchasing-vendor
+// suggestion that is meaningless for a restore decision), and with
+// `purchase_status` required rather than incidental — it is the column the
+// operator reads to decide whether to restore the row.
+export interface ExcludedItem {
+  id: number
+  order_name: string | null
+  sku: string
+  title: string
+  vendor: string
+  quantity: number
+  purchase_status: string
+}
+
 export const PURCHASE_STATUS_OPTIONS = [
   { value: 'unordered', label: '미발주' },
   { value: 'on_hold', label: '주문보류' },
@@ -89,6 +104,14 @@ export interface PurchaseOrderParams {
 
 export async function getUnorderedItems(): Promise<{ count: number; results: UnorderedItem[] }> {
   const res = await api.get('/api/purchase-orders/unordered/')
+  return res.data
+}
+
+// SPEC-ORDER-018 REQ-RESTORE-006 (설계 결정 G): the server returns a bare
+// {count, results} envelope with no page cursor, so this deliberately does
+// NOT use PaginatedResponse<T> — same contract as getUnorderedItems above.
+export async function getExcludedItems(): Promise<{ count: number; results: ExcludedItem[] }> {
+  const res = await api.get('/api/purchase-orders/excluded-items/')
   return res.data
 }
 
