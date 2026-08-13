@@ -6,7 +6,7 @@ created_at: 2026-08-13
 updated: 2026-08-13
 author: ggajo
 priority: Medium
-issue_number: 0
+issue_number: 27
 labels: [order, line-item-note, frontend, ux]
 ---
 
