@@ -1,7 +1,7 @@
 ---
 id: SPEC-ORDER-018
 document: spec-compact
-version: 1.0.0
+version: 1.0.2
 status: completed
 updated: 2026-08-13
 ---

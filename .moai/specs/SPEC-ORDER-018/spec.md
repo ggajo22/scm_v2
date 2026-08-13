@@ -1,6 +1,6 @@
 ---
 id: SPEC-ORDER-018
-version: 1.0.0
+version: 1.0.2
 status: completed
 created_at: 2026-08-13
 updated: 2026-08-13
@@ -18,6 +18,7 @@ labels: [order, purchase-status, restore, read-path, frontend]
 |------|------|--------|-----------|
 | 1.0.0 | 2026-08-13 | ggajo | 최초 작성 — 사용자 인터뷰 확정 내용(미발주 탭에 "보류/제외 품목" 뷰 추가, 4개 상태 전부 `unordered`로 복구 가능)을 근거로 작성. `purchase_status`가 `on_hold`/`order_cancelled`/`cs_required`/`other_publisher`인 LineItem이 모든 발주 화면에서 보이지 않아 DB 직접 수정 외에는 되돌릴 방법이 없는 문제를 해결한다. 핵심 제약: 공유 필터 `_reorder_candidate_filter`를 **넓히지 않고** 별도 읽기 경로를 신설하며(선례: `OutboundForceCandidateView`), 쓰기는 기존 `purchase_status` 갱신 엔드포인트 2개를 그대로 재사용한다. 모델 변경·마이그레이션·감사 로그 없음. 모든 `file:line` 인용은 `research.md`가 이 세션에서 직접 재검증했다 — SPEC-ORDER-016 v1.0.5가 기록한 허구 인용 사고를 반복하지 않기 위해 선행 SPEC 문서의 인용을 재사용하지 않았다. |
 | 1.0.1 | 2026-08-13 | ggajo | 구현 완료. 계획 대비 발산 2건 기록. (1) **T14(AC-RESTORE-014)의 위치** — `acceptance.md` 품질 게이트 표는 `UnorderedItemsTab.test.tsx`를 지정하지만, 그 파일은 `usePurchaseOrderQueries` 모듈 전체를 `vi.mock`으로 대체하므로 검증 대상인 실제 `onSuccess` 콜백이 그 안에서 실행되지 않는다. `plan.md` 리스크 R4가 명시적으로 허용하는 "훅 단위 테스트" 경로를 택해 신규 파일 `frontend/src/hooks/usePurchaseOrderQueries.test.tsx`에 실제 `QueryClientProvider` + `invalidateQueries` spy로 구현했다(선례: `useOutboundQueries.test.tsx`). AC의 Given 문구("두 훅을 실제 QueryClientProvider 안에서 렌더링하고 invalidateQueries를 spy 한다")는 그대로 충족한다. (2) **줄 번호 이동** — 구현 시점의 `purchase_order_views.py`는 동시 진행 중이던 SPEC-ORDER-016 작업으로 `research.md` 인용 대비 약 +33줄 밀려 있었다(`UnorderedItemsView` `:251`→`:284`, `LineItemStatusUpdateView` `:1863`→`:2194`, `LineItemBulkStatusUpdateView` `:1908`→`:2239`). 인용된 코드의 **내용**은 전부 일치했으므로 설계 판단에는 영향이 없다. 신규 뷰는 `UnorderedItemsView` 바로 뒤(`:350`~)에 추가했다. 확정된 엔드포인트 경로는 `GET /api/purchase-orders/excluded-items/`(`plan.md` 권고안 채택). M7 REFACTOR는 리스크 R1의 판단(환불 서브쿼리·행 조립 중복은 **의도적으로 유지**)에 따라 의도적 무변경이다. |
+| 1.0.2 | 2026-08-13 | ggajo | 동기화 완료(2026-08-13 커밋 bd5a41c). **새로 발견된 발산 없음** — 단, `plan.md`의 파일 목록 기준으로는 신규 파일 1건(`frontend/src/hooks/usePurchaseOrderQueries.test.tsx`)이 계획 외다. `plan.md`는 이 파일을 언급하지 않는다. 그러나 그 사유(T14/AC-RESTORE-014를 훅 단위 테스트로 옮긴 결정)는 v1.0.1이 이미 발산 2건 중 하나로 기록했으므로, 이번 동기화에서 새로 드러난 발산은 아니다. 나머지 7개 파일(신규 뷰 1 + 신규 백엔드 테스트 1 + 수정 5)은 계획대로다. 테스트 결과: 백엔드 `test_spec_018.py` 12 passed, 프론트엔드 `usePurchaseOrderQueries.test.tsx` 3 passed + `UnorderedItemsTab.test.tsx` 4 passed(기존 2개 회귀 무손실), 백엔드 전체(`order` + `accounts`, `concurrency` 마커 1건 deselect) 979 passed, 프론트엔드 전체 237 passed. 설계 결정 A~H 모두 구현 확인. `_reorder_candidate_filter` 및 4개 호출부, 쓰기 엔드포인트, 모델 필드 전부 무수정 검증. |
 
 ---
 
@@ -493,6 +494,30 @@ the restored row.
 
 23개 요구사항이 14개 인수 기준으로 커버된다. REQ-RESTORE-023은 부재를 요구하는 메타
 요구사항이라 시나리오가 아니라 완료 조건 게이트로 검증한다.
+
+---
+
+## Implementation Notes
+
+### 주요 구현 선택사항
+
+1. **신규 뷰의 위치** — 백엔드 새 `ExcludedItemsView`는 `purchase_order_views.py` 중 `UnorderedItemsView` 바로 뒤인 line 350 이후에 배치됨. 이 위치는 같은 클래스 내 뷰들의 논리적 연관성을 반영한 것으로, 두 뷰 모두 읽기 전용 교차 주문 조회이기 때문.
+
+2. **프론트엔드 훅 테스트 분리** — AC-RESTORE-014(invalidateQueries 검증)의 테스트는 원래 계획(plan.md M6)과 달리 `UnorderedItemsTab.test.tsx`가 아니라 신규 파일 `frontend/src/hooks/usePurchaseOrderQueries.test.tsx`에 작성됨. 이유는 `UnorderedItemsTab.test.tsx`의 `vi.mock('@/hooks/usePurchaseOrderQueries')`가 훅 모듈 전체를 목업하므로, 실제 `QueryClientProvider` + `invalidateQueries` spy 검증이 그 파일 내에서 불가능하기 때문. 대신 훅 전용 통합 테스트를 별도 파일에서 수행함으로써 AC의 "두 훅을 실제 QueryClientProvider 안에서 렌더링" 요구사항을 정확히 충족함. 선례는 같은 조회 훅 테스트 구조(useOutboundQueries.test.tsx).
+
+3. **동시성 작업 트리 오염** — 구현 시점에 `purchase_order_views.py`가 선행 SPEC-ORDER-016의 영향으로 약 33줄 이동되어 있었음. research.md의 line 인용과 구현 코드의 실제 위치가 불일치했으나, **코드 내용 자체는 전부 일치**했으므로 설계 판단에 영향 없음. 후속 문서 동기화 시 절대 좌표가 아닌 기능 영역으로 참조하는 방식 권장.
+
+4. **환불 넷팅 가드 선택** — 신규 뷰의 환불 처리는 `LineItemRackNumberSummaryView`의 가드된 형태(`if li.refunded_qty and net_qty == 0: continue`)를 따름. 이는 `UnorderedItemsView`의 무조건 스킵(`if net_qty == 0: continue`)과 달라, 미환불 null/0 수량 행을 유지하는 설계 결정 D를 구현함.
+
+5. **선택 상태 격리 구현** — 제외 뷰의 LineItem 선택은 `React.useState<Set<number>>`로 로컬 관리되며, 전역 SKU 배열(`usePurchaseOrderStore`)과 완전히 분리됨. 이는 설계 결정 F(SKU 기반 선택의 모호함 회피)를 정확히 구현한 것으로, 제외 뷰와 미발주 뷰의 선택이 독립적으로 작동함을 보장.
+
+### 알려진 한계 및 후속 과제
+
+1. **복구와 미해결 노트의 연결** (설계 결정 E) — 복구 후에도 관련 `LineItemNote`가 자동 해결되지 않음. 미해결 노트가 계속 노트 페이지와 타출판사 엑셀에 나타나므로, 담당자의 작업 흐름상 별도 해결 단계가 필요한 상태 유지.
+
+2. **PurchaseOrder 연결 품목의 처리** (REQ-RESTORE-022의 한계) — 발주 확정 후 취소된 품목은 `unordered`로 복구해도 미발주 목록에 나타나지 않음. `_reorder_candidate_filter`의 `.exclude(purchase_orders__isnull=False)` 때문이며, 이는 이 SPEC의 의도적 제외 대상(설계 결정 A).
+
+3. **렉번호 요약의 `order_cancelled` 제외** (후속 과제 3) — 문제 정의의 대표 사례(LineItem id=15083)처럼 물리적으로 창고에 있는데 렉번호 요약에서 사라지는 품목이 존재. 창고 관점과 발주 관점의 제외 규칙 통일 필요.
 
 ---
 
