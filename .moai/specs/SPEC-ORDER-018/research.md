@@ -1,7 +1,7 @@
 ---
 id: SPEC-ORDER-018
 document: research
-version: 1.0.2
+version: 1.0.3
 status: completed
 updated: 2026-08-13
 ---

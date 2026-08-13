@@ -1,7 +1,7 @@
 ---
 id: SPEC-ORDER-018
 document: acceptance
-version: 1.0.2
+version: 1.0.3
 status: completed
 updated: 2026-08-13
 ---
@@ -15,8 +15,12 @@ AC-RESTORE-XXX / REQ-RESTORE-XXX ID를 인용해 상호 추적된다.
 선언한 것과 완전히 일치한다. 어느 한쪽을 수정할 때 반드시 함께 갱신한다.
 
 **검증 레이어**: `[BE]`는 `backend/order/tests/test_spec_018.py`의 pytest 시나리오,
-`[FE]`는 `frontend/src/pages/PurchaseOrders/tabs/UnorderedItemsTab.test.tsx`의 vitest
-시나리오다. AC-RESTORE-001~011이 `[BE]`, AC-RESTORE-012~014가 `[FE]`다.
+`[FE]`는 vitest 시나리오다. AC-RESTORE-001~011이 `[BE]`, AC-RESTORE-012~014가
+`[FE]`다. `[FE]` 중 AC-RESTORE-012/013은
+`frontend/src/pages/PurchaseOrders/tabs/UnorderedItemsTab.test.tsx`에 있고,
+**AC-RESTORE-014만 `frontend/src/hooks/usePurchaseOrderQueries.test.tsx`에 있다** —
+탭 테스트는 `usePurchaseOrderQueries` 모듈 전체를 `vi.mock`으로 대체하므로 검증
+대상인 실제 `onSuccess` 콜백이 그 안에서 실행되지 않는다(spec.md v1.0.1 발산 기록).
 
 **호출 스코프**: 백엔드 시나리오는 전부 `auth_client`(또는 `anon_client`)로 HTTP
 엔드포인트를 호출한다 — 이 SPEC이 추출하는 순수 함수가 없으므로 함수 직접 호출 스코프는
@@ -332,7 +336,7 @@ Traces: REQ-RESTORE-021
 | AC-RESTORE-011 `[BE]` | `test_spec_018.py` | T11 | 022 |
 | AC-RESTORE-012 `[FE]` | `UnorderedItemsTab.test.tsx` | T12 | 016, 017, 018 |
 | AC-RESTORE-013 `[FE]` | `UnorderedItemsTab.test.tsx` | T13 | 019, 020 |
-| AC-RESTORE-014 `[FE]` | `UnorderedItemsTab.test.tsx` | T14 | 021 |
+| AC-RESTORE-014 `[FE]` | `usePurchaseOrderQueries.test.tsx` | T14 | 021 |
 
 시나리오로 검증하지 않는 요구사항: **REQ-RESTORE-023**(신규 모델 필드·마이그레이션·감사
 로그 부재). 부재를 요구하는 메타 요구사항이라 `plan.md` 완료 조건의

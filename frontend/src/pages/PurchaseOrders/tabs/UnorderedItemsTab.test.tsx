@@ -115,6 +115,45 @@ describe('UnorderedItemsTab', () => {
     await user.click(screen.getByRole('button', { name: '보류/제외 품목' }))
   }
 
+  it('T15: a failing unordered query still leaves the excluded view reachable', async () => {
+    // plan-audit SPEC-ORDER-018-review-1: the `isError` guard used to sit
+    // above the view switcher and early-returned the whole tab, so a failed
+    // 미발주 request made the 보류/제외 list unreachable even when its own
+    // query had succeeded — defeating the point of this SPEC. Pins the fix.
+    const user = userEvent.setup()
+    vi.mocked(useUnorderedItems).mockReturnValue({
+      data: undefined,
+      isPending: false,
+      isError: true,
+    } as unknown as ReturnType<typeof useUnorderedItems>)
+    vi.mocked(useExcludedItems).mockReturnValue({
+      data: {
+        count: 1,
+        results: [
+          {
+            id: 9001,
+            order_name: '#91001',
+            sku: 'SKU-901',
+            title: '도서 901',
+            vendor: '처음교육',
+            quantity: 1,
+            purchase_status: 'on_hold',
+          },
+        ],
+      },
+      isPending: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useExcludedItems>)
+
+    render(<UnorderedItemsTab />)
+
+    // The unordered error is still surfaced...
+    expect(screen.getByText('미발주 현황을 불러오는데 실패했습니다.')).toBeInTheDocument()
+    // ...but the switcher survives, and the excluded list is still reachable.
+    await switchToExcludedView(user)
+    expect(screen.getByText('도서 901')).toBeInTheDocument()
+  })
+
   it('T12: switches to the excluded view, shows status labels, and offers unordered in both selects (AC-RESTORE-012)', async () => {
     const user = userEvent.setup()
     vi.mocked(useUnorderedItems).mockReturnValue({

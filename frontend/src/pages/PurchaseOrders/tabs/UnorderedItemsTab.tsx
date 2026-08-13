@@ -155,10 +155,6 @@ export function UnorderedItemsTab() {
     }
   }
 
-  if (isError) {
-    return <p className="text-destructive py-4">미발주 현황을 불러오는데 실패했습니다.</p>
-  }
-
   // SPEC-ORDER-018 REQ-RESTORE-016: view switcher, shared by both views.
   const viewSwitcher = (
     <div className="flex gap-2" role="group" aria-label="목록 전환">
@@ -315,6 +311,19 @@ export function UnorderedItemsTab() {
             </div>
           </>
         )}
+      </div>
+    )
+  }
+
+  // SPEC-ORDER-018: 미발주 조회 실패는 미발주 뷰에서만 막는다. 이 가드가
+  // viewSwitcher 위에서 전체를 early return 하면, 미발주 쿼리가 실패했을 때
+  // 제외 목록 쿼리가 정상이어도 그 화면에 도달할 수 없다 — "제외되어 보이지
+  // 않는 품목을 보이게 한다"는 이 SPEC의 목적이 옆 쿼리의 실패에 막히는 셈이다.
+  if (isError) {
+    return (
+      <div className="space-y-4">
+        {viewSwitcher}
+        <p className="text-destructive py-4">미발주 현황을 불러오는데 실패했습니다.</p>
       </div>
     )
   }

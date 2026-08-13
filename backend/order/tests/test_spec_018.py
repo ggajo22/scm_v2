@@ -355,6 +355,31 @@ class TestExcludedItemsViewResponseContract:
         assert [row["id"] for row in first.data["results"]] == [
             row["id"] for row in second.data["results"]
         ]
+        # (e) the emitted ORDER BY carries BOTH keys.
+        #
+        # (d) alone cannot fail: plan-audit SPEC-ORDER-018-review-1 (D1)
+        # dropped `"pk"` from the view's .order_by() and this test still
+        # passed, because MySQL happens to return these ties in pk order
+        # anyway. "Two runs agreed" is a property of the sample, not of the
+        # query — an implementation with no tie-break at all satisfies it.
+        # Asserting the SQL the ORM actually emitted does fail when the
+        # tie-break is removed, which is the property REQ-RESTORE-007 asks
+        # for. Same SQL-level technique as test_spec_017.py's write-scope
+        # assertion.
+        with CaptureQueriesContext(connection) as ctx:
+            auth_client.get(EXCLUDED_URL)
+        ordered_selects = [
+            q["sql"]
+            for q in ctx.captured_queries
+            if "orders_line_item" in q["sql"] and " ORDER BY " in q["sql"]
+        ]
+        assert len(ordered_selects) == 1, ordered_selects
+        order_by = ordered_selects[0].rsplit(" ORDER BY ", 1)[1]
+        terms = [t.strip() for t in order_by.split(",")]
+        assert len(terms) == 2, f"tie-break이 없다 — ORDER BY {order_by}"
+        assert "shopify_created_at" in terms[0], order_by
+        assert "DESC" in terms[0].upper(), order_by
+        assert "id" in terms[1], order_by
 
     def test_unauthenticated_request_is_rejected_without_leaking_data(
         self, anon_client
