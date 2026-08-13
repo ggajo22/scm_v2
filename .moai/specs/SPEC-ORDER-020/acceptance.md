@@ -1,9 +1,9 @@
 ---
 id: SPEC-ORDER-020
 document: acceptance
-version: 1.0.2
-status: draft
-updated: 2026-08-13
+version: 1.0.3
+status: completed
+updated: 2026-08-14
 ---
 
 # 인수 기준 — SPEC-ORDER-020 미해결 품목 메모 주문번호 그룹화
