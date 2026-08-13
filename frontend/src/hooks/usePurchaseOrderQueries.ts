@@ -2,6 +2,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import {
   getUnorderedItems,
+  getExcludedItems,
   generateOrderFile,
   uploadVendorFile,
   getVendorRules,
@@ -25,6 +26,9 @@ import { ORDER_DETAIL_QUERY_KEY } from '@/features/order/hooks/useOrderDetail'
 
 export const QUERY_KEYS = {
   unordered: ['purchase-orders', 'unordered'] as const,
+  // SPEC-ORDER-018: shares the 'purchase-orders' prefix with `unordered` but
+  // is a distinct key, so the two lists invalidate independently.
+  excludedItems: ['purchase-orders', 'excluded-items'] as const,
   purchaseOrders: (params?: PurchaseOrderParams) =>
     ['purchase-orders', 'list', params ?? {}] as const,
   vendorRules: ['purchase-orders', 'vendor-rules'] as const,
@@ -34,6 +38,15 @@ export function useUnorderedItems() {
   return useQuery({
     queryKey: QUERY_KEYS.unordered,
     queryFn: getUnorderedItems,
+  })
+}
+
+// SPEC-ORDER-018 REQ-RESTORE-001: read-only list of the four excluded
+// purchase statuses, backing the 보류/제외 품목 view in UnorderedItemsTab.
+export function useExcludedItems() {
+  return useQuery({
+    queryKey: QUERY_KEYS.excludedItems,
+    queryFn: getExcludedItems,
   })
 }
 
@@ -107,6 +120,10 @@ export function useUpdateLineItemStatus() {
       updateLineItemStatus(id, purchaseStatus),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: QUERY_KEYS.unordered })
+      // SPEC-ORDER-018 REQ-RESTORE-021: both directions need this — moving an
+      // item to on_hold must make it appear in the excluded list, and
+      // restoring it must make it leave.
+      void queryClient.invalidateQueries({ queryKey: QUERY_KEYS.excludedItems })
     },
     onError: () => {
       toast.error('상태 변경에 실패했습니다.')
@@ -123,6 +140,8 @@ export function useBulkUpdateLineItemStatus() {
       bulkUpdateLineItemStatus(ids, purchaseStatus),
     onSuccess: (result) => {
       void queryClient.invalidateQueries({ queryKey: QUERY_KEYS.unordered })
+      // SPEC-ORDER-018 REQ-RESTORE-021: see useUpdateLineItemStatus above.
+      void queryClient.invalidateQueries({ queryKey: QUERY_KEYS.excludedItems })
       if (result.missing_ids.length > 0) {
         toast.warning(`일부 항목(${result.missing_ids.length}건)이 업데이트되지 않았습니다.`)
       } else {
