@@ -31,6 +31,7 @@ may require a production-code change to pass.
 
 import io
 from datetime import datetime, timezone
+from unittest.mock import patch
 
 import openpyxl
 import pytest
@@ -41,7 +42,7 @@ from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from order.models import LineItem, LineItemNote, Order, PurchaseOrder, Refund
-from order.purchase_order_views import _recompute_order_aggregates
+from order.purchase_order_views import ExcludedItemsView, _recompute_order_aggregates
 
 User = get_user_model()
 
@@ -54,6 +55,13 @@ UPLOAD_DAILY_URL = "/api/purchase-orders/upload-daily-review/"
 # The four purchase_status codes this SPEC makes visible again
 # (models.py PURCHASE_STATUS_CHOICES).
 EXCLUDED_STATUSES = ("on_hold", "order_cancelled", "cs_required", "other_publisher")
+
+# Queries GET /api/purchase-orders/unordered/ issues once the auth machinery
+# is warm: 1 JWT user lookup + the 2 the view already issued before
+# SPEC-ORDER-018. Pinned exactly so that ANY query added to a pre-existing
+# endpoint fails REQ-RESTORE-011 — a with/without comparison alone cannot,
+# because a constant addition lands in both measurements and cancels.
+UNORDERED_ENDPOINT_QUERY_COUNT = 3
 
 
 # ---------------------------------------------------------------------------
@@ -475,10 +483,11 @@ class TestExistingReorderPathUnchanged:
     def test_unordered_endpoint_query_count_is_unaffected_by_excluded_items(
         self, auth_client
     ):
-        """T7 (AC-RESTORE-007) — REQ-RESTORE-011.
+        """T7 (AC-RESTORE-007, first clause) — REQ-RESTORE-011.
 
-        Asserts equivalence between two states, not an absolute ceiling: the
-        JWT user lookup is present in both measurements, so its cost cancels.
+        Asserts BOTH that excluded rows change nothing (the with/without
+        equivalence) AND that the absolute count is unchanged. The second
+        half is what gives this test discriminating power — see (b) below.
         """
         order = _make_order()
         for idx in range(3):
@@ -511,9 +520,71 @@ class TestExistingReorderPathUnchanged:
             res_b = auth_client.get(UNORDERED_URL)
         queries_with_excluded = len(ctx_b.captured_queries)
 
+        # (a) the original property: excluded rows change nothing.
         assert queries_without_excluded == queries_with_excluded
         assert len(res_a.data["results"]) == 3
         assert len(res_b.data["results"]) == 3
+
+        # (b) the count is pinned EXACTLY, not merely to itself.
+        #
+        # (a) alone cannot fail the thing REQ-RESTORE-011 forbids. A query
+        # added to UnorderedItemsView lands in BOTH measurements and cancels
+        # — plan-audit SPEC-ORDER-018-review-1 (D2) leaked an extra query
+        # into the view and (a) still passed. Pinning the absolute number
+        # makes any added query fail, which is what "no existing endpoint
+        # issues a different number of database queries as a result of this
+        # SPEC" actually asks for.
+        #
+        # The 3 are: the JWT user lookup (warmed above, but still one per
+        # request), plus the two this view issued before SPEC-ORDER-018.
+        # To re-derive after an intentional change, temporarily assert a
+        # wrong value and read the reported count.
+        assert queries_without_excluded == UNORDERED_ENDPOINT_QUERY_COUNT
+        assert queries_with_excluded == UNORDERED_ENDPOINT_QUERY_COUNT
+
+        # (c) no query the unordered endpoint issues may mention an excluded
+        # status. This is the clause that catches a widened
+        # _reorder_candidate_filter — the failure mode REQ-RESTORE-009/010
+        # guard behaviourally, caught here at the SQL level as well.
+        for q in ctx_b.captured_queries:
+            for status in EXCLUDED_STATUSES:
+                assert f"'{status}'" not in q["sql"], (status, q["sql"])
+
+    def test_the_new_view_is_absent_from_the_pre_existing_call_graph(
+        self, auth_client
+    ):
+        """T7b (AC-RESTORE-007, second clause) — REQ-RESTORE-011.
+
+        AC-RESTORE-007 also says "the new read view shall not appear in the
+        call graph of any pre-existing endpoint". Nothing tested that clause
+        (plan-audit SPEC-ORDER-018-review-1). A spy on the new view is the
+        direct check: reusing it from an existing endpoint — the obvious way
+        someone would "share" the excluded-items logic later — trips this.
+        """
+        order = _make_order()
+        _make_line_item(
+            order,
+            shopify_line_item_id=1,
+            sku="SKU-U0",
+            quantity=1,
+            purchase_status="unordered",
+        )
+        _make_line_item(
+            order,
+            shopify_line_item_id=2,
+            sku="SKU-X0",
+            quantity=1,
+            purchase_status="on_hold",
+        )
+
+        with patch.object(
+            ExcludedItemsView, "get", autospec=True
+        ) as spy:
+            res = auth_client.get(UNORDERED_URL)
+
+        assert res.status_code == 200
+        assert [row["sku"] for row in res.data["results"]] == ["SKU-U0"]
+        spy.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
