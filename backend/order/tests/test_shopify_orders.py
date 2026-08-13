@@ -13,7 +13,7 @@ from order.shopify_orders import (
     _sync_single_order,
     fetch_all_open_orders,
 )
-from order.models import LineItem, Order, PurchaseOrder, ShopifySkuSetMapping
+from order.models import LineItem, Order, PurchaseOrder, Refund, ShopifySkuSetMapping
 
 
 def _make_order_data(shopify_id, line_items=None):
@@ -606,3 +606,92 @@ def test_fetch_all_orders_two_pages():
 
     assert result == [{"id": 1}, {"id": 2}]
     assert call_count == 2
+
+
+def _make_refund(refund_id, refund_line_items):
+    return {
+        "id": refund_id,
+        "note": None,
+        "created_at": "2026-01-02T00:00:00Z",
+        "refund_line_items": refund_line_items,
+    }
+
+
+def _make_refund_line_item(rli_id, line_item_id, quantity=1, subtotal="7.40"):
+    return {
+        "id": rli_id,
+        "line_item_id": line_item_id,
+        "quantity": quantity,
+        "subtotal": subtotal,
+        "total_tax": "0.00",
+        "restock_type": "cancel",
+    }
+
+
+@pytest.mark.django_db
+def test_sync_stores_every_refund_line_item_of_a_multi_item_refund():
+    """Regression (#37790): one Shopify refund can cover several line items.
+    Storing only refund_line_items[0] dropped the rest, so the refund-netting
+    subqueries in purchase_order_views kept counting them as unrefunded."""
+    order_data = _make_order_data(
+        920001,
+        line_items=[
+            _make_shopify_line_item(9201, sku="ISBN-A"),
+            _make_shopify_line_item(9202, sku="ISBN-B"),
+        ],
+    )
+    order_data["refunds"] = [
+        _make_refund(
+            5001,
+            [
+                _make_refund_line_item(6001, 9201, quantity=1, subtotal="7.40"),
+                _make_refund_line_item(6002, 9202, quantity=2, subtotal="7.39"),
+            ],
+        )
+    ]
+
+    _sync_single_order(order_data, "gimssine")
+
+    refunds = Refund.objects.filter(order__shopify_order_id=920001, shopify_refund_id=5001)
+    assert refunds.count() == 2
+    by_line_item = {r.line_item_id: r for r in refunds}
+    assert by_line_item[9201].quantity == 1
+    assert by_line_item[9201].subtotal == Decimal("7.40")
+    assert by_line_item[9202].quantity == 2
+    assert by_line_item[9202].subtotal == Decimal("7.39")
+
+
+@pytest.mark.django_db
+def test_resync_of_multi_item_refund_is_idempotent():
+    """Refund rows are wiped and rebuilt on every sync — a second sync of the
+    same payload must not duplicate or drop rows."""
+    order_data = _make_order_data(920002, line_items=[_make_shopify_line_item(9203, sku="ISBN-C")])
+    order_data["refunds"] = [
+        _make_refund(
+            5002,
+            [
+                _make_refund_line_item(6003, 9203, quantity=1),
+                _make_refund_line_item(6004, 9204, quantity=1),
+            ],
+        )
+    ]
+
+    _sync_single_order(order_data, "gimssine")
+    _sync_single_order(order_data, "gimssine")
+
+    assert Refund.objects.filter(order__shopify_order_id=920002).count() == 2
+
+
+@pytest.mark.django_db
+def test_sync_keeps_header_only_row_for_refund_without_line_items():
+    """A refund carrying no refund_line_items (e.g. a pure shipping refund)
+    still gets a row, as before the multi-item fix."""
+    order_data = _make_order_data(920003, line_items=[_make_shopify_line_item(9205, sku="ISBN-D")])
+    order_data["refunds"] = [_make_refund(5003, [])]
+
+    _sync_single_order(order_data, "gimssine")
+
+    refunds = Refund.objects.filter(order__shopify_order_id=920003)
+    assert refunds.count() == 1
+    assert refunds.get().line_item_id is None
+    assert refunds.get().quantity is None

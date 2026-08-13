@@ -52,8 +52,9 @@ from freezegun import freeze_time
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from order.models import LineItem, Order
+from order.models import LineItem, Order, Refund
 from order.purchase_order_views import (
+    ForceOutboundGateViolation,
     _process_force_outbound_rows,
     _process_outbound_rows,
 )
@@ -1068,3 +1069,72 @@ class TestForceProcessLockingConcurrent:
         exceeded_total = sum(len(r["quantity_exceeded"]) for r in results.values())
         assert matched_total == 1
         assert exceeded_total == 1
+
+
+# ---------------------------------------------------------------------------
+# Regression — a fully refunded LineItem is never a force outbound target
+# ---------------------------------------------------------------------------
+
+
+def _refund_fully(order, line_item, shopify_refund_id=800001):
+    return Refund.objects.create(
+        order=order,
+        shopify_refund_id=shopify_refund_id,
+        line_item_id=line_item.shopify_line_item_id,
+        quantity=line_item.quantity,
+    )
+
+
+@pytest.mark.django_db
+class TestFullyRefundedTargetExclusion:
+    """A fully refunded item is as cancelled as purchase_status="order_cancelled"
+    — the customer is not owed it, so force-shipping it would send goods for a
+    refunded sale. The candidate picker must not offer it and the apply gate
+    must not accept it, or the two would disagree about what is a valid
+    target."""
+
+    def test_fully_refunded_line_item_is_not_a_candidate(self, auth_client):
+        order = _make_order(name="#600901")
+        refunded = _make_line_item(order, shopify_line_item_id=1, sku="ISBN-REF", quantity=2)
+        _make_line_item(order, shopify_line_item_id=2, sku="ISBN-OK", quantity=2)
+        _refund_fully(order, refunded)
+
+        response = auth_client.post(
+            CANDIDATES_URL, {"order_names": ["#600901"]}, format="json"
+        )
+
+        assert response.status_code == 200
+        skus = {c["sku"] for c in response.json()["results"][0]["candidates"]}
+        assert "ISBN-REF" not in skus
+        assert "ISBN-OK" in skus
+
+    def test_partially_refunded_line_item_is_still_a_candidate(self, auth_client):
+        order = _make_order(shopify_order_id=600902, name="#600902")
+        li = _make_line_item(order, shopify_line_item_id=3, sku="ISBN-PART", quantity=3)
+        Refund.objects.create(
+            order=order,
+            shopify_refund_id=800002,
+            line_item_id=li.shopify_line_item_id,
+            quantity=1,
+        )
+
+        response = auth_client.post(
+            CANDIDATES_URL, {"order_names": ["#600902"]}, format="json"
+        )
+
+        skus = {c["sku"] for c in response.json()["results"][0]["candidates"]}
+        assert "ISBN-PART" in skus
+
+    def test_force_apply_rejects_a_fully_refunded_target(self):
+        order = _make_order(shopify_order_id=600903, name="#600903")
+        refunded = _make_line_item(order, shopify_line_item_id=4, sku="ISBN-REF2", quantity=2)
+        _refund_fully(order, refunded, shopify_refund_id=800003)
+
+        with pytest.raises(ForceOutboundGateViolation):
+            _process_force_outbound_rows(
+                [{"name": "#600903", "sku": "ISBN-REF2", "total": 1, "line_item_id": refunded.id}]
+            )
+
+        refunded.refresh_from_db()
+        assert refunded.shipped_quantity == 0
+        assert refunded.logistics_status != "shipped"

@@ -206,6 +206,17 @@ describe('OutboundPage — SPEC-ORDER-015', () => {
       expect(screen.getByTestId('outbound-quantity-exceeded')).toBeInTheDocument()
     })
 
+    it('renders 매칭 실패 above 성공 so failures need no scrolling', () => {
+      renderWithResult()
+
+      const unmatched = screen.getByTestId('outbound-unmatched')
+      const matched = screen.getByTestId('outbound-matched')
+
+      expect(unmatched.compareDocumentPosition(matched)).toBe(
+        Node.DOCUMENT_POSITION_FOLLOWING
+      )
+    })
+
     it('shows each section count from the response', () => {
       renderWithResult()
 

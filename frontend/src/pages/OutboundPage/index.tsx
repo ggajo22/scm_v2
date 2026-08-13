@@ -271,25 +271,9 @@ export function OutboundPage() {
             </Button>
           </div>
 
-          <ResultSection
-            testId="outbound-matched"
-            title="성공"
-            count={result.matched_count}
-            toneClassName="border-green-300 bg-green-50"
-            columns={['주문번호', 'SKU', '출고 수량', '누적/주문 수량', '상태']}
-            rows={result.matched.map((item) => ({
-              key: `${item.line_item_id}`,
-              cells: [
-                item.name,
-                item.sku,
-                String(item.total),
-                `${item.shipped_quantity} / ${item.quantity ?? 0}`,
-                item.logistics_status,
-              ],
-            }))}
-          />
-
-          {/* SPEC-ORDER-016: unmatched rows whose failure reason is
+          {/* 매칭 실패는 조치가 필요한 유일한 섹션이라 성공 위에 먼저 렌더한다
+              — 성공 건수가 많아도 스크롤 없이 바로 보이게 하기 위함.
+              SPEC-ORDER-016: unmatched rows whose failure reason is
               line_item_not_found and whose quantity is positive can be
               force-outbounded against an operator-designated target
               (REQ-FORCE-001/019~021). */}
@@ -315,6 +299,24 @@ export function OutboundPage() {
               강제 출고 처리 실행
             </Button>
           </div>
+
+          <ResultSection
+            testId="outbound-matched"
+            title="성공"
+            count={result.matched_count}
+            toneClassName="border-green-300 bg-green-50"
+            columns={['주문번호', 'SKU', '출고 수량', '누적/주문 수량', '상태']}
+            rows={result.matched.map((item) => ({
+              key: `${item.line_item_id}`,
+              cells: [
+                item.name,
+                item.sku,
+                String(item.total),
+                `${item.shipped_quantity} / ${item.quantity ?? 0}`,
+                item.logistics_status,
+              ],
+            }))}
+          />
 
           <ResultSection
             testId="outbound-quantity-exceeded"
