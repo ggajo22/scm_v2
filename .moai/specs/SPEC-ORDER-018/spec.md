@@ -1,6 +1,6 @@
 ---
 id: SPEC-ORDER-018
-version: 1.0.3
+version: 1.0.4
 status: completed
 created_at: 2026-08-13
 updated: 2026-08-13
@@ -20,6 +20,7 @@ labels: [order, purchase-status, restore, read-path, frontend]
 | 1.0.1 | 2026-08-13 | ggajo | 구현 완료. 계획 대비 발산 2건 기록. (1) **T14(AC-RESTORE-014)의 위치** — `acceptance.md` 품질 게이트 표는 `UnorderedItemsTab.test.tsx`를 지정하지만, 그 파일은 `usePurchaseOrderQueries` 모듈 전체를 `vi.mock`으로 대체하므로 검증 대상인 실제 `onSuccess` 콜백이 그 안에서 실행되지 않는다. `plan.md` 리스크 R4가 명시적으로 허용하는 "훅 단위 테스트" 경로를 택해 신규 파일 `frontend/src/hooks/usePurchaseOrderQueries.test.tsx`에 실제 `QueryClientProvider` + `invalidateQueries` spy로 구현했다(선례: `useOutboundQueries.test.tsx`). AC의 Given 문구("두 훅을 실제 QueryClientProvider 안에서 렌더링하고 invalidateQueries를 spy 한다")는 그대로 충족한다. (2) **줄 번호 이동** — 구현 시점의 `purchase_order_views.py`는 동시 진행 중이던 SPEC-ORDER-016 작업으로 `research.md` 인용 대비 약 +33줄 밀려 있었다(`UnorderedItemsView` `:251`→`:284`, `LineItemStatusUpdateView` `:1863`→`:2194`, `LineItemBulkStatusUpdateView` `:1908`→`:2239`). 인용된 코드의 **내용**은 전부 일치했으므로 설계 판단에는 영향이 없다. 신규 뷰는 `UnorderedItemsView` 바로 뒤(`:350`~)에 추가했다. 확정된 엔드포인트 경로는 `GET /api/purchase-orders/excluded-items/`(`plan.md` 권고안 채택). M7 REFACTOR는 리스크 R1의 판단(환불 서브쿼리·행 조립 중복은 **의도적으로 유지**)에 따라 의도적 무변경이다. |
 | 1.0.2 | 2026-08-13 | ggajo | 동기화 완료(2026-08-13 커밋 bd5a41c). **새로 발견된 발산 없음** — 단, `plan.md`의 파일 목록 기준으로는 신규 파일 1건(`frontend/src/hooks/usePurchaseOrderQueries.test.tsx`)이 계획 외다. `plan.md`는 이 파일을 언급하지 않는다. 그러나 그 사유(T14/AC-RESTORE-014를 훅 단위 테스트로 옮긴 결정)는 v1.0.1이 이미 발산 2건 중 하나로 기록했으므로, 이번 동기화에서 새로 드러난 발산은 아니다. 나머지 7개 파일(신규 뷰 1 + 신규 백엔드 테스트 1 + 수정 5)은 계획대로다. 테스트 결과: 백엔드 `test_spec_018.py` 12 passed, 프론트엔드 `usePurchaseOrderQueries.test.tsx` 3 passed + `UnorderedItemsTab.test.tsx` 4 passed(기존 2개 회귀 무손실), 백엔드 전체(`order` + `accounts`, `concurrency` 마커 1건 deselect) 979 passed, 프론트엔드 전체 237 passed. 설계 결정 A~H 모두 구현 확인. `_reorder_candidate_filter` 및 4개 호출부, 쓰기 엔드포인트, 모델 필드 전부 무수정 검증. |
 | 1.0.3 | 2026-08-13 | ggajo | **plan-audit 1차 후속**(FAIL, 0.68 — 문서 적합성 판정이며 코드 정확성 문제는 아님). 감사관이 mutation testing으로 인수 기준 4건을 검증한 결과 2건이 **판별력 없음**으로 판명됐다(각 기준이 금지한다고 선언한 잘못된 구현을 실제로 주입해도 통과). **D1 수정**: AC-RESTORE-004/T4는 두 응답의 행 순서가 같은지만 봤는데, 이는 정렬이 결정적이지 않아도 성립한다 — `.order_by()`에서 `"pk"` tie-break를 제거해도 통과했다. `CaptureQueriesContext`로 실제 발행된 ORDER BY 절이 두 개의 키를 담는지 단정하는 (e)를 추가했고, 동일 mutation으로 실패함을 확인했다(test_spec_017.py의 쓰기 범위 단정과 같은 기법). **D4 수정**: acceptance.md의 스코프 선언(:17-19)과 DoD 표(:335)가 T14의 테스트 파일을 `UnorderedItemsTab.test.tsx`로 적었으나 실제 위치는 `usePurchaseOrderQueries.test.tsx`다 — v1.0.1이 기록한 발산의 결과인데 문서가 따라가지 않았다. **기능 결함 1건 수정(감사 부수 발견)**: `UnorderedItemsTab.tsx`의 `isError` 가드가 목록 전환 버튼보다 위에서 탭 전체를 early return 해, 미발주 조회가 실패하면 제외 목록 쿼리가 정상이어도 그 화면에 도달할 수 없었다 — "제외되어 보이지 않는 품목을 보이게 한다"는 이 SPEC의 목적이 옆 쿼리의 실패에 막히는 상태였다. 가드를 제외 뷰 분기 아래로 옮기고 전환 버튼을 유지하도록 고쳤으며, 회귀 테스트 T15를 추가해 구 구현에서 실패함을 mutation으로 확인했다. 감사 결과 중 남긴 것: 인용 약 90건이 전부 실제 위치로 해석되나(허구 0건) 구현 반영으로 최대 +439줄 밀려 있다 — 문서 부채로 남긴다. AC-RESTORE-007의 판별력 부재(상수 쿼리 증가가 양쪽 측정에서 상쇄됨)도 후속 과제로 남긴다. 검증: 백엔드 test_spec_018.py 12 passed, 프론트엔드 전체 238 passed(T15 포함). |
+| 1.0.4 | 2026-08-13 | ggajo | **AC-RESTORE-007 판별력 확보**(v1.0.3이 후속 과제로 남겼던 항목). 기존 단정은 제외 행 유무로 쿼리 수를 비교했는데, REQ-RESTORE-011이 금지하는 것(이 SPEC 때문에 기존 엔드포인트의 쿼리 수가 달라지는 것)은 이 방식으로 잡을 수 없다 — 기존 뷰에 추가된 쿼리는 두 측정 모두에 들어가 상쇄된다. 또한 이 AC의 두 번째 절("신규 뷰가 기존 엔드포인트의 호출 그래프에 나타나지 않는다")은 어떤 테스트도 다루지 않았다. 세 절을 추가했다 — **(b)** 쿼리 수를 자기 자신이 아니라 상수 `UNORDERED_ENDPOINT_QUERY_COUNT`(=3, JWT 사용자 조회 1 + 이 뷰가 SPEC 이전부터 발행하던 2)에 고정, **(c)** 기존 엔드포인트가 발행한 SQL에 4개 제외 상태 리터럴이 등장하지 않을 것(공유 필터 확장을 SQL 수준에서 추가 포착), **(d)** 신규 T7b — 신규 뷰의 `get`에 `patch.object` spy를 걸고 `UNORDERED_URL` 요청 중 미호출 단정. 세 절 모두 개별 mutation 주입으로 실패를 확인했다: (b) 뷰에 쿼리 1개 누출 → `assert 4 == 3` 실패(감사관이 이 mutation으로 구 단정을 통과시켰던 바로 그 케이스), (c) 기존 뷰 쿼리셋에 제외 상태 리터럴 등장 → 실패, (d) 기존 뷰가 신규 뷰를 호출 → `Expected 'get' to not have been called` 실패. **프로덕션 코드 무변경** — 테스트와 문서만 수정했다. 검증: test_spec_018.py 13 passed(T7b 포함). |
 
 ---
 
@@ -416,8 +417,9 @@ upload naming SKUs B through E shall report every one of them as skipped and sha
 
 **AC-RESTORE-007** (Ubiquitous) — Traces: REQ-RESTORE-011. With the same fixture in place, the
 number of database queries the unordered-items endpoint issues shall be identical whether or
-not excluded LineItems exist in the database, and the new read view shall not appear in the
-call graph of any pre-existing endpoint.
+not excluded LineItems exist in the database, shall equal a fixed absolute count rather than
+only itself, shall include no SQL that references an excluded purchase_status, and the new read
+view shall not appear in the call graph of any pre-existing endpoint.
 
 **AC-RESTORE-008** (Event-Driven) — Traces: REQ-RESTORE-014. When an Order holds two LineItems
 — one with `logistics_status="received"` and `purchase_status="unordered"`, one with

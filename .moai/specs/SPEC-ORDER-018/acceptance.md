@@ -1,7 +1,7 @@
 ---
 id: SPEC-ORDER-018
 document: acceptance
-version: 1.0.3
+version: 1.0.4
 status: completed
 updated: 2026-08-13
 ---
@@ -24,8 +24,11 @@ AC-RESTORE-XXX / REQ-RESTORE-XXX ID를 인용해 상호 추적된다.
 
 **호출 스코프**: 백엔드 시나리오는 전부 `auth_client`(또는 `anon_client`)로 HTTP
 엔드포인트를 호출한다 — 이 SPEC이 추출하는 순수 함수가 없으므로 함수 직접 호출 스코프는
-존재하지 않는다. 쿼리 수를 다루는 유일한 시나리오(AC-RESTORE-007)는 절대값이 아니라
-**두 조건 간 동등성**을 주장하므로 인증 쿼리가 상한에 섞이는 문제가 발생하지 않는다.
+존재하지 않는다. 쿼리 수를 다루는 유일한 시나리오(AC-RESTORE-007)는 **동등성과 절대값을
+모두** 주장한다. `JWTAuthentication`의 사용자 조회가 측정에 포함되지만 요청당 정확히
+1건으로 결정적이므로 절대값 고정이 가능하며, 그 1건은 상수
+`UNORDERED_ENDPOINT_QUERY_COUNT`에 명시적으로 포함돼 있다. 동등성만 주장하면 기존 뷰에
+추가된 쿼리가 양쪽 측정에서 상쇄되어 판별력이 사라진다(v1.0.4 참조).
 
 **공통 픽스처 관례**: `user` / `auth_client` / `anon_client` 픽스처와
 `_make_order` / `_make_line_item` 헬퍼는 `backend/order/tests/test_purchase_orders.py:72`,
@@ -152,12 +155,27 @@ Traces: REQ-RESTORE-011
   (`from django.test.utils import CaptureQueriesContext`,
   `backend/order/tests/test_spec_015.py:34`)로 감싸 `auth_client`로 `UNORDERED_URL`을
   GET 한다.
-- **Then**: 상태 A와 상태 B에서 발생한 쿼리 수가 **동일**하다. 두 응답의 `results` 길이도
-  둘 다 3으로 동일하다.
-  **스코프 주의**: 이 시나리오는 절대 상한을 주장하지 않는다 — `JWTAuthentication`의 사용자
-  조회 쿼리가 두 측정에 똑같이 포함되므로 동등성 비교는 유효하지만 절대값은 측정 맥락에
-  의존한다. `UnorderedItemsView`에는 추출된 순수 함수가 없어 함수 직접 호출 스코프를 만들 수
-  없다.
+- **Then**:
+  - (a) 상태 A와 상태 B에서 발생한 쿼리 수가 **동일**하다. 두 응답의 `results` 길이도 둘 다
+    3으로 동일하다.
+  - (b) 그 쿼리 수가 **정확히 `UNORDERED_ENDPOINT_QUERY_COUNT`(=3)**다 — 자기 자신과의
+    비교가 아니라 고정된 절대값이다.
+  - (c) 상태 B에서 발행된 어떤 쿼리의 SQL에도 4개 제외 상태 문자열이 등장하지 않는다.
+  - (d) `UNORDERED_URL` 요청 동안 신규 뷰의 `get`이 **한 번도 호출되지 않는다**
+    (`unittest.mock.patch.object` spy).
+
+  **판별력**: (a)만으로는 REQ-RESTORE-011이 금지하는 것을 잡지 못한다. 기존 뷰에 쿼리가
+  하나 추가되면 그 비용이 **두 측정 모두에 들어가 상쇄**되므로 (a)는 그대로 통과한다 —
+  plan-audit SPEC-ORDER-018-review-1(D2)이 실제로 `UnorderedItemsView.get()`에 쿼리를
+  누출시켜 통과함을 확인했다. (b)가 이를 잡는다(mutation 재확인: `assert 4 == 3`으로 실패).
+  (d)는 "신규 뷰가 기존 엔드포인트의 호출 그래프에 나타나지 않는다"는 이 AC의 두 번째 절을
+  검증한다 — 이전에는 어떤 테스트도 이 절을 다루지 않았다(mutation 재확인: 기존 뷰에서 신규
+  뷰를 호출하면 실패). (c)는 공유 필터가 넓어지는 경우를 SQL 수준에서 추가로 잡는다
+  (mutation 재확인: 기존 뷰 쿼리셋에 제외 상태 리터럴이 등장하면 실패).
+
+  **상수 재도출**: `UNORDERED_ENDPOINT_QUERY_COUNT`는 JWT 사용자 조회 1건 + 이 뷰가
+  SPEC-ORDER-018 이전부터 발행하던 2건이다. 의도적으로 바뀌었다면 틀린 값을 임시로 단정해
+  실제 값을 읽어 갱신한다.
 
 ## 복구 부수효과 — Order 집계
 
