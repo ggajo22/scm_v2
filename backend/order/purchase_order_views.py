@@ -2491,6 +2491,143 @@ class LineItemBulkRackNumberUpdateView(APIView):
         )
 
 
+# @MX:NOTE: [AUTO] All database access is BATCHED into a fixed number of
+# queries — 1 Order fetch + 1 LineItem fetch + 1 bulk_update — regardless of
+# how many (order_name, sku) dedup keys the request carries. The original
+# implementation ran those three queries once PER KEY, so an 8-row upload
+# cost ~24 round trips and a 50-row upload ~150. Against the remote MySQL
+# instance this project uses (~130ms round-trip latency) that made response
+# time scale linearly with input size. Dedup, matching and judgement are
+# deliberately pure-Python passes over the already-fetched objects — every
+# new lookup added here must be batched too. Pinned by test_spec_017.py's
+# query count tests, which assert the query count is IDENTICAL for a 2-key
+# and a 10-key batch (SPEC-ORDER-017 REQ-RACKBATCH-001/002).
+def _process_rack_number_rows(rows: list[dict]) -> dict:
+    """
+    SPEC-ORDER-017 REQ-RACKBATCH-001~007/013/014/015: dedup, batch-match and
+    apply rack_number for a batch of parsed rack-number upload rows,
+    atomically.
+
+    Sole caller: UploadRackNumberView.post(). `rows` is the raw list of
+    dicts parse_rack_number_excel returns — {"order_name": str | None,
+    "sku": str, "rack_number": str} — dedup is owned by this function, not
+    the caller.
+
+    Returns {"matched_count": int, "skipped_count": int}.
+    """
+    # REQ-RACKBATCH-003/005: last-row-wins dedup keyed on (order_name, sku).
+    # Rows whose order-identifier cell is blank/empty carry order_name=None
+    # (see parse_rack_number_excel) and must NOT be deduped against each
+    # other under the same (None, sku) key — there is no reliable identity
+    # to merge them on, so each keeps its own row index in the key,
+    # ensuring every such row is still counted (as skipped) individually
+    # below.
+    dedup_map: dict[tuple, dict] = {}
+    for idx, row in enumerate(rows):
+        key = (
+            (row["order_name"], row["sku"])
+            if row["order_name"] is not None
+            else (None, idx)
+        )
+        dedup_map[key] = row
+
+    matched_count = 0
+    skipped_count = 0
+    to_update: list[LineItem] = []
+
+    # REQ-RACKBATCH-013: the whole batch is applied within one atomic
+    # transaction, so a failure part-way through leaves no partially-
+    # applied rack_number change behind. This block is entered
+    # UNCONDITIONALLY, even when dedup_map is empty — the three guards
+    # below (Order fetch / LineItem fetch / bulk_update) are what decide
+    # whether any query beyond the savepoint pair is actually issued
+    # (REQ-RACKBATCH-001's "issue none when there is nothing to look up"
+    # clause).
+    with transaction.atomic():
+        # REQ-RACKBATCH-004 (설계 결정 B): Order.name carries no uniqueness
+        # constraint. `_resolve_orders_by_name` reproduces the lowest-pk
+        # tie-break `.filter(name=X).first()` used to get implicitly via
+        # Django's ORDER BY pk fallback on an unordered queryset, and is
+        # itself a no-op (zero queries) for an empty name set.
+        order_names = {
+            row["order_name"] for row in dedup_map.values() if row["order_name"] is not None
+        }
+        orders_by_name = _resolve_orders_by_name(order_names)
+
+        # One fetch for every LineItem that could satisfy any key, keyed by
+        # (order id, sku). order_id__in and sku__in are independent
+        # filters, so this also drags in cross-product pairs nobody asked
+        # for — harmless, since the loop below only ever looks up keys
+        # built from dedup_map. Guarded so an all-unmatched (absent Order)
+        # batch never issues this query at all.
+        line_items_by_key: dict[tuple[int, str], list[LineItem]] = {}
+        if orders_by_name:
+            sku_matches = LineItem.objects.filter(
+                order_id__in=[o.id for o in orders_by_name.values()],
+                sku__in={row["sku"] for row in dedup_map.values()},
+            ).order_by("pk")
+            for candidate_item in sku_matches:
+                line_items_by_key.setdefault(
+                    (candidate_item.order_id, candidate_item.sku), []
+                ).append(candidate_item)
+
+        for row in dedup_map.values():
+            order_name = row["order_name"]
+            sku = row["sku"]
+
+            if order_name is None:
+                # Blank order-identifier cell -> treated the same as
+                # "order not found" -> skip (REQ-RACKBATCH-005).
+                skipped_count += 1
+                continue
+
+            order = orders_by_name.get(order_name)
+            if order is None:
+                # REQ-RACKBATCH-004: order not found -> skip.
+                skipped_count += 1
+                continue
+
+            # @MX:WARN: [AUTO] A single (order_name, sku) key may match 2+
+            # LineItems (SPEC-SHOPIFY-SKU-SET-002 unique_together allows
+            # duplicate SKUs per order via distinct shopify_line_item_id) —
+            # ALL matching LineItems receive the same rack_number value,
+            # not just one (결정 E).
+            # @MX:REASON: intentional per SPEC-ORDER-013 결정 E — no way to
+            # disambiguate which specific LineItem an Excel row targets
+            # when duplicates exist; treated as "same physical book, same
+            # rack" by design, not a bug. Pinned by
+            # test_upload_multiple_lineitems_matching_key_all_updated
+            # (test_spec_013.py:748).
+            # @MX:NOTE: [AUTO] Deliberate divergence from the sibling
+            # `_process_outbound_rows` above, which REJECTS a key matching
+            # 2+ LineItems (its "exactly one match" branch, 결정 A). This
+            # function does the opposite on purpose (SPEC-ORDER-013 결정
+            # E, SPEC-ORDER-017 REQ-RACKBATCH-006) — copying that rejection
+            # branch here would silently break the rack-number contract.
+            candidates = line_items_by_key.get((order.id, sku), [])
+            if not candidates:
+                # REQ-RACKBATCH-006: no matching LineItem -> skip.
+                skipped_count += 1
+                continue
+
+            # REQ-RACKBATCH-007: an empty-string rack_number is an explicit
+            # "clear" instruction, applied the same as any other value —
+            # branching here never inspects the value itself, only whether
+            # a candidate exists.
+            for candidate_item in candidates:
+                candidate_item.rack_number = row["rack_number"]
+                to_update.append(candidate_item)
+            matched_count += 1
+
+        # REQ-RACKBATCH-014: rack_number is the only field this path ever
+        # writes. Guarded so a batch with nothing to update never issues
+        # this query at all.
+        if to_update:
+            LineItem.objects.bulk_update(to_update, ["rack_number"])
+
+    return {"matched_count": matched_count, "skipped_count": skipped_count}
+
+
 class UploadRackNumberView(APIView):
     """
     POST /api/purchase-orders/upload-rack-number/
@@ -2503,6 +2640,10 @@ class UploadRackNumberView(APIView):
     exact string equality — NOT `Order.order_number` (design fix,
     same-day follow-up to SPEC-ORDER-013) — since the two fields diverge for
     manually-entered "EB"-prefixed orders.
+
+    SPEC-ORDER-017: dedup, batch matching, judgement and the write are all
+    owned by `_process_rack_number_rows` — this view only validates the
+    upload, parses it, and translates the result/exception into a Response.
     """
 
     authentication_classes = [JWTAuthentication]
@@ -2526,75 +2667,15 @@ class UploadRackNumberView(APIView):
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
 
-        # REQ-RACK-006b: last-row-wins dedup keyed on (order_name, sku).
-        # Rows whose order-identifier cell is blank/empty carry
-        # order_name=None (see parse_rack_number_excel) and must NOT be
-        # deduped against each other under the same (None, sku) key — there
-        # is no reliable identity to merge them on, so each keeps its own
-        # row index in the key, ensuring every such row is still counted
-        # (as skipped) below.
-        dedup_map: dict[tuple, dict] = {}
-        for idx, row in enumerate(parsed_rows):
-            key = (
-                (row["order_name"], row["sku"])
-                if row["order_name"] is not None
-                else (None, idx)
-            )
-            dedup_map[key] = row
-
-        matched_count = 0
-        skipped_count = 0
         try:
-            with transaction.atomic():
-                # @MX:WARN: [AUTO] A single (order_name, sku) key may match
-                # 2+ LineItems (SPEC-SHOPIFY-SKU-SET-002 unique_together
-                # allows duplicate SKUs per order via distinct
-                # shopify_line_item_id) — ALL matching LineItems receive the
-                # same rack_number value, not just one (결정 E).
-                # @MX:REASON: intentional per SPEC-ORDER-013 결정 E — no way
-                # to disambiguate which specific LineItem an Excel row
-                # targets when duplicates exist; treated as "same physical
-                # book, same rack" by design, not a bug.
-                for row in dedup_map.values():
-                    order_name = row["order_name"]
-                    sku = row["sku"]
-
-                    if order_name is None:
-                        # Blank order-identifier cell -> treated the same
-                        # as "order not found" -> skip (REQ-RACK-006a).
-                        skipped_count += 1
-                        continue
-
-                    # Design fix (same-day follow-up to SPEC-ORDER-013):
-                    # match against Order.name (exact string, e.g.
-                    # "#37349" or "#EB10011778"), NOT Order.order_number —
-                    # the two fields diverge for manually-entered
-                    # "EB"-prefixed orders, where order_number cannot encode
-                    # the identifier at all.
-                    order = Order.objects.filter(name=order_name).first()
-                    if order is None:
-                        # REQ-RACK-006a: order not found -> skip.
-                        skipped_count += 1
-                        continue
-
-                    line_items = LineItem.objects.filter(order=order, sku=sku)
-                    if not line_items.exists():
-                        # REQ-RACK-006a: no matching LineItem -> skip.
-                        skipped_count += 1
-                        continue
-
-                    line_items.update(rack_number=row["rack_number"])
-                    matched_count += 1
+            result = _process_rack_number_rows(parsed_rows)
         except Exception as exc:
             return Response(
                 {"detail": f"처리 중 오류가 발생했습니다: {exc}"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
-        return Response(
-            {"matched_count": matched_count, "skipped_count": skipped_count},
-            status=status.HTTP_200_OK,
-        )
+        return Response(result, status=status.HTTP_200_OK)
 
 
 # ---------------------------------------------------------------------------
