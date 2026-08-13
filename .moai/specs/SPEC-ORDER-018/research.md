@@ -1,7 +1,7 @@
 ---
 id: SPEC-ORDER-018
 document: research
-version: 1.0.4
+version: 1.0.5
 status: completed
 updated: 2026-08-13
 ---
@@ -65,7 +65,7 @@ return (
 
 | 파일:라인 | 호출자 | 성격 |
 |---|---|---|
-| `purchase_order_views.py:275` | `UnorderedItemsView.get()` | 미발주 현황 목록(읽기) |
+| `purchase_order_views.py:308` | `UnorderedItemsView.get()` | 미발주 현황 목록(읽기) |
 | `purchase_order_views.py:567` | `RunComparisonView.post()` | 발주처 자동 비교 실행 |
 | `purchase_order_views.py:1071` | `DailyReviewExcelView.get()` | Daily Review 엑셀 생성 |
 | `purchase_order_views.py:1410` | `UploadDailyReviewView.post()` | Daily Review 업로드 SKU 배치 매칭 |
@@ -80,11 +80,11 @@ return (
 
 ### 1.4 프론트엔드에서 이 4개 상태는 "쓸 수는 있고 읽을 수는 없다"
 
-`frontend/src/services/purchaseOrderApi.ts:16-25`의 `PURCHASE_STATUS_OPTIONS`는 7개 값을
-전부 나열한다. `frontend/src/pages/PurchaseOrders/tabs/UnorderedItemsTab.tsx:262`는 이
+`frontend/src/services/purchaseOrderApi.ts:31-40`의 `PURCHASE_STATUS_OPTIONS`는 7개 값을
+전부 나열한다. `frontend/src/pages/PurchaseOrders/tabs/UnorderedItemsTab.tsx:486`는 이
 목록을 **그대로** 행별 select에 렌더링하므로 담당자는 미발주 항목을 `on_hold` 등으로 바꿀 수
 있다. 그러나 `:255-257`의 select는 `data.results`의 각 행 위에 있고, `data`는
-`useUnorderedItems()`(`:41`)가 부르는 `/api/purchase-orders/unordered/`의 결과다 — 상태를
+`useUnorderedItems()`(`:48`)가 부르는 `/api/purchase-orders/unordered/`의 결과다 — 상태를
 바꾸는 순간 그 행은 `_reorder_candidate_filter`에서 탈락해 목록에서 사라지고, 되돌릴 UI가
 없다.
 
@@ -98,12 +98,12 @@ return (
 `pages/PurchaseOrders/tabs/UnorderedItemsTab.tsx`,
 `pages/PurchaseOrders/tabs/ConfirmOrderTab.tsx`,
 `pages/OutboundPage/logisticsStatusLabels.ts`. 이 중 서버에 단일 항목 상태 변경을 보내는
-곳은 `UnorderedItemsTab.tsx:64-66`(`handleStatusChange`) 하나다. `ConfirmOrderTab.tsx:47-51`의
+곳은 `UnorderedItemsTab.tsx:118-120`(`handleStatusChange`) 하나다. `ConfirmOrderTab.tsx:47-51`의
 `handlePurchaseStatusChange`는 로컬 state만 갱신하고 발주 확정 요청 본문에 실어 보낸다.
 
 ### 1.5 다른 화면에서도 보이지 않는다
 
-- `LineItemRackNumberSummaryView`(`purchase_order_views.py:2365`)는
+- `LineItemRackNumberSummaryView`(`purchase_order_views.py:2804`)는
   `:2399`에서 `.exclude(purchase_status="order_cancelled")` 한다. docstring `:2373-2374`가
   이를 명시한다.
 - `OutboundForceCandidateView`(`:2963`)도 `:3009`에서 같은 제외를 한다.
@@ -138,9 +138,9 @@ return (
 
 ### 2.1 수동 변경 (단일)
 
-`LineItemStatusUpdateView`(`purchase_order_views.py:1863`), PATCH
+`LineItemStatusUpdateView`(`purchase_order_views.py:2302`), PATCH
 `/api/purchase-orders/line-items/<pk>/status/`(docstring `:1865`, URL 등록
-`backend/order/urls.py:74`).
+`backend/order/urls.py:81`).
 
 - `:1876-1880` — `LineItem.objects.get(pk=pk)`, 없으면 404. **pk로 직접 조회하므로 대상
   LineItem의 현재 `purchase_status`에 아무 제약이 없다** — 4개 제외 상태의 품목도 그대로
@@ -158,7 +158,7 @@ return (
 
 `LineItemBulkStatusUpdateView`(`:1908`), PATCH
 `/api/purchase-orders/line-items/bulk-status/`(docstring `:1910-1913`, URL 등록
-`urls.py:73` — `<int:pk>/status/`보다 **먼저** 등록되어야 한다는 주석이 `urls.py:72`에 있다).
+`urls.py:80` — `<int:pk>/status/`보다 **먼저** 등록되어야 한다는 주석이 `urls.py:79`에 있다).
 
 - 본문은 `{"ids": [int, ...], "purchase_status": str}` — **SKU가 아니라 LineItem id 목록**을
   받는다(`:1923`).
@@ -171,9 +171,9 @@ return (
 - `:1952-1958` — 200 + `{"updated_count", "missing_ids"}`.
 
 여기에도 현재 상태에 대한 제약이 없다. 프론트엔드 래퍼는
-`services/purchaseOrderApi.ts:147-156`(`bulkUpdateLineItemStatus`)이며, 훅은
+`services/purchaseOrderApi.ts:170-179`(`bulkUpdateLineItemStatus`)이며, 훅은
 `hooks/usePurchaseOrderQueries.ts:119-135`(`useBulkUpdateLineItemStatus`)다. 그 위
-`:117-118`에 `@MX:WARN`/`@MX:REASON`이 붙어 있다 — 부분 성공(`missing_ids`)을 사용자에게
+`:134-135`에 `@MX:WARN`/`@MX:REASON`이 붙어 있다 — 부분 성공(`missing_ids`)을 사용자에게
 노출하지 않으면 조용한 데이터 손실이 된다는 경고이며, `:126-130`이 실제로 toast로 이를
 노출한다.
 
@@ -193,9 +193,9 @@ _NOTE_TYPE_STATUS_MAP: dict[str, str] = {
 ```
 
 (`:613`의 주석이 "'선택' 열의 CS 계열 값을 purchase_status 코드로 매핑"이라고 설명한다.
-라벨 감지는 `excel_utils.py:851-852`.)
+라벨 감지는 `excel_utils.py:876-877`.)
 
-뷰 쪽에서는 `purchase_order_views.py:1442`가 `note_type`을 읽고, `:1453-1458`이
+뷰 쪽에서는 `purchase_order_views.py:1633`가 `note_type`을 읽고, `:1644-1649`이
 `_NOTE_TYPE_STATUS_MAP[note_type]`으로 상태를 세팅하며, `:1459-1466`이 **같은 트랜잭션에서
 `LineItemNote`를 생성**한다. `_NOTE_TYPE_STATUS_MAP`은 `:50`에서 임포트된다.
 
@@ -274,9 +274,9 @@ docstring `:130-136`이 같은 규칙을 SPEC-ORDER-012 REQ-RTS-002/003/003a/004
 
 ## 4. `LineItemNote`와의 관계
 
-`LineItemNote`(`backend/order/models.py:231`)는 `line_item` FK(`:254-256`,
-`related_name="notes"`), `is_resolved`(`:266`, 기본 `False`), `note_type`(`:273-278`) 필드를
-갖는다. `NOTE_TYPE_CHOICES`(`:242-252`)는 `주문취소`/`주문보류`/`CS필요`/`타출판사` 등 §2.3의
+`LineItemNote`(`backend/order/models.py:238`)는 `line_item` FK(`:261-263`,
+`related_name="notes"`), `is_resolved`(`:273`, 기본 `False`), `note_type`(`:280-285`) 필드를
+갖는다. `NOTE_TYPE_CHOICES`(`:249-259`)는 `주문취소`/`주문보류`/`CS필요`/`타출판사` 등 §2.3의
 매핑 키와 같은 한글 라벨을 포함한다.
 
 노트 해결은 **전용 엔드포인트**가 담당한다:
@@ -284,7 +284,7 @@ docstring `:130-136`이 같은 규칙을 SPEC-ORDER-012 REQ-RTS-002/003/003a/004
 - `LineItemNoteListCreateView` — `backend/order/views.py:251`
 - `LineItemNoteUnresolvedListView` — `views.py:269` (미해결 목록)
 - `LineItemNoteResolveView` — `views.py:285`, PATCH
-  `/api/orders/line-item-notes/{pk}/resolve/`(`urls.py:154`), 응답은 `views.py:295`의
+  `/api/orders/line-item-notes/{pk}/resolve/`(`urls.py:161`), 응답은 `views.py:295`의
   `{"is_resolved": True}`
 - `LineItemNoteExportView` — `views.py:298`, `:313-317`이 `is_resolved=False` +
   `note_type="타출판사"` 미해결 노트를 엑셀로 내보낸다
@@ -293,7 +293,7 @@ docstring `:130-136`이 같은 규칙을 SPEC-ORDER-012 REQ-RTS-002/003/003a/004
 생성을 함께 수행) **역방향은 존재하지 않는다**. `LineItemStatusUpdateView`(`:1876-1900`)와
 `LineItemBulkStatusUpdateView`(`:1922-1958`) 어느 쪽도 `LineItemNote`를 조회·생성·수정하지
 않는다. 복구 시 노트를 자동 해결하려면 이 두 엔드포인트의 동작을 바꿔야 하고, 그 두
-엔드포인트는 기존 미발주 탭 흐름(`UnorderedItemsTab.tsx:64-66`, `:132-139`)이 공유한다 —
+엔드포인트는 기존 미발주 탭 흐름(`UnorderedItemsTab.tsx:118-120`, `:132-139`)이 공유한다 —
 `spec.md` 설계 결정 E가 이를 근거로 자동 해결을 범위 밖으로 둔다.
 
 ---
@@ -302,7 +302,7 @@ docstring `:130-136`이 같은 규칙을 SPEC-ORDER-012 REQ-RTS-002/003/003a/004
 
 ### 5.1 `UnorderedItemsView`는 페이지네이션하지 않는다
 
-`purchase_order_views.py:251`의 `UnorderedItemsView`:
+`purchase_order_views.py:284`의 `UnorderedItemsView`:
 
 - `:259-260` — `authentication_classes = [JWTAuthentication]`,
   `permission_classes = [IsAuthenticated]`.
@@ -326,8 +326,8 @@ docstring `:130-136`이 같은 규칙을 SPEC-ORDER-012 REQ-RTS-002/003/003a/004
 `PageNumberPagination`은 `:43`에서 임포트되지만 파일 전체에서 이를 상속하는 클래스는
 `PurchaseOrderPagination`(`:3428-3429`, `page_size = 50`) 하나이고, 그것은
 `PurchaseOrderListView`(`:3503`)의 PurchaseOrder 목록 전용이다. 프론트엔드에서도
-`PaginatedResponse<T>`(`services/purchaseOrderApi.ts:61-66`)는
-`getPurchaseOrders`(`:158-170`)에만 쓰이고, `getUnorderedItems`(`:90-93`)의 반환 타입은
+`PaginatedResponse<T>`(`services/purchaseOrderApi.ts:76-81`)는
+`getPurchaseOrders`(`:181-193`)에만 쓰이고, `getUnorderedItems`(`:105-108`)의 반환 타입은
 `{ count: number; results: UnorderedItem[] }`다.
 
 **결론**: LineItem 목록 계열 읽기 엔드포인트의 이 저장소 관례는 **비페이지네이션**이다.
@@ -357,8 +357,8 @@ docstring `:130-136`이 같은 규칙을 SPEC-ORDER-012 REQ-RTS-002/003/003a/004
 
 ## 6. 아키텍처 선례 — "기존 경로를 넓히지 않고 별도 읽기 경로를 만든다"
 
-`OutboundForceCandidateView`(`purchase_order_views.py:2963`)가 **정확히 같은 구조적 문제를
-이미 이 방식으로 풀었다.** docstring `:2973-2978`:
+`OutboundForceCandidateView`(`purchase_order_views.py:3402`)가 **정확히 같은 구조적 문제를
+이미 이 방식으로 풀었다.** docstring `:3412-3417`:
 
 > Modelled on `LineItemRackNumberSummaryView` above as the cross-order read-only structural
 > precedent and on `_process_outbound_rows`'s `name__in` batched order lookup + Python
@@ -373,12 +373,12 @@ docstring `:130-136`이 같은 규칙을 SPEC-ORDER-012 REQ-RTS-002/003/003a/004
 - `:3007-3012` — `.exclude(purchase_status="order_cancelled")`,
   `.exclude(sku__isnull=True)`, `.order_by("order_id", "pk")`.
 - `:3032-3043` — 요청 순서를 그대로 보존하는 `results` 조립.
-- URL은 `urls.py:128-132`에 등록되어 있고 `:123-127`의 주석이 정적 세그먼트라
+- URL은 `urls.py:128-132`에 등록되어 있고 `:130-134`의 주석이 정적 세그먼트라
   `<int:pk>` 패턴에 가려지지 않는 이유를 설명한다.
 
-`urls.py:150`의 `path("purchase-orders/", PurchaseOrderListView.as_view(), ...)`가 가장 마지막에
-오고 `:63`에 "more specific paths must come before the generic list"라는 주석이 있다.
-`purchase-orders/` 아래에 `<int:pk>` 패턴은 존재하지 않으므로 새 정적 경로를 `:66`
+`urls.py:157`의 `path("purchase-orders/", PurchaseOrderListView.as_view(), ...)`가 가장 마지막에
+오고 `:64`에 "more specific paths must come before the generic list"라는 주석이 있다.
+`purchase-orders/` 아래에 `<int:pk>` 패턴은 존재하지 않으므로 새 정적 경로를 `:67`
 (`purchase-orders/unordered/`) 옆에 두면 충돌이 없다.
 
 ---
@@ -436,15 +436,15 @@ SPEC의 복구도 같은 관례를 따르면 된다.
   - `:487` `test_other_non_unordered_non_damaged_statuses_still_excluded`.
 - `:1189` `test_unordered_unlinked_still_included_regression`.
 
-`backend/order/tests/test_spec_011.py:378` `test_unordered_purchase_status_excluded`도
+`backend/order/tests/test_spec_011.py:423` `test_unordered_purchase_status_excluded`도
 같은 계열이다.
 
 테스트 인프라 관례:
 
 - URL 상수: `test_purchase_orders.py:50` `UNORDERED_URL = "/api/purchase-orders/unordered/"`,
-  `:58` `LINE_ITEM_STATUS_URL`, `:59` `BULK_STATUS_URL`.
+  `:59` `LINE_ITEM_STATUS_URL`, `:59` `BULK_STATUS_URL`.
 - 픽스처: `test_purchase_orders.py:72`(`user`), `:77`(`auth_client`), `:85`(`anon_client`),
-  헬퍼 `:89`(`_make_order`), `:97`(`_make_line_item`).
+  헬퍼 `:90`(`_make_order`), `:97`(`_make_line_item`).
 - SPEC 전용 스위트 관례: `test_spec_015.py:1-24`가 모듈 docstring에 `Coverage targets:` T1~Tn과
   REQ/AC 매핑을 적는다. `test_spec_016.py:1-40`도 동일. 같은 파일의
   `:34`(`from django.test.utils import CaptureQueriesContext`), `:46`(`_make_order`),
@@ -455,10 +455,10 @@ SPEC의 복구도 같은 관례를 따르면 된다.
 
 프론트엔드:
 
-- `UnorderedItemsTab.test.tsx:13-22` — `usePurchaseOrderQueries`의 훅 4개와
+- `UnorderedItemsTab.test.tsx:17-27` — `usePurchaseOrderQueries`의 훅 4개와
   `usePurchaseOrderStore`를 통째로 `vi.mock`한다.
 - `:31-57` — `beforeEach`에서 각 훅의 반환값을 세팅. 새 훅을 추가하면 **이 mock 팩토리에도
-  추가해야 하며, 그렇지 않으면 기존 2개 테스트(`:60`, `:73`)가 깨진다.**
+  추가해야 하며, 그렇지 않으면 기존 2개 테스트(`:79`, `:92`)가 깨진다.**
 
 ---
 
@@ -528,7 +528,7 @@ AC-RESTORE-011) 후속 과제로 넘긴다.
 | `LineItem` / `LineItemNote` / `Order` 모델 | `models.py` — 신규 필드·마이그레이션 없음 |
 | `LineItemNote` 해결 경로 | `views.py:285` — 이 SPEC에서 호출하지 않음 |
 | `excel_utils.py` | 파서·매핑 변경 없음 |
-| `PURCHASE_STATUS_OPTIONS` | `purchaseOrderApi.ts:16-25` — 7개 값 그대로, 신규 값 없음 |
+| `PURCHASE_STATUS_OPTIONS` | `purchaseOrderApi.ts:31-40` — 7개 값 그대로, 신규 값 없음 |
 | `usePurchaseOrderStore` | `usePurchaseOrderStore.ts:1-28` — 변경 없음(§9의 이유로 새 선택은 뷰 로컬 state) |
 | `ConfirmOrderTab` / `LineItemNotesPage` | 변경 없음 |
 
@@ -537,7 +537,7 @@ AC-RESTORE-011) 후속 과제로 넘긴다.
 ## 12. 미해결 질문 (구현 시 판단)
 
 1. 신규 엔드포인트 경로명 — `plan.md`는 `purchase-orders/excluded-items/`를 권고하지만
-   `urls.py:63`의 "구체적 경로 먼저" 규칙만 지키면 명칭은 구현 재량이다.
+   `urls.py:64`의 "구체적 경로 먼저" 규칙만 지키면 명칭은 구현 재량이다.
 2. 뷰 전환 UI의 형태(토글 버튼 / 세그먼트 컨트롤 / 서브탭) — `spec.md`는 관측 가능한
    요구(전환 가능, 기본은 미발주)만 규정한다.
 3. 제외 상태별 클라이언트 필터 제공 여부 — 서버는 4개 상태를 전부 반환하므로 필요하면
