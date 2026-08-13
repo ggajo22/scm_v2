@@ -1,7 +1,7 @@
 ---
 id: SPEC-ORDER-018
 document: acceptance
-version: 1.0.4
+version: 1.0.5
 status: completed
 updated: 2026-08-13
 ---
@@ -109,7 +109,7 @@ Traces: REQ-RESTORE-003, REQ-RESTORE-006, REQ-RESTORE-007
     `shopify_created_at`이 같은 2건의 상대 순서까지 같다(REQ-RESTORE-007).
   - **판별력**: 정렬이 `-order__shopify_created_at` 단일 키뿐이면 (d)가 MySQL의 반환 순서에
     따라 간헐적으로 실패한다. `pk` tie-break가 이를 고정한다(`spec.md` 설계 결정 H,
-    선례 `purchase_order_views.py:3011` + 주석 `:3003-3006`).
+    선례 `purchase_order_views.py:3450` + 주석 `:3442-3445`).
 
 ### AC-RESTORE-005 — 미인증 요청은 401이며 품목 데이터를 노출하지 않는다 `[BE]`
 
@@ -142,7 +142,7 @@ Traces: REQ-RESTORE-009, REQ-RESTORE-010
     `confirmed_distributor`, `confirmed_price`도 여전히 `None`이며 새 `PurchaseOrder`가
     이 4건에 연결되지 않았다.
   - **근거**: 두 경로 모두 `_reorder_candidate_filter`를 통과한다
-    (`purchase_order_views.py:275`, `:1410`). 구현이 그 필터를 넓혔다면 이 시나리오가
+    (`purchase_order_views.py:308`, `:1410`). 구현이 그 필터를 넓혔다면 이 시나리오가
     실패한다.
 
 ### AC-RESTORE-007 — 신규 뷰의 존재가 기존 엔드포인트의 쿼리 수를 바꾸지 않는다 `[BE]`
@@ -247,8 +247,8 @@ Traces: REQ-RESTORE-012, REQ-RESTORE-013, REQ-RESTORE-015
   - `li.notes.count()`가 여전히 1이고, 그 노트의 `is_resolved`가 여전히 `False`이며
     `content`와 `note_type`도 불변이다. 새 `LineItemNote`가 생성되지 않았다
     (전역 `LineItemNote.objects.count()`도 불변).
-  - **근거**: 단일 경로는 `purchase_order_views.py:1891`의
-    `save(update_fields=["purchase_status"])`, 일괄 경로는 `:1948`의
+  - **근거**: 단일 경로는 `purchase_order_views.py:2330`의
+    `save(update_fields=["purchase_status"])`, 일괄 경로는 `:2387`의
     `existing.update(purchase_status=purchase_status_value)`. 두 뷰 어디에도
     `LineItemNote` 접근이 없다(`:1876-1900`, `:1922-1958`).
 
@@ -281,20 +281,20 @@ Traces: REQ-RESTORE-022
 
 Traces: REQ-RESTORE-016, REQ-RESTORE-017, REQ-RESTORE-018
 
-- **Given**: `UnorderedItemsTab.test.tsx:13-22`의 `vi.mock` 팩토리에 신규 조회 훅을
-  추가하고 `beforeEach`(`:31-57`)에서 반환값을 세팅한다. 미발주 훅은 `unordered` 항목 1건을,
+- **Given**: `UnorderedItemsTab.test.tsx:17-27`의 `vi.mock` 팩토리에 신규 조회 훅을
+  추가하고 `beforeEach`(`:46-72`)에서 반환값을 세팅한다. 미발주 훅은 `unordered` 항목 1건을,
   제외 조회 훅은 `purchase_status`가 각각 `on_hold`와 `order_cancelled`인 항목 2건을
   반환하도록 mock 한다. 스토어 mock은 `selectedSkus`에 값이 하나 들어 있는 기존
   형태(`:52-57`)를 유지해 일괄 컨트롤이 렌더링되게 한다.
 - **When**: (1) 컴포넌트를 렌더링만 한다. (2) 보류/제외 뷰 전환 컨트롤을 클릭한다.
 - **Then**:
   - (1) 직후 미발주 목록이 렌더링되어 있고, 이 상태의 일괄 상태 select의 option 값 집합에
-    `"unordered"`가 **없다**(기존 `UnorderedItemsTab.tsx:126`의 필터가 그대로 적용된다).
+    `"unordered"`가 **없다**(기존 `UnorderedItemsTab.tsx:350`의 필터가 그대로 적용된다).
   - (2) 이후 제외 품목 2건이 렌더링되며, 각 행에 그 항목의 상태 한글 라벨(`주문보류`,
-    `주문취소` — `purchaseOrderApi.ts:16-25`의 `label` 값)이 보인다.
+    `주문취소` — `purchaseOrderApi.ts:31-40`의 `label` 값)이 보인다.
   - (2) 이후 행별 상태 select의 option 값 집합에 `"unordered"`가 **있다**.
   - (2) 이후 일괄 상태 select의 option 값 집합에도 `"unordered"`가 **있다**.
-  - 기존 테스트 2건(`:60` YES24 버튼 순서, `:73` 클릭 시 mutateAsync 인자)이 여전히
+  - 기존 테스트 2건(`:60` YES24 버튼 순서, `:88` 클릭 시 mutateAsync 인자)이 여전히
     통과한다.
 
 ### AC-RESTORE-013 — 선택은 LineItem id 기반이며 전역 SKU 선택과 격리된다 `[FE]`
@@ -313,7 +313,7 @@ Traces: REQ-RESTORE-019, REQ-RESTORE-020
   - **스토어의 `toggleSku`가 한 번도 호출되지 않았다**
     (`expect(toggleSku).not.toHaveBeenCalled()`), `selectAllSkus`와 `clearSelections`도
     마찬가지다. 전역 `selectedSkus` 값은 처음과 동일하다.
-  - **판별력**: 구현이 기존 `toggleSku(item.sku)` 경로(`UnorderedItemsTab.tsx:224`, `:230`)를
+  - **판별력**: 구현이 기존 `toggleSku(item.sku)` 경로(`UnorderedItemsTab.tsx:448`, `:454`)를
     재사용하면 두 행이 같은 SKU라 하나만 토글되고 `ids`가 `[101, 202]`가 되지 않으며,
     `toggleSku` assertion도 즉시 실패한다.
   - 미발주 뷰로 되돌아온 뒤 발주 파일 생성 버튼을 클릭하면 `mutateAsync`의 인자 `skus`가
@@ -329,7 +329,7 @@ Traces: REQ-RESTORE-021
   두 훅을 실제 `QueryClientProvider` 안에서 렌더링하고 `invalidateQueries`를 spy 한다.
 - **When**: 단일 복구와 일괄 복구의 `onSuccess`를 각각 발동시킨다.
 - **Then**: 두 경우 모두 `invalidateQueries`가 `QUERY_KEYS.unordered`
-  (`usePurchaseOrderQueries.ts:27`의 `['purchase-orders', 'unordered']`)와 **신규 제외 목록
+  (`usePurchaseOrderQueries.ts:28`의 `['purchase-orders', 'unordered']`)와 **신규 제외 목록
   쿼리 키** 양쪽에 대해 호출된다.
   **판별력**: 현재 구현은 `:109`(단일)와 `:125`(일괄)에서 `QUERY_KEYS.unordered`만
   무효화한다. 신규 키 무효화를 추가하지 않으면 이 시나리오가 실패하고, 실사용에서는 복구한

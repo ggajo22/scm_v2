@@ -1,6 +1,6 @@
 ---
 id: SPEC-ORDER-018
-version: 1.0.4
+version: 1.0.5
 status: completed
 created_at: 2026-08-13
 updated: 2026-08-13
@@ -21,6 +21,7 @@ labels: [order, purchase-status, restore, read-path, frontend]
 | 1.0.2 | 2026-08-13 | ggajo | 동기화 완료(2026-08-13 커밋 bd5a41c). **새로 발견된 발산 없음** — 단, `plan.md`의 파일 목록 기준으로는 신규 파일 1건(`frontend/src/hooks/usePurchaseOrderQueries.test.tsx`)이 계획 외다. `plan.md`는 이 파일을 언급하지 않는다. 그러나 그 사유(T14/AC-RESTORE-014를 훅 단위 테스트로 옮긴 결정)는 v1.0.1이 이미 발산 2건 중 하나로 기록했으므로, 이번 동기화에서 새로 드러난 발산은 아니다. 나머지 7개 파일(신규 뷰 1 + 신규 백엔드 테스트 1 + 수정 5)은 계획대로다. 테스트 결과: 백엔드 `test_spec_018.py` 12 passed, 프론트엔드 `usePurchaseOrderQueries.test.tsx` 3 passed + `UnorderedItemsTab.test.tsx` 4 passed(기존 2개 회귀 무손실), 백엔드 전체(`order` + `accounts`, `concurrency` 마커 1건 deselect) 979 passed, 프론트엔드 전체 237 passed. 설계 결정 A~H 모두 구현 확인. `_reorder_candidate_filter` 및 4개 호출부, 쓰기 엔드포인트, 모델 필드 전부 무수정 검증. |
 | 1.0.3 | 2026-08-13 | ggajo | **plan-audit 1차 후속**(FAIL, 0.68 — 문서 적합성 판정이며 코드 정확성 문제는 아님). 감사관이 mutation testing으로 인수 기준 4건을 검증한 결과 2건이 **판별력 없음**으로 판명됐다(각 기준이 금지한다고 선언한 잘못된 구현을 실제로 주입해도 통과). **D1 수정**: AC-RESTORE-004/T4는 두 응답의 행 순서가 같은지만 봤는데, 이는 정렬이 결정적이지 않아도 성립한다 — `.order_by()`에서 `"pk"` tie-break를 제거해도 통과했다. `CaptureQueriesContext`로 실제 발행된 ORDER BY 절이 두 개의 키를 담는지 단정하는 (e)를 추가했고, 동일 mutation으로 실패함을 확인했다(test_spec_017.py의 쓰기 범위 단정과 같은 기법). **D4 수정**: acceptance.md의 스코프 선언(:17-19)과 DoD 표(:335)가 T14의 테스트 파일을 `UnorderedItemsTab.test.tsx`로 적었으나 실제 위치는 `usePurchaseOrderQueries.test.tsx`다 — v1.0.1이 기록한 발산의 결과인데 문서가 따라가지 않았다. **기능 결함 1건 수정(감사 부수 발견)**: `UnorderedItemsTab.tsx`의 `isError` 가드가 목록 전환 버튼보다 위에서 탭 전체를 early return 해, 미발주 조회가 실패하면 제외 목록 쿼리가 정상이어도 그 화면에 도달할 수 없었다 — "제외되어 보이지 않는 품목을 보이게 한다"는 이 SPEC의 목적이 옆 쿼리의 실패에 막히는 상태였다. 가드를 제외 뷰 분기 아래로 옮기고 전환 버튼을 유지하도록 고쳤으며, 회귀 테스트 T15를 추가해 구 구현에서 실패함을 mutation으로 확인했다. 감사 결과 중 남긴 것: 인용 약 90건이 전부 실제 위치로 해석되나(허구 0건) 구현 반영으로 최대 +439줄 밀려 있다 — 문서 부채로 남긴다. AC-RESTORE-007의 판별력 부재(상수 쿼리 증가가 양쪽 측정에서 상쇄됨)도 후속 과제로 남긴다. 검증: 백엔드 test_spec_018.py 12 passed, 프론트엔드 전체 238 passed(T15 포함). |
 | 1.0.4 | 2026-08-13 | ggajo | **AC-RESTORE-007 판별력 확보**(v1.0.3이 후속 과제로 남겼던 항목). 기존 단정은 제외 행 유무로 쿼리 수를 비교했는데, REQ-RESTORE-011이 금지하는 것(이 SPEC 때문에 기존 엔드포인트의 쿼리 수가 달라지는 것)은 이 방식으로 잡을 수 없다 — 기존 뷰에 추가된 쿼리는 두 측정 모두에 들어가 상쇄된다. 또한 이 AC의 두 번째 절("신규 뷰가 기존 엔드포인트의 호출 그래프에 나타나지 않는다")은 어떤 테스트도 다루지 않았다. 세 절을 추가했다 — **(b)** 쿼리 수를 자기 자신이 아니라 상수 `UNORDERED_ENDPOINT_QUERY_COUNT`(=3, JWT 사용자 조회 1 + 이 뷰가 SPEC 이전부터 발행하던 2)에 고정, **(c)** 기존 엔드포인트가 발행한 SQL에 4개 제외 상태 리터럴이 등장하지 않을 것(공유 필터 확장을 SQL 수준에서 추가 포착), **(d)** 신규 T7b — 신규 뷰의 `get`에 `patch.object` spy를 걸고 `UNORDERED_URL` 요청 중 미호출 단정. 세 절 모두 개별 mutation 주입으로 실패를 확인했다: (b) 뷰에 쿼리 1개 누출 → `assert 4 == 3` 실패(감사관이 이 mutation으로 구 단정을 통과시켰던 바로 그 케이스), (c) 기존 뷰 쿼리셋에 제외 상태 리터럴 등장 → 실패, (d) 기존 뷰가 신규 뷰를 호출 → `Expected 'get' to not have been called` 실패. **프로덕션 코드 무변경** — 테스트와 문서만 수정했다. 검증: test_spec_018.py 13 passed(T7b 포함). |
+| 1.0.5 | 2026-08-13 | ggajo | **인용 줄 번호 갱신**(v1.0.3이 문서 부채로 남겼던 항목). plan-audit이 확인했듯 인용 내용은 전부 실재했으나 SPEC-016/017/018 구현이 반영되면서 위치가 최대 +439줄 밀려 있었다. 기준 커밋 `9b23857`의 해당 행 내용을 현재 파일에서 **정확히 한 번** 찾을 수 있을 때만 갱신하는 방식으로 214건을 옮겼다 — 추정·보간으로 번호를 만들지 않았다. 범위 인용은 양끝을 모두 검증했고(끝점은 span 보존 후보를 내용 일치로 확인), 시작>끝인 역전 범위가 생기지 않았음을 검사했다. 검증 불가로 원본을 유지한 386건은 `.moai/reports/spec018-stale-citations.txt`에 남겼다 — 대부분 `)` 같은 짧은 행이거나 여러 곳에 동일 내용이 있어 유일 매칭이 안 되는 경우이며, 상당수는 애초에 위치가 바뀌지 않은 안정적인 파일(`models.py`, `views.py`, `test_purchase_orders.py`)을 가리킨다. 최종 확인: 명시 인용 73개 전부가 빈 줄이 아닌 실제 코드 행을 가리킨다. 문서만 수정. |
 
 ---
 
@@ -38,11 +39,11 @@ labels: [order, purchase-status, restore, read-path, frontend]
 미발주 목록에서도, Daily Review 엑셀에서도, Daily Review 업로드 매칭에서도 빠진다.
 
 동시에 **그 상태로 만드는 경로는 여러 개다**:
-행별 상태 select가 7개 값을 전부 노출하고(`UnorderedItemsTab.tsx:262`,
-`purchaseOrderApi.ts:16-25`), 일괄 변경 select는 오히려 `unordered`만 선택지에서
-제거한다(`UnorderedItemsTab.tsx:126`). Daily Review 업로드는 '선택' 열 라벨을 상태로 자동
+행별 상태 select가 7개 값을 전부 노출하고(`UnorderedItemsTab.tsx:486`,
+`purchaseOrderApi.ts:31-40`), 일괄 변경 select는 오히려 `unordered`만 선택지에서
+제거한다(`UnorderedItemsTab.tsx:350`). Daily Review 업로드는 '선택' 열 라벨을 상태로 자동
 매핑하면서 `LineItemNote`까지 함께 만든다(`excel_utils.py:614-622`,
-`purchase_order_views.py:1442`, `:1453-1466`). 들어가는 문은 넓고 나오는 문은 없다.
+`purchase_order_views.py:1633`, `:1644-1657`). 들어가는 문은 넓고 나오는 문은 없다.
 
 담당자의 실제 업무 흐름은 이렇다 — 미출간 도서라 `on_hold`로 잡아 둔다 → 나중에 출판사
 재고를 직접 확인하고 주문을 넣는다 → **그 시점에 이 품목을 다시 "발주 대상"(`unordered`)으로
@@ -65,7 +66,7 @@ labels: [order, purchase-status, restore, read-path, frontend]
 1. **읽기 — 완전히 별개인 신규 조회 경로.** 4개 제외 상태의 LineItem을 반환하는 읽기 전용
    엔드포인트를 신설한다. 공유 필터를 재사용하지도, 확장하지도 않는다. 이 구조는 이
    저장소에 이미 있는 선례를 그대로 따른다 — `OutboundForceCandidateView`의
-   docstring(`purchase_order_views.py:2973-2978`)이 "이 뷰는 완전히 별개 코드라서 기존 두
+   docstring(`purchase_order_views.py:3412-3417`)이 "이 뷰는 완전히 별개 코드라서 기존 두
    출고 엔드포인트에 쿼리를 하나도 추가하지 않는다"고 명시한다.
 2. **쓰기 — 신규 엔드포인트 없음.** 복구는 이미 존재하는
    `LineItemStatusUpdateView`(`:1863`, PATCH `/line-items/<pk>/status/`)와
@@ -76,10 +77,10 @@ labels: [order, purchase-status, restore, read-path, frontend]
 3. **UI — 미발주 탭 안의 뷰 전환.** 새 페이지·새 탭을 만들지 않는다.
    `UnorderedItemsTab`(`frontend/src/pages/PurchaseOrders/tabs/UnorderedItemsTab.tsx`)에
    "보류/제외 품목" 뷰를 추가하고, 그 뷰에서 기존 행별 select(`:255-267`)와 일괄 변경
-   컨트롤(`:118-141`)을 재사용하되 `unordered`를 선택 가능하게 만든다.
+   컨트롤(`:342-365`)을 재사용하되 `unordered`를 선택 가능하게 만든다.
 4. **선택 상태는 뷰 로컬로 분리한다.** 기존 선택은 전역 zustand 스토어의 SKU 배열
    (`usePurchaseOrderStore.ts:5`)이고 발주 파일 생성이 이를 그대로 서버에 보낸다
-   (`UnorderedItemsTab.tsx:90`). 보류/제외 뷰의 선택이 이 배열에 섞이면 제외된 품목의 SKU로
+   (`UnorderedItemsTab.tsx:144`). 보류/제외 뷰의 선택이 이 배열에 섞이면 제외된 품목의 SKU로
    발주 파일이 생성될 수 있다 — 설계 결정 F 참조.
 5. **모델·마이그레이션·감사 로그 없음.** 복구는 `purchase_status` 한 필드만 바꾼다.
 
@@ -190,10 +191,10 @@ SPEC은 그 구조를 그대로 따른다.
    `LineItemBulkStatusUpdateView`(`:1922-1958`) 어느 쪽도 `LineItemNote`를 조회·생성·수정하지
    않는다.
 2. **범위 침범이 된다.** 그 두 엔드포인트는 기존 미발주 탭 흐름
-   (`UnorderedItemsTab.tsx:64-66`, `:132-139`)이 공유한다. 노트 자동 해결을 넣으면 이
+   (`UnorderedItemsTab.tsx:118-120`, `:132-139`)이 공유한다. 노트 자동 해결을 넣으면 이
    SPEC과 무관한 기존 상태 변경까지 노트를 건드리게 된다.
 3. **전용 경로가 이미 있다.** `LineItemNoteResolveView`(`backend/order/views.py:285`, PATCH
-   `/api/orders/line-item-notes/{pk}/resolve/`, `urls.py:154`)와 품목 노트 화면이 담당한다.
+   `/api/orders/line-item-notes/{pk}/resolve/`, `urls.py:161`)와 품목 노트 화면이 담당한다.
 4. **선례가 일관된다.** `damaged_exchange` → `unordered` 자동 리셋
    (`ConfirmOrderView:975-984`, `UploadDailyReviewView:1568-1569`)도 `purchase_status` 한
    필드만 바꾸고 노트를 건드리지 않는다.
@@ -213,12 +214,12 @@ SPEC은 그 구조를 그대로 따른다.
 
 두 가지 문제가 있다.
 
-1. **선택 키가 SKU다.** `UnorderedItemsTab.tsx:224`/`:230`이 `toggleSku(item.sku)`를
-   호출하고 `:69-72`가 선택된 SKU를 LineItem id로 되매핑한다. 미발주 목록에서는 같은 SKU가
+1. **선택 키가 SKU다.** `UnorderedItemsTab.tsx:448`/`:454`이 `toggleSku(item.sku)`를
+   호출하고 `:123-126`가 선택된 SKU를 LineItem id로 되매핑한다. 미발주 목록에서는 같은 SKU가
    전부 `unordered`이므로 무해하지만, 보류/제외 목록에서는 같은 SKU가 서로 다른 주문에 서로
    다른 상태로 존재할 수 있어(225건 규모에서 충분히 가능) SKU 하나를 체크하면 의도치 않은
    행까지 함께 복구된다.
-2. **스토어가 전역이다.** `:90`의 발주 파일 생성이 `selectedSkus`를 **그대로** 서버에
+2. **스토어가 전역이다.** `:144`의 발주 파일 생성이 `selectedSkus`를 **그대로** 서버에
    보낸다(`generateOrderFile({ distributor, skus: selectedSkus })`). 보류 품목을 선택한 채
    뷰를 전환하면 제외된 품목의 SKU로 발주 파일이 만들어질 수 있다.
 
@@ -233,8 +234,8 @@ SPEC은 그 구조를 그대로 따른다.
 봉투를 직접 만들며 `next`/`previous` 키가 없다. 파일 안에서 `PageNumberPagination`을 상속하는
 클래스는 `PurchaseOrderPagination`(`:3428-3429`, `page_size = 50`) 하나뿐이고 그것은
 `PurchaseOrderListView`(`:3503`)의 PurchaseOrder 목록 전용이다. 프론트엔드에서도
-`PaginatedResponse<T>`(`purchaseOrderApi.ts:61-66`)는 `getPurchaseOrders`(`:158-170`)에만
-쓰이며 `getUnorderedItems`(`:90-93`)의 반환 타입은 `{ count, results }`다.
+`PaginatedResponse<T>`(`purchaseOrderApi.ts:76-81`)는 `getPurchaseOrders`(`:181-193`)에만
+쓰이며 `getUnorderedItems`(`:105-108`)의 반환 타입은 `{ count, results }`다.
 
 즉 **LineItem 목록 계열 읽기 엔드포인트의 이 저장소 관례는 비페이지네이션이다.** 신규 뷰는
 그 관례를 그대로 따른다. 규모 근거: 2026-08-13 운영 DB 실측 4개 상태 합계 225건
@@ -538,7 +539,7 @@ the restored row.
   수정하지 않는다.
 - **서버측 상태 필터 쿼리 파라미터 없음** (설계 결정 I).
 - **페이지네이션 없음** (설계 결정 G).
-- **`PURCHASE_STATUS_OPTIONS`(`purchaseOrderApi.ts:16-25`) 수정 없음.** 옵션 목록의 내용이
+- **`PURCHASE_STATUS_OPTIONS`(`purchaseOrderApi.ts:31-40`) 수정 없음.** 옵션 목록의 내용이
   아니라 그것을 어떻게 필터링해 렌더링하는지만 바뀐다.
 - **`usePurchaseOrderStore`(`usePurchaseOrderStore.ts:1-28`) 수정 없음** (설계 결정 F).
 - **`LineItemRackNumberSummaryView`(`:2365`)의 `order_cancelled` 제외(`:2399`) 수정 없음.**
@@ -560,7 +561,7 @@ the restored row.
    설계가 필요하다.
 3. **렉번호 요약의 `order_cancelled` 제외 재검토.** 문제 정의의 대표 사례(id=15083,
    `rack_number='M4'`)처럼 물리적으로 창고에 있는데 요약에서 사라지는 품목이 있다
-   (`purchase_order_views.py:2399`). 창고 관점과 발주 관점의 제외 규칙이 같아야 하는지
+   (`purchase_order_views.py:2838`). 창고 관점과 발주 관점의 제외 규칙이 같아야 하는지
    재검토가 필요하다.
 4. **복구 이력 추적.** 감사 로그가 없어 누가 언제 어떤 근거로 복구했는지 남지 않는다. 필요해지면
    `LineItemNote`를 이력 매체로 쓸지, 전용 테이블을 둘지 결정한다.
@@ -582,6 +583,6 @@ the restored row.
   읽기 경로를 신설한다"는 아키텍처 선례(`:2963`, docstring `:2973-2978`, 설계 결정 A).
   또한 그 SPEC의 v1.0.5 HISTORY가 기록한 허구 인용 사고가 이 SPEC의 인용 전량 재검증 방침의
   직접적 계기다.
-- **SPEC-PURCHASE-ORDER-004** — `LineItemBulkStatusUpdateView` 도입(`urls.py:72` 주석의
+- **SPEC-PURCHASE-ORDER-004** — `LineItemBulkStatusUpdateView` 도입(`urls.py:79` 주석의
   경로 순서 제약 포함).
 - **SPEC-ORDER-010** — `LineItemNote` 도입 및 해결 경로(`backend/order/views.py:251-296`).

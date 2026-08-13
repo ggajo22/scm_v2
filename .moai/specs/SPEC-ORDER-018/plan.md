@@ -1,7 +1,7 @@
 ---
 id: SPEC-ORDER-018
 document: plan
-version: 1.0.4
+version: 1.0.5
 status: completed
 updated: 2026-08-13
 ---
@@ -65,8 +65,8 @@ updated: 2026-08-13
   T12(뷰 전환 + 상태 라벨 + `unordered` 옵션 노출, AC-RESTORE-012), T13(선택 격리,
   AC-RESTORE-013), T14(복구 성공 시 두 쿼리 무효화, AC-RESTORE-014)을 먼저 작성한 뒤
   `UnorderedItemsTab.tsx`를 구현한다. 커버 REQ: 016~021.
-  **[HARD] 신규 훅을 `vi.mock` 팩토리(`UnorderedItemsTab.test.tsx:13-22`)와
-  `beforeEach`(`:31-57`)에 반드시 추가한다** — 누락하면 기존 2개 테스트(`:60`, `:73`)가
+  **[HARD] 신규 훅을 `vi.mock` 팩토리(`UnorderedItemsTab.test.tsx:17-27`)와
+  `beforeEach`(`:31-57`)에 반드시 추가한다** — 누락하면 기존 2개 테스트(`:79`, `:92`)가
   `undefined is not a function`으로 깨진다.
 
 - **M7 (Low) — REFACTOR + 문서 동기화**: 백엔드 뷰와 `UnorderedItemsView`의 중복(환불
@@ -116,7 +116,7 @@ M7은 M1~M6 완료 후.
    `:2384-2386`의 주석에 있다(Refund 행은 로컬 pk가 아니라 Shopify의 `line_item_id`를 든다).
    `Coalesce(Subquery(...), 0)`로 `refunded_qty` annotate.
 4. **정렬**(REQ-007, 설계 결정 H): `.order_by("-order__shopify_created_at", "pk")`.
-   `.select_related("order")`로 주문명 접근의 N+1을 막는다(`:282` 관례).
+   `.select_related("order")`로 주문명 접근의 N+1을 막는다(`:289` 관례).
 5. **넷팅 루프**(REQ-005, 설계 결정 D): `net_qty = max((li.quantity or 0) -
    li.refunded_qty, 0)` 후 **`if li.refunded_qty and net_qty == 0: continue`**.
    `UnorderedItemsView:293-294`의 무조건 `if net_qty == 0: continue`를 복사하면
@@ -125,7 +125,7 @@ M7은 M1~M6 완료 후.
    뺀 형태 — `id`, `order_name`(`:296`의 폴백 포함), `sku`, `title`, `vendor`,
    `quantity`(순수량), `purchase_status`. `auto_distributor`는 발주처 자동 추천값이며
    제외 품목 목록의 목적(복구)과 무관하므로 제외한다. `DistributorVendorRule` 조회
-   (`:286-288`)도 따라서 불필요하다.
+   (`:293-295`)도 따라서 불필요하다.
 7. **응답**(REQ-006): `Response({"count": len(results), "results": results})` —
    페이지네이션 클래스를 붙이지 않는다.
 8. **인증**(REQ-008): 클래스 속성 2줄. 별도 코드 없이 401이 나온다.
@@ -190,22 +190,22 @@ M7은 M1~M6 완료 후.
    미발주 뷰도 쓰므로 양방향으로 필요하다 — 미발주 뷰에서 항목을 `on_hold`로 바꾸면 제외
    목록에 나타나야 하고, 제외 뷰에서 복구하면 미발주 목록에 나타나야 한다.
 3. **뷰 로컬 선택**(REQ-019, 설계 결정 F): `useState<Set<number>>` 또는 `number[]`.
-   `usePurchaseOrderStore`(`:45`)에서 가져오는 4개 중 어느 것도 제외 뷰 경로에서 호출하지
+   `usePurchaseOrderStore`(`:64`)에서 가져오는 4개 중 어느 것도 제외 뷰 경로에서 호출하지
    않는다. 뷰 전환 시 로컬 선택을 초기화하고, 전역 `clearSelections()`는 **호출하지
    않는다**(미발주 뷰의 선택을 지워버리면 REQ-019의 "이월하지 않는다"를 넘어 기존 동작을
    손상한다).
 4. **일괄 복구 호출**: 기존 `bulkStatusMutation.mutate({ ids, purchaseStatus })`
    (`:74-81`)를 그대로 쓰되 `ids`를 로컬 선택에서 직접 만든다. 성공 콜백은 로컬 선택
-   초기화로 바꾼다(`:77-79`의 `clearSelections()`를 제외 뷰 경로에서 호출하지 않는다).
+   초기화로 바꾼다(`:96-98`의 `clearSelections()`를 제외 뷰 경로에서 호출하지 않는다).
 5. **옵션 필터 분기**(REQ-018): `:126`의 `filter((o) => o.value !== 'unordered')`를 뷰
    조건부로 만든다. 미발주 뷰에서의 동작은 그대로여야 한다(AC-RESTORE-012의 마지막 절).
 6. **발주 파일 버튼**(REQ-020): 제외 뷰에서는 렌더링하지 않는 편이 `selectedSkus`에 대한
    의존을 구조적으로 끊어 가장 안전하다. 비활성화만 하면 뷰 전환 순간의 상태 조합에 따라
    활성화될 여지가 남는다.
-7. **테스트 mock**(M6 [HARD]): `UnorderedItemsTab.test.tsx:13-22`의 `vi.mock` 팩토리는
+7. **테스트 mock**(M6 [HARD]): `UnorderedItemsTab.test.tsx:17-27`의 `vi.mock` 팩토리는
    모듈 전체를 대체하므로 팩토리에 없는 export를 컴포넌트가 호출하면 `undefined`가 된다.
    신규 훅 추가 시 팩토리와 `beforeEach`(`:31-57`) 양쪽을 갱신해야 기존 2개
-   테스트(`:60`, `:73`)가 유지된다.
+   테스트(`:79`, `:92`)가 유지된다.
 
 ---
 
@@ -219,7 +219,7 @@ M7은 M1~M6 완료 후.
 | R4 | 무효화 누락으로 복구 후 제외 목록에 항목이 남는다 | T14(AC-RESTORE-014)가 `invalidateQueries` 호출을 직접 확인한다. `useQueryClient`를 mock하거나 훅 단위 테스트로 검증한다. |
 | R5 | 설계 결정 C의 `ready_to_ship` 분석이 틀렸다 | M4를 M2와 **독립적으로, 백엔드 구현 전에** 실행할 수 있게 배치했다. T8/T9가 실패하면 구현이 아니라 `spec.md` 설계 결정 C를 정정하고 AC-RESTORE-008/009를 다시 쓴다. |
 | R6 | 원격 MySQL 테스트 DB를 공유하는 다른 세션과 pytest가 동시에 돌아 무관한 실패가 섞인다 | 프로젝트 기존 관례 — pytest를 동시 실행하지 않는다. M0의 베이스라인 기록이 "이 SPEC 이전부터 실패하던 것"과 "이 SPEC이 깬 것"을 구분하는 기준이 된다. 현재 작업 트리에 미커밋 변경(`order/models.py`, `order/shopify_orders.py`, `order/tests/test_shopify_orders.py` 등)이 있어 무관한 실패 가능성이 실재한다. |
-| R7 | 신규 URL이 `:150`의 일반 목록보다 뒤에 등록되어 404가 난다 | `urls.py:63`의 기존 주석이 이미 규칙을 명시한다. T1이 URL 역참조/요청으로 즉시 검출한다. |
+| R7 | 신규 URL이 `:157`의 일반 목록보다 뒤에 등록되어 404가 난다 | `urls.py:64`의 기존 주석이 이미 규칙을 명시한다. T1이 URL 역참조/요청으로 즉시 검출한다. |
 | R8 | 제외 목록에 나타난 품목을 복구했는데 PO 연결 때문에 미발주 목록에 안 나타나 담당자가 혼란을 겪는다 | 이 SPEC에서 해결하지 않는다(REQ-RESTORE-022). T11이 이 동작을 고정해 이후 누군가 "고치려고" 공유 필터를 넓히는 것을 막는다. 후속 과제 2로 등록. |
 
 ---
@@ -230,11 +230,11 @@ M7은 M1~M6 완료 후.
 |---|---|---|
 | `@MX:NOTE` (신규) | 신규 조회 뷰의 클래스 위 | 이 뷰가 `_reorder_candidate_filter`(`:93`)를 **의도적으로 호출하지 않는다**는 사실과 그 이유(공유 필터의 4개 호출부에 회귀를 만들지 않기 위해, `spec.md` 설계 결정 A). `OutboundForceCandidateView`의 `:2973-2978` docstring과 같은 성격의 기록이다. 이 태그가 없으면 이후 누군가 "중복 제거"를 명목으로 공유 필터를 재사용하려 할 수 있다. |
 | `@MX:NOTE` (신규) | 신규 조회 뷰의 넷팅 루프 안 | 넷팅 가드가 `UnorderedItemsView:293-294`가 아니라 `LineItemRackNumberSummaryView:2415`의 가드된 형태를 따른다는 사실과 근거(`spec.md` 설계 결정 D). `:2416-2421`의 기존 주석과 같은 취지. |
-| `@MX:NOTE` (신규) | `UnorderedItemsTab.tsx`의 뷰 로컬 선택 state 선언부 | 제외 뷰의 선택이 전역 `usePurchaseOrderStore`(`:5`)와 분리된 이유 — SKU 키 모호성과 발주 파일 생성(`:90`)으로의 누출(`spec.md` 설계 결정 F). |
+| `@MX:NOTE` (신규) | `UnorderedItemsTab.tsx`의 뷰 로컬 선택 state 선언부 | 제외 뷰의 선택이 전역 `usePurchaseOrderStore`(`:6`)와 분리된 이유 — SKU 키 모호성과 발주 파일 생성(`:90`)으로의 누출(`spec.md` 설계 결정 F). |
 | 검토 후 무변경 | `purchase_order_views.py:86-92`의 `@MX:NOTE` | `_reorder_candidate_filter`의 "Fan-in == 4" 서술은 이 SPEC이 호출부를 늘리지 않으므로 **갱신 불필요**하다. 신규 뷰가 이 헬퍼를 호출하면 이 태그를 고쳐야 한다는 사실 자체가 설계 위반의 신호다. |
 | 검토 후 무변경 | `purchase_order_views.py:113-122`의 `@MX:NOTE` | `_recompute_order_aggregates`의 "Fan-in == 8"도 신규 호출부가 없으므로 무변경. |
 | 검토 후 무변경 | `usePurchaseOrderStore.ts:12-13`의 `@MX:ANCHOR`/`@MX:REASON` | 설계 결정 F에 따라 제외 뷰가 이 스토어를 쓰지 않으므로 fan-in 서술("UnorderedItemsTab and VendorFileUploadTab") 무변경. |
-| 검토 후 무변경 | `usePurchaseOrderQueries.ts:117-118`의 `@MX:WARN`/`@MX:REASON` | 일괄 상태 변경의 부분 성공 경고는 그대로 유효하다. 제외 뷰의 일괄 복구도 같은 훅을 쓰므로 오히려 적용 범위가 넓어진다 — 문구 수정 없이 유지. |
+| 검토 후 무변경 | `usePurchaseOrderQueries.ts:134-135`의 `@MX:WARN`/`@MX:REASON` | 일괄 상태 변경의 부분 성공 경고는 그대로 유효하다. 제외 뷰의 일괄 복구도 같은 훅을 쓰므로 오히려 적용 범위가 넓어진다 — 문구 수정 없이 유지. |
 
 `code_comments: en` 설정(`.moai/config/sections/language.yaml`)에 따라 모든 태그 본문은
 영어로 작성한다.
@@ -268,11 +268,11 @@ M7은 M1~M6 완료 후.
 
 **Done (프론트엔드)**
 
-- [ ] `UnorderedItemsTab.test.tsx` T12~T14 + **기존 2개 테스트(`:60`, `:73`)** 전량 통과
+- [ ] `UnorderedItemsTab.test.tsx` T12~T14 + **기존 2개 테스트(`:60`, `:88`)** 전량 통과
 - [ ] `tsc --noEmit` 신규 에러 0
 - [ ] `eslint` 신규 에러 0
 - [ ] `git diff`에 `usePurchaseOrderStore.ts`와 `PurchaseOrders/index.tsx`의 변경이 **없다**
-- [ ] `git diff`에 `PURCHASE_STATUS_OPTIONS`(`purchaseOrderApi.ts:16-25`)의 변경이 **없다**
+- [ ] `git diff`에 `PURCHASE_STATUS_OPTIONS`(`purchaseOrderApi.ts:31-40`)의 변경이 **없다**
 
 **Done (문서)**
 
@@ -303,7 +303,7 @@ M7은 M1~M6 완료 후.
 
 ## 관련 참조 구현
 
-- 별도 읽기 경로 아키텍처: `backend/order/purchase_order_views.py:2963`
+- 별도 읽기 경로 아키텍처: `backend/order/purchase_order_views.py:3402`
   (`OutboundForceCandidateView`) — 근거 docstring `:2973-2978`, 인증 `:2981-2982`,
   빈 입력 무쿼리 `:2991-2996`, 가드 `:3002`, SKU 제외 `:3010`,
   결정적 정렬 `:3011`(주석 `:3003-3006`)
@@ -316,12 +316,12 @@ M7은 M1~M6 완료 후.
   `:1908-1958`(일괄, `ids` 계약 `:1923`, UPDATE `:1948`, 재계산 `:1950`)
 - 집계 규칙: `:123`, `:167-173`(status), `:176-185`(ready_to_ship), docstring `:130-136`
 - 절대 넓히지 **않을** 지점: `:93-110` + 호출부 `:275`/`:567`/`:1071`/`:1410`
-- URL 등록 순서 규칙: `backend/order/urls.py:63`(주석), `:66`, `:150`;
+- URL 등록 순서 규칙: `backend/order/urls.py:64`(주석), `:85`, `:150`;
   정적 세그먼트 안전성 선례 `:102-103`, `:123-127`
 - 회귀 고정 테스트: `backend/order/tests/test_purchase_orders.py:2152`(클래스),
   `:2217-2234`(5개 상태 제외), `:2197-2215`(PO 연결 제외), `:451`(damaged_exchange 계열)
 - 테스트 스위트 관례: `test_spec_015.py:1-24`(docstring), `:34`(`CaptureQueriesContext`),
-  `:46`/`:50`(헬퍼), `:611`/`:617`/`:625`(픽스처); `test_spec_016.py:1-40`(docstring);
-  `test_purchase_orders.py:50-59`(URL 상수), `:72`/`:77`/`:85`(픽스처), `:89`/`:97`(헬퍼)
-- 프론트엔드 mock 관례: `UnorderedItemsTab.test.tsx:13-22`(`vi.mock` 팩토리),
-  `:31-57`(`beforeEach`), `:60`/`:73`(깨지면 안 되는 기존 테스트)
+  `:46`/`:69`(헬퍼), `:611`/`:617`/`:625`(픽스처); `test_spec_016.py:1-40`(docstring);
+  `test_purchase_orders.py:50-59`(URL 상수), `:72`/`:96`/`:85`(픽스처), `:89`/`:97`(헬퍼)
+- 프론트엔드 mock 관례: `UnorderedItemsTab.test.tsx:17-27`(`vi.mock` 팩토리),
+  `:31-57`(`beforeEach`), `:79`/`:92`(깨지면 안 되는 기존 테스트)

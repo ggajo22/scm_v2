@@ -1,7 +1,7 @@
 ---
 id: SPEC-ORDER-018
 document: spec-compact
-version: 1.0.4
+version: 1.0.5
 status: completed
 updated: 2026-08-13
 ---
@@ -22,7 +22,7 @@ updated: 2026-08-13
 매칭)이 공유한다.
 
 들어가는 문은 여럿이다 — 행별 select가 7개 값을 전부 노출하고
-(`UnorderedItemsTab.tsx:262`), 일괄 select는 `unordered`만 제거하며(`:126`), Daily Review
+(`UnorderedItemsTab.tsx:486`), 일괄 select는 `unordered`만 제거하며(`:126`), Daily Review
 업로드는 '선택' 열 라벨을 상태로 자동 매핑한다(`excel_utils.py:614-622`). 나오는 문은 없다.
 
 실제 업무: 미출간이라 `on_hold` → 나중에 출판사 재고 확인 후 주문 → **그 시점에 `unordered`로
@@ -38,8 +38,8 @@ updated: 2026-08-13
 |---|---|
 | 읽기 | **신규 읽기 전용 엔드포인트** — 공유 필터를 재사용도 확장도 하지 않는 완전 별개 코드. 선례: `OutboundForceCandidateView` docstring(`:2973-2978`) "완전히 별개 코드라서 기존 두 엔드포인트에 쿼리를 하나도 추가하지 않는다". |
 | 쓰기 | **신규 엔드포인트 없음** — 기존 `LineItemStatusUpdateView`(`:1863`)와 `LineItemBulkStatusUpdateView`(`:1908`)를 그대로 재사용. 두 엔드포인트 모두 대상의 현재 상태에 제약이 없고 `unordered`는 이미 유효한 선택지(`:1883`). |
-| UI | **미발주 탭 안의 뷰 전환** — 새 페이지·새 탭 없음. `UnorderedItemsTab.tsx`의 행별 select(`:255-267`)와 일괄 컨트롤(`:118-141`) 재사용, 단 `unordered`를 선택 가능하게. |
-| 선택 상태 | **LineItem id 기반 뷰 로컬 state** — 전역 SKU 배열(`usePurchaseOrderStore.ts:5`)에 섞이면 발주 파일 생성(`UnorderedItemsTab.tsx:90`)이 제외 품목 SKU를 서버로 보낸다. |
+| UI | **미발주 탭 안의 뷰 전환** — 새 페이지·새 탭 없음. `UnorderedItemsTab.tsx`의 행별 select(`:255-267`)와 일괄 컨트롤(`:342-365`) 재사용, 단 `unordered`를 선택 가능하게. |
+| 선택 상태 | **LineItem id 기반 뷰 로컬 state** — 전역 SKU 배열(`usePurchaseOrderStore.ts:5`)에 섞이면 발주 파일 생성(`UnorderedItemsTab.tsx:144`)이 제외 품목 SKU를 서버로 보낸다. |
 
 모델 변경·마이그레이션·감사 로그 없음.
 
@@ -149,7 +149,7 @@ updated: 2026-08-13
 
 ## 참조 구현
 
-- 별도 읽기 경로 아키텍처 원본: `backend/order/purchase_order_views.py:2963`
+- 별도 읽기 경로 아키텍처 원본: `backend/order/purchase_order_views.py:3402`
   (`OutboundForceCandidateView`, docstring `:2973-2978`, 빈 입력 무쿼리 `:2991-2996`,
   가드 `:3002`, 결정적 정렬 `:3011` + 주석 `:3003-3006`)
 - 교차 주문 읽기 전용 뷰 + 가드된 환불 넷팅: `:2365`
@@ -164,6 +164,6 @@ updated: 2026-08-13
 - 회귀 고정 테스트: `backend/order/tests/test_purchase_orders.py:2217-2234`
   (`test_all_non_unordered_statuses_excluded`), `:2197-2215`(PO 연결 품목 제외)
 - 테스트 스위트 관례: `test_spec_015.py:1-24`(모듈 docstring), `:34`
-  (`CaptureQueriesContext`), `:46`/`:50`(헬퍼); `test_purchase_orders.py:50`(URL 상수),
-  `:72`/`:77`/`:85`(픽스처), `:89`/`:97`(헬퍼)
-- 프론트엔드 mock 관례: `UnorderedItemsTab.test.tsx:13-22`, `:31-57`
+  (`CaptureQueriesContext`), `:46`/`:69`(헬퍼); `test_purchase_orders.py:50`(URL 상수),
+  `:72`/`:96`/`:85`(픽스처), `:89`/`:97`(헬퍼)
+- 프론트엔드 mock 관례: `UnorderedItemsTab.test.tsx:17-27`, `:31-57`
