@@ -1,8 +1,8 @@
 ---
 id: SPEC-ORDER-019
 document: plan
-version: 1.0.0
-status: draft
+version: 1.0.2
+status: completed
 updated: 2026-08-13
 ---
 
