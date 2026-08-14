@@ -75,6 +75,7 @@ export function DamagedExchangePage() {
                 <th className="py-2 px-3 text-left font-medium">주문번호</th>
                 <th className="py-2 px-3 text-left font-medium">SKU</th>
                 <th className="py-2 px-3 text-left font-medium">도서명</th>
+                <th className="py-2 px-3 text-left font-medium">렉번호</th>
                 <th className="py-2 px-3 text-right font-medium">주문 수량</th>
                 <th className="py-2 px-3 text-left font-medium">오늘 출고 가능 여부</th>
                 <th className="py-2 px-3 text-right font-medium">전체 출고 수량</th>
@@ -126,6 +127,12 @@ function DamagedExchangeRow({
       <td className="py-2 px-3 font-mono text-xs">{row.sku}</td>
       <td className="py-2 px-3 max-w-xs truncate" title={row.title}>
         {row.title}
+      </td>
+      {/* SPEC-ORDER-013 REQ-RACK-001: read-only shelf code. Empty string is
+          the unassigned bucket — rendered '미지정' per the SPEC-ORDER-014
+          summary convention (SummaryTab.tsx), not '-' and not blank. */}
+      <td className="py-2 px-3 font-mono text-xs">
+        {row.rack_number || <span className="text-muted-foreground">미지정</span>}
       </td>
       <td className="py-2 px-3 text-right">{row.quantity ?? '-'}</td>
       <td className="py-2 px-3">

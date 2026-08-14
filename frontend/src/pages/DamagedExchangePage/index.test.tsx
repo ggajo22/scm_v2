@@ -31,6 +31,7 @@ function buildRow(
     order_name: '#1001',
     sku: '9788956609959',
     title: '테스트 도서',
+    rack_number: 'A-01',
     quantity: 4,
     purchase_status: 'unordered',
     is_damaged_exchange: false,
@@ -59,6 +60,40 @@ describe('DamagedExchangePage — SPEC-PURCHASE-ORDER-011', () => {
       isFetching: false,
       isError: false,
     } as unknown as ReturnType<typeof useSearchDamagedExchange>)
+  })
+
+  it('렉번호 컬럼: renders the stored rack_number for a matched row', async () => {
+    const user = userEvent.setup()
+    mockUseSearch.mockReturnValue({
+      data: { count: 1, results: [buildRow({ rack_number: 'B-12' })] },
+      isFetching: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useSearchDamagedExchange>)
+
+    render(<DamagedExchangePage />)
+    await search(user, '9788956609959')
+
+    expect(screen.getByRole('columnheader', { name: '렉번호' })).toBeInTheDocument()
+    // Asserts the stored value, not the fallback — an implementation that
+    // always rendered '미지정' would pass a mere "column exists" check.
+    expect(screen.getByRole('row', { name: /테스트 도서/ })).toHaveTextContent('B-12')
+    expect(screen.queryByText('미지정')).not.toBeInTheDocument()
+  })
+
+  it('렉번호 컬럼: renders 미지정 when rack_number is the empty unassigned value', async () => {
+    const user = userEvent.setup()
+    mockUseSearch.mockReturnValue({
+      data: { count: 1, results: [buildRow({ rack_number: '' })] },
+      isFetching: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useSearchDamagedExchange>)
+
+    render(<DamagedExchangePage />)
+    await search(user, '9788956609959')
+
+    // Empty string is the unassigned bucket — must show '미지정', not blank
+    // and not the '-' used by other nullable columns on this page.
+    expect(screen.getByRole('row', { name: /테스트 도서/ })).toHaveTextContent('미지정')
   })
 
   it('시나리오 2: renders the ISBN search form with no result table before any search', () => {

@@ -13,6 +13,11 @@ export interface DamagedExchangeSearchResultRow {
   order_name: string | null
   sku: string
   title: string
+  // SPEC-ORDER-013 REQ-RACK-001: physical shelf code, read-only here.
+  // Empty string means unassigned — rendered as '미지정', matching the
+  // SPEC-ORDER-014 summary convention. Editing stays exclusive to
+  // /rack-number Tab1; this page never writes it.
+  rack_number: string
   quantity: number | null
   purchase_status: string
   is_damaged_exchange: boolean

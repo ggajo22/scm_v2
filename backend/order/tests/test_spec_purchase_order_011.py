@@ -213,6 +213,46 @@ class TestDamagedExchangeSearch:
         assert row["quantity"] == 4
         assert row["order_total_quantity"] == 13
 
+    def test_search_response_exposes_stored_rack_number(self, auth_client):
+        """The search row carries LineItem.rack_number (SPEC-ORDER-013
+        REQ-RACK-001) read-only, so the operator can locate the damaged copy
+        without switching to /rack-number.
+
+        Two rows under one SKU with *different* rack_number values: an
+        implementation that hardcoded a constant, echoed the unassigned
+        default, or read the wrong field would fail. The unassigned row also
+        pins that an empty rack_number stays the empty string in the payload
+        (the '미지정' substitution is a frontend concern, not an API one).
+        """
+        order = _make_order(1100016)
+        assigned = _make_line_item(
+            order, 1, "SKU-DEX-RACK", purchase_status="unordered", rack_number="B-12"
+        )
+        order_b = _make_order(1100017)
+        unassigned = _make_line_item(
+            order_b, 1, "SKU-DEX-RACK", purchase_status="unordered", rack_number=""
+        )
+
+        resp = auth_client.get(SEARCH_URL, {"sku": "SKU-DEX-RACK"})
+
+        assert resp.status_code == 200
+        by_id = {row["id"]: row for row in resp.data["results"]}
+        assert by_id[assigned.id]["rack_number"] == "B-12"
+        assert by_id[unassigned.id]["rack_number"] == ""
+
+    def test_search_does_not_write_rack_number(self, auth_client):
+        """rack_number is read-only here — editing stays exclusive to
+        SPEC-ORDER-013's endpoints. Serving a search must not touch it."""
+        order = _make_order(1100018)
+        li = _make_line_item(
+            order, 1, "SKU-DEX-RACK-RO", purchase_status="unordered", rack_number="C-07"
+        )
+
+        auth_client.get(SEARCH_URL, {"sku": "SKU-DEX-RACK-RO"})
+
+        li.refresh_from_db()
+        assert li.rack_number == "C-07"
+
     def test_ready_to_ship_null_not_coerced_to_false(self, auth_client):
         """AC-DEX-005a."""
         order = _make_order(1100014, ready_to_ship=None)

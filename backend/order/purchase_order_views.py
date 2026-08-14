@@ -2533,6 +2533,11 @@ class DamagedExchangeSearchView(APIView):
                     "order_name": order_name,
                     "sku": li.sku,
                     "title": li.title or "",
+                    # SPEC-ORDER-013 REQ-RACK-001: physical shelf code, surfaced
+                    # here read-only so the operator can locate the damaged copy
+                    # without switching to /rack-number. Never written by this
+                    # SPEC — editing stays exclusive to SPEC-ORDER-013's Tab1.
+                    "rack_number": li.rack_number,
                     "quantity": li.quantity,
                     "purchase_status": li.purchase_status,
                     "is_damaged_exchange": li.purchase_status == "damaged_exchange",
