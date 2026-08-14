@@ -194,6 +194,25 @@ describe('Sidebar', () => {
     })
   })
 
+  describe('SPEC-PURCHASE-ORDER-011 REQ-DEX-003: 파손 교환 내비게이션 항목', () => {
+    it('"파손 교환" 링크가 /damaged-exchange 경로로 렌더링된다', () => {
+      renderSidebar()
+      const link = screen.getByRole('link', { name: '파손 교환' })
+      expect(link).toBeInTheDocument()
+      expect(link).toHaveAttribute('href', '/damaged-exchange')
+    })
+
+    it('/damaged-exchange 경로에서 "파손 교환" 링크가 aria-current="page"를 가진다', () => {
+      renderSidebar('super_admin', '/damaged-exchange')
+      expect(screen.getByRole('link', { name: '파손 교환' })).toHaveAttribute('aria-current', 'page')
+    })
+
+    it('admin 역할에게도 "파손 교환" 항목이 보인다 (역할 제한 없음)', () => {
+      renderSidebar('admin')
+      expect(screen.getByRole('link', { name: '파손 교환' })).toBeInTheDocument()
+    })
+  })
+
   describe('REQ-007 & REQ-008: 관리자 계정 관리 역할 기반 표시', () => {
     it('REQ-007: super_admin은 관리자 계정 관리 메뉴를 볼 수 있다', () => {
       renderSidebar('super_admin')

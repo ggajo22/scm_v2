@@ -616,9 +616,26 @@ _NOTE_TYPE_STATUS_MAP: dict[str, str] = {
     "주문보류": "on_hold",
     "CS필요": "cs_required",
     "타출판사": "other_publisher",
-    # SPEC-PURCHASE-ORDER-010 REQ-DMG-003: re-enters the reorder queue via
-    # ConfirmOrderView/UploadDailyReviewView's widened read-side eligibility.
-    "파손/교환": "damaged_exchange",
+    # SPEC-PURCHASE-ORDER-010 REQ-DMG-003 introduced "파손/교환" here so a
+    # Daily Review upload could set purchase_status="damaged_exchange"
+    # directly. SPEC-PURCHASE-ORDER-011 removes that entry: damage intake is
+    # now exclusive to DamagedExchangeSubmitView, which always pairs the
+    # status with an explicit damaged_quantity >= 1 (REQ-DEX-009/009b) — a
+    # requirement this batch upload has no column to satisfy. See
+    # _BLOCKED_SELECTED_LABELS below for the explicit rejection this label
+    # now gets instead of silently falling through as CS-type.
+}
+
+# @MX:NOTE: [AUTO] SPEC-PURCHASE-ORDER-011: '선택' values that were
+# previously recognized (via _NOTE_TYPE_STATUS_MAP/_DISTRIBUTOR_LABEL_MAP)
+# but are now deliberately blocked. Rows selecting one of these are neither
+# treated as a distributor code nor silently absorbed into the generic
+# unrecognized-selected-value skip path (REQ-PO8-011) — the caller
+# (UploadDailyReviewView) reports them explicitly via `errors` with the
+# given reason, so the operator can find the row and resubmit it through
+# the correct entry point instead of it vanishing without a trace.
+_BLOCKED_SELECTED_LABELS: dict[str, str] = {
+    "파손/교환": "damaged_exchange_requires_dedicated_page",
 }
 
 _DAILY_REVIEW_HEADERS = [
@@ -875,6 +892,12 @@ def parse_daily_review_excel(file_bytes: bytes) -> list[dict]:
         note_type: str | None = None
         if selected_label and not distributor_code and selected_label in _NOTE_TYPE_STATUS_MAP:
             note_type = selected_label
+        # SPEC-PURCHASE-ORDER-011: explicit rejection reason for '선택'
+        # values that are recognized but no longer processable via this
+        # upload — distinct from `note_type is None and distributor_code is
+        # None`, which also covers genuinely unrecognized/blank values
+        # (REQ-PO8-011). See _BLOCKED_SELECTED_LABELS.
+        blocked_reason = _BLOCKED_SELECTED_LABELS.get(selected_label) if selected_label else None
 
         note = _str_or_none(_cell(row, note_idx))
 
@@ -908,6 +931,7 @@ def parse_daily_review_excel(file_bytes: bytes) -> list[dict]:
             "name": name,
             "distributor": distributor_code,
             "note_type": note_type,
+            "blocked_reason": blocked_reason,
             "note": note,
             "bs_price": bs_price,
             "ky_price": ky_price,

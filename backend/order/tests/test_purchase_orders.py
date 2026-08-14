@@ -101,6 +101,7 @@ def _make_line_item(
     title: str = "테스트 도서",
     vendor: str = "처음교육",
     quantity: int = 2,
+    damaged_quantity: int = 0,
 ) -> LineItem:
     return LineItem.objects.create(
         order=order,
@@ -109,6 +110,7 @@ def _make_line_item(
         title=title,
         vendor=vendor,
         quantity=quantity,
+        damaged_quantity=damaged_quantity,
     )
 
 
@@ -453,8 +455,20 @@ class TestUnorderedItemsViewDamagedExchange:
     reorder-candidate list regardless of existing PurchaseOrder linkage."""
 
     def test_damaged_exchange_linked_line_item_reexposed(self, auth_client):
+        # SPEC-PURCHASE-ORDER-011: damaged_exchange is now only reachable
+        # through DamagedExchangeSubmitView, which always writes
+        # damaged_quantity >= 1 in the same call (REQ-DEX-009/009b) — a
+        # damaged_exchange LineItem with damaged_quantity left at its 0
+        # default is no longer a state production code can produce (the
+        # legacy write paths that could leave it unset are now rejected,
+        # see TestLineItemStatusUpdateView.test_patch_damaged_exchange_rejected).
+        # This fixture sets damaged_quantity to mirror that guarantee so the
+        # test exercises a reachable state; REQ-DEX-012 then uses it (not
+        # quantity) as UnorderedItemsView's reorder-quantity base.
         order = _make_order(shopify_order_id=91030)
-        li = _make_line_item(order, shopify_line_item_id=1, sku="SKU-DMG-UNORD-1", quantity=2)
+        li = _make_line_item(
+            order, shopify_line_item_id=1, sku="SKU-DMG-UNORD-1", quantity=2, damaged_quantity=2
+        )
         po = PurchaseOrder.objects.create(
             sku="SKU-DMG-UNORD-1", title="Book", distributor="booxen", quantity=2
         )
@@ -469,11 +483,12 @@ class TestUnorderedItemsViewDamagedExchange:
 
     def test_damaged_exchange_unlinked_line_item_still_exposed(self, auth_client):
         """Sanity check: an unlinked damaged_exchange LineItem is exposed too
-        (not just the already-linked edge case)."""
+        (not just the already-linked edge case). damaged_quantity set for
+        the same reachability reason as the sibling test above."""
         order = _make_order(shopify_order_id=91031)
         _make_line_item(
             order, shopify_line_item_id=1, sku="SKU-DMG-UNORD-2",
-            quantity=1,
+            quantity=1, damaged_quantity=1,
         )
         li = LineItem.objects.get(sku="SKU-DMG-UNORD-2")
         li.purchase_status = "damaged_exchange"
@@ -501,8 +516,12 @@ class TestUnorderedItemsViewDamagedExchange:
         """T3 .distinct() empirical check: a damaged_exchange LineItem linked
         to 2+ PurchaseOrders via the M2M relation must appear exactly once in
         the result set, not once per PO link."""
+        # damaged_quantity set for the same reachability reason as
+        # test_damaged_exchange_linked_line_item_reexposed above.
         order = _make_order(shopify_order_id=91033)
-        li = _make_line_item(order, shopify_line_item_id=1, sku="SKU-DMG-DISTINCT-1", quantity=1)
+        li = _make_line_item(
+            order, shopify_line_item_id=1, sku="SKU-DMG-DISTINCT-1", quantity=1, damaged_quantity=1
+        )
         po1 = PurchaseOrder.objects.create(
             sku="SKU-DMG-DISTINCT-1", title="Book", distributor="booxen", quantity=1
         )
@@ -2299,18 +2318,22 @@ class TestLineItemStatusUpdateView:
             li.refresh_from_db()
             assert li.purchase_status == choice
 
-    def test_patch_damaged_exchange_accepted(self, auth_client):
-        """REQ-DMG-002/AC-DMG-002 (T2): damaged_exchange is accepted like any
-        other valid purchase_status value — no additional error or side
-        effect, since the view validates dynamically against
-        LineItem.PURCHASE_STATUS_CHOICES."""
+    def test_patch_damaged_exchange_rejected(self, auth_client):
+        """SPEC-PURCHASE-ORDER-011: damage/exchange intake is now exclusive
+        to DamagedExchangeSubmitView (REQ-DEX-009/009b always pairs the
+        status with an explicit damaged_quantity >= 1, which this generic
+        endpoint has no field for). Inverted from
+        REQ-DMG-002/AC-DMG-002 (T2)'s original "accepted like any other
+        valid choice" expectation, which this SPEC deliberately narrows —
+        damaged_exchange remains a valid LineItem.PURCHASE_STATUS_CHOICES
+        member (still readable/displayable everywhere) but can no longer be
+        written through this endpoint."""
         li = self._make_li(shopify_order_id=95011, shopify_line_item_id=11)
         url = LINE_ITEM_STATUS_URL.format(pk=li.pk)
         res = auth_client.patch(url, data={"purchase_status": "damaged_exchange"}, format="json")
-        assert res.status_code == 200
-        assert res.data["purchase_status"] == "damaged_exchange"
+        assert res.status_code == 400
         li.refresh_from_db()
-        assert li.purchase_status == "damaged_exchange"
+        assert li.purchase_status != "damaged_exchange"
 
 
 # ---------------------------------------------------------------------------
@@ -2388,9 +2411,12 @@ class TestLineItemBulkStatusUpdateView:
         )
         assert res.status_code == 401
 
-    def test_bulk_damaged_exchange_accepted(self, auth_client):
-        """REQ-DMG-002/AC-DMG-002 (T2): damaged_exchange is accepted for
-        bulk status updates like any other valid choice."""
+    def test_bulk_damaged_exchange_rejected(self, auth_client):
+        """SPEC-PURCHASE-ORDER-011: same rejection as
+        TestLineItemStatusUpdateView.test_patch_damaged_exchange_rejected,
+        applied to the bulk endpoint. Inverted from
+        REQ-DMG-002/AC-DMG-002 (T2)'s original "accepted like any other
+        valid choice" expectation."""
         lis = self._make_lis(2, shopify_order_id=96010)
         ids = [li.pk for li in lis]
         res = auth_client.patch(
@@ -2398,11 +2424,10 @@ class TestLineItemBulkStatusUpdateView:
             data={"ids": ids, "purchase_status": "damaged_exchange"},
             format="json",
         )
-        assert res.status_code == 200
-        assert res.data["updated_count"] == 2
+        assert res.status_code == 400
         for li in lis:
             li.refresh_from_db()
-            assert li.purchase_status == "damaged_exchange"
+            assert li.purchase_status != "damaged_exchange"
 
 
 # ---------------------------------------------------------------------------

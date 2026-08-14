@@ -111,14 +111,14 @@ def _reorder_candidate_filter(queryset):
 
 
 # @MX:NOTE: [AUTO] Order.status + Order.ready_to_ship aggregate recomputation
-# (SPEC-ORDER-011, extended by SPEC-ORDER-012). Fan-in == 8
-# (UploadVendorShipmentView, UploadWarehouseReceiptView,
+# (SPEC-ORDER-011, extended by SPEC-ORDER-012, SPEC-PURCHASE-ORDER-011).
+# Fan-in == 9 (UploadVendorShipmentView, UploadWarehouseReceiptView,
 # LineItemLogisticsStatusUpdateView, LineItemLogisticsStatusBulkUpdateView,
 # ConfirmOrderView, LineItemStatusUpdateView, LineItemBulkStatusUpdateView,
-# UploadDailyReviewView) would normally qualify for @MX:ANCHOR, but this
-# file is already at its configured anchor_per_file limit (3, see
-# .moai/config/sections/mx.yaml) with 4 pre-existing ANCHOR tags — demoted
-# to NOTE, same precedent as _reorder_candidate_filter above
+# UploadDailyReviewView, DamagedExchangeSubmitView) would normally qualify
+# for @MX:ANCHOR, but this file is already at its configured anchor_per_file
+# limit (3, see .moai/config/sections/mx.yaml) with 4 pre-existing ANCHOR
+# tags — demoted to NOTE, same precedent as _reorder_candidate_filter above
 # (SPEC-PURCHASE-ORDER-010).
 def _recompute_order_aggregates(order_ids) -> None:
     """
@@ -127,13 +127,18 @@ def _recompute_order_aggregates(order_ids) -> None:
     value when uniform, "partial" when 2+ distinct values are present, unset
     (None) when no trackable LineItems exist for that Order.
 
-    SPEC-ORDER-012 REQ-RTS-002/003/003a/004: in the same pass, recompute
+    SPEC-ORDER-012 REQ-RTS-002/003/003a/004, extended by
+    SPEC-PURCHASE-ORDER-011 REQ-DEX-009c/009d: in the same pass, recompute
     Order.ready_to_ship over the same trackable LineItem set: LineItems with
     purchase_status="order_cancelled" are excluded entirely; if none remain,
-    `None`; else `False` if any remaining LineItem has
-    purchase_status="cs_required"; else `True` iff every remaining LineItem
-    has logistics_status="received" OR purchase_status="in_stock" (`False`
-    otherwise).
+    `None`; else `False` if any remaining LineItem has purchase_status
+    "cs_required" OR "damaged_exchange" (REQ-DEX-009c short-circuit, same
+    precedence as the pre-existing cs_required short-circuit); else `True`
+    iff every remaining LineItem has logistics_status="received" OR
+    purchase_status="in_stock" (`False` otherwise). The `status` aggregate
+    above is unaffected by the damaged_exchange short-circuit — its rule is
+    unchanged (REQ-DEX-009d) even though both columns are written by the
+    same UPDATE below.
 
     Two-query design so the number of queries issued depends on the number
     of distinct Orders in `order_ids`, never on the number of LineItems that
@@ -173,10 +178,19 @@ def _recompute_order_aggregates(order_ids) -> None:
         status_whens.append(When(id=order_id, then=Value(new_status, output_field=status_field)))
 
         # SPEC-ORDER-012 REQ-RTS-002: Order.ready_to_ship aggregate.
+        # SPEC-PURCHASE-ORDER-011 REQ-DEX-009c: damaged_exchange short-circuits
+        # to False at the same precedence as cs_required — evaluated BEFORE
+        # the all(received/in_stock) disjunct below, so a damaged_exchange
+        # LineItem with logistics_status="received" still forces False
+        # (REQ-DEX-009d: this changes only the ready_to_ship rule, not the
+        # status aggregate above).
         non_cancelled = [it for it in (items or []) if it[1] != "order_cancelled"]
         if not non_cancelled:
             ready_to_ship = None
-        elif any(purchase_status == "cs_required" for _, purchase_status in non_cancelled):
+        elif any(
+            purchase_status in ("cs_required", "damaged_exchange")
+            for _, purchase_status in non_cancelled
+        ):
             ready_to_ship = False
         else:
             ready_to_ship = all(
@@ -322,7 +336,17 @@ class UnorderedItemsView(APIView):
 
         results = []
         for li in line_items:
-            net_qty = max((li.quantity or 0) - li.refunded_qty, 0)
+            # @MX:NOTE: [AUTO] SPEC-PURCHASE-ORDER-011 REQ-DEX-012/012a (결정 A):
+            # a damaged_exchange row's reorder base is its reported
+            # damaged_quantity, not the original order quantity — only that
+            # many copies actually need replacing. Every other purchase_status
+            # keeps using `quantity` unchanged. The refund-subtraction and
+            # zero-skip rules below are applied identically regardless of
+            # which base was chosen. fan_in=1 (this loop only) — not an
+            # @MX:ANCHOR candidate.
+            is_damaged_exchange = li.purchase_status == "damaged_exchange"
+            base_qty = li.damaged_quantity if is_damaged_exchange else li.quantity
+            net_qty = max((base_qty or 0) - li.refunded_qty, 0)
             if net_qty == 0:
                 continue  # Fully refunded — exclude from unordered list
             order = li.order
@@ -1632,6 +1656,23 @@ class UploadDailyReviewView(APIView):
                     note = item.get("note")
                     note_type = item.get("note_type")
 
+                    # SPEC-PURCHASE-ORDER-011: damage/exchange intake is now
+                    # exclusive to DamagedExchangeSubmitView — REQ-DEX-009/
+                    # 009b always pairs purchase_status="damaged_exchange"
+                    # with an explicit damaged_quantity >= 1, which this
+                    # batch upload has no column to provide. A '파손/교환'
+                    # 선택 cell is rejected explicitly here (reported via
+                    # `errors`, distinct reason) rather than falling through
+                    # to the generic unrecognized-selected-value skip below,
+                    # so the operator can find the row and resubmit it
+                    # through the dedicated page instead of it silently
+                    # vanishing into an undifferentiated skipped_count.
+                    blocked_reason = item.get("blocked_reason")
+                    if blocked_reason:
+                        errors.append({"name": name, "sku": sku, "reason": blocked_reason})
+                        skipped_count += 1
+                        continue
+
                     unordered_lis = lineitems_by_key.get((order.id, sku), [])
 
                     if not unordered_lis:
@@ -2294,6 +2335,23 @@ class ConflictError(Exception):
     """Raised when a 409 Conflict response should be returned."""
 
 
+# @MX:NOTE: [AUTO] SPEC-PURCHASE-ORDER-011 coordinator decision: damage/
+# exchange intake is exclusive to DamagedExchangeSubmitView —
+# REQ-DEX-009/009b always pairs purchase_status="damaged_exchange" with an
+# explicit damaged_quantity >= 1, which neither generic status-update
+# endpoint below can provide (they only accept a bare purchase_status
+# value). Blocking these two write paths is what makes the literal,
+# unconditional REQ-DEX-012 substitution rule in UnorderedItemsView safe —
+# without this, a damaged_exchange row could exist with damaged_quantity
+# still at its 0 default and silently vanish from the reorder queue.
+# Shared rejection message so both endpoints report the same guidance.
+_DAMAGED_EXCHANGE_BLOCKED_MESSAGE = (
+    "damaged_exchange can only be set via "
+    "POST /api/purchase-orders/line-items/<pk>/damaged-exchange/ "
+    "(damage quantity is required and cannot be provided through this endpoint)."
+)
+
+
 # ---------------------------------------------------------------------------
 # SPEC-PURCHASE-ORDER-004: Single line item status update
 # ---------------------------------------------------------------------------
@@ -2307,6 +2365,9 @@ class LineItemStatusUpdateView(APIView):
 
     SPEC-ORDER-012 REQ-RTS-003a: recomputes the parent Order's status/
     ready_to_ship aggregates after the write.
+
+    SPEC-PURCHASE-ORDER-011: rejects purchase_status="damaged_exchange" —
+    see _DAMAGED_EXCHANGE_BLOCKED_MESSAGE. Every other choice is unaffected.
     """
 
     authentication_classes = [JWTAuthentication]
@@ -2323,6 +2384,11 @@ class LineItemStatusUpdateView(APIView):
         if purchase_status_value not in valid_choices:
             return Response(
                 {"error": f"Invalid purchase_status. Valid choices: {valid_choices}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if purchase_status_value == "damaged_exchange":
+            return Response(
+                {"error": _DAMAGED_EXCHANGE_BLOCKED_MESSAGE},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -2353,6 +2419,9 @@ class LineItemBulkStatusUpdateView(APIView):
 
     SPEC-ORDER-012 REQ-RTS-003a/004: recomputes every affected Order's
     status/ready_to_ship aggregates in one batched call after the write.
+
+    SPEC-PURCHASE-ORDER-011: rejects purchase_status="damaged_exchange" —
+    see _DAMAGED_EXCHANGE_BLOCKED_MESSAGE. Every other choice is unaffected.
     """
 
     authentication_classes = [JWTAuthentication]
@@ -2374,6 +2443,11 @@ class LineItemBulkStatusUpdateView(APIView):
                 {"error": f"Invalid purchase_status. Valid choices: {valid_choices}"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        if purchase_status_value == "damaged_exchange":
+            return Response(
+                {"error": _DAMAGED_EXCHANGE_BLOCKED_MESSAGE},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         existing = LineItem.objects.filter(pk__in=ids)
         existing_ids = set(existing.values_list("id", flat=True))
@@ -2392,6 +2466,148 @@ class LineItemBulkStatusUpdateView(APIView):
             {
                 "updated_count": updated_count,
                 "missing_ids": missing_ids,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+# ---------------------------------------------------------------------------
+# SPEC-PURCHASE-ORDER-011: damaged-exchange search + submission
+# ---------------------------------------------------------------------------
+
+
+class DamagedExchangeSearchView(APIView):
+    """
+    GET /api/purchase-orders/line-items/damaged-exchange-search/?sku=<sku>
+
+    REQ-DEX-004~007/005a: exact-match search of `sku` (no icontains/partial
+    matching, REQ-DEX-004) within the same 미출고(unshipped) scope already
+    used by LineItemRackNumberSummaryView — logistics_status != "shipped"
+    AND purchase_status != "order_cancelled" (REQ-DEX-005) — including rows
+    already at purchase_status="damaged_exchange" (REQ-DEX-005a,
+    `is_damaged_exchange` flag). No exact match returns an empty result list
+    with HTTP 200, not an error (REQ-DEX-007).
+
+    REQ-DEX-006/006a/006b (결정 B): each row also reports the parent Order's
+    `ready_to_ship` exactly as stored — never recomputed here — and 전체
+    출고 수량, the sum of `quantity` across every LineItem on that same
+    parent Order with sku IS NOT NULL AND purchase_status != "order_cancelled"
+    (the same "trackable" scope `_recompute_order_aggregates` already uses).
+    That sum is computed with ONE extra batched aggregate query
+    (Coalesce(Sum(...), 0), AC-DEX-005c) keyed by order_id — never per row —
+    so the endpoint issues a fixed number of queries regardless of how many
+    rows match.
+    """
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request) -> Response:
+        sku = request.query_params.get("sku") or ""
+        if not sku:
+            return Response({"count": 0, "results": []})
+
+        line_items = list(
+            LineItem.objects.filter(sku=sku)
+            .exclude(logistics_status="shipped")
+            .exclude(purchase_status="order_cancelled")
+            .select_related("order")
+        )
+
+        order_ids = {li.order_id for li in line_items}
+        totals_qs = (
+            LineItem.objects.filter(order_id__in=order_ids, sku__isnull=False)
+            .exclude(purchase_status="order_cancelled")
+            .values("order_id")
+            .annotate(order_total_quantity=Coalesce(Sum("quantity"), 0))
+        )
+        totals_by_order = {row["order_id"]: row["order_total_quantity"] for row in totals_qs}
+
+        results = []
+        for li in line_items:
+            order = li.order
+            order_name = order.name or (f"#{order.order_number}" if order.order_number else None)
+            results.append(
+                {
+                    "id": li.pk,
+                    "order_name": order_name,
+                    "sku": li.sku,
+                    "title": li.title or "",
+                    "quantity": li.quantity,
+                    "purchase_status": li.purchase_status,
+                    "is_damaged_exchange": li.purchase_status == "damaged_exchange",
+                    "order_ready_to_ship": order.ready_to_ship,
+                    "order_total_quantity": totals_by_order.get(li.order_id, 0),
+                }
+            )
+
+        return Response({"count": len(results), "results": results})
+
+
+class DamagedExchangeSubmitView(APIView):
+    """
+    POST /api/purchase-orders/line-items/<int:pk>/damaged-exchange/
+    Body: {"damaged_quantity": int}
+
+    REQ-DEX-008/009/009a/009b/010/011: accepts a damage quantity in
+    `1..LineItem.quantity` inclusive (an empty range — null/zero quantity —
+    always rejects, REQ-DEX-009a) for a single LineItem. On success, sets
+    purchase_status="damaged_exchange", OVERWRITES damaged_quantity with the
+    submitted value (REQ-DEX-009b — resubmission does not accumulate),
+    creates exactly one audit LineItemNote with author=request.user (결정
+    D — a deliberate departure from the author=None convention used by
+    batch-driven note creation), and recomputes the parent Order's
+    aggregates via `_recompute_order_aggregates` — the same call that
+    implements the REQ-DEX-009c damaged_exchange short-circuit. Does not
+    read or write logistics_status/shipped_quantity (REQ-DEX-011). All
+    writes happen in one transaction.
+    """
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk: int) -> Response:
+        try:
+            li = LineItem.objects.get(pk=pk)
+        except LineItem.DoesNotExist:
+            return Response({"error": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        raw_value = request.data.get("damaged_quantity")
+        try:
+            damaged_quantity = int(raw_value)
+        except (TypeError, ValueError):
+            return Response(
+                {"error": "damaged_quantity must be an integer"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # REQ-DEX-009a: valid range is 1..quantity inclusive; a null/zero
+        # quantity makes the range empty, so every submission is rejected.
+        max_quantity = li.quantity or 0
+        if damaged_quantity < 1 or damaged_quantity > max_quantity:
+            return Response(
+                {"error": f"damaged_quantity must be between 1 and {max_quantity}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        with transaction.atomic():
+            li.purchase_status = "damaged_exchange"
+            li.damaged_quantity = damaged_quantity  # REQ-DEX-009b: overwrite, not accumulate
+            li.save(update_fields=["purchase_status", "damaged_quantity"])
+            LineItemNote.objects.create(
+                line_item=li,
+                content=f"파손 수량 {damaged_quantity}건 접수",
+                author=request.user,  # 결정 D
+                note_type="파손/교환",
+                assignee="발주",
+            )
+            _recompute_order_aggregates([li.order_id])
+
+        return Response(
+            {
+                "id": li.id,
+                "purchase_status": li.purchase_status,
+                "damaged_quantity": li.damaged_quantity,
             },
             status=status.HTTP_200_OK,
         )

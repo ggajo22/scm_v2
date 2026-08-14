@@ -308,4 +308,105 @@ describe('UnorderedItemsTab', () => {
       skus: ['8809226729403'],
     })
   })
+
+  // -------------------------------------------------------------------------
+  // SPEC-PURCHASE-ORDER-011 — damaged_exchange dropdown removal
+  // -------------------------------------------------------------------------
+
+  it('does not offer damaged_exchange as a selectable option in the bulk status select (미발주 품목)', () => {
+    vi.mocked(useUnorderedItems).mockReturnValue({
+      data: {
+        count: 1,
+        results: [
+          {
+            id: 1,
+            order_name: '#1001',
+            sku: '8809226729403',
+            title: '미발주 도서',
+            vendor: '처음교육',
+            quantity: 1,
+            auto_distributor: null,
+            purchase_status: 'unordered',
+          },
+        ],
+      },
+      isPending: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useUnorderedItems>)
+
+    render(<UnorderedItemsTab />)
+
+    expect(
+      optionValues(screen.getByLabelText('일괄 변경할 발주 상태 선택'))
+    ).not.toContain('damaged_exchange')
+  })
+
+  it('renders a row already at damaged_exchange with its Korean label, and the value is not reselectable elsewhere in the options list', async () => {
+    vi.mocked(useUnorderedItems).mockReturnValue({
+      data: {
+        count: 1,
+        results: [
+          {
+            id: 5,
+            order_name: '#5001',
+            sku: 'SKU-DEX',
+            title: '파손 도서',
+            vendor: '처음교육',
+            quantity: 5,
+            auto_distributor: null,
+            purchase_status: 'damaged_exchange',
+          },
+        ],
+      },
+      isPending: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useUnorderedItems>)
+
+    render(<UnorderedItemsTab />)
+
+    const select = screen.getByLabelText('파손 도서 발주 상태 변경') as HTMLSelectElement
+    // The row's actual status still renders correctly — not the raw enum
+    // string, and not silently coerced to the first option ("미발주").
+    expect(select.value).toBe('damaged_exchange')
+    const damagedOption = within(select).getByRole('option', { name: '파손/교환' })
+    expect(damagedOption).toBeDisabled()
+
+    // Exactly one damaged_exchange <option> exists (the display-only one for
+    // this row's current value) — it is not part of the regular selectable
+    // list a user could pick after moving away from it.
+    const damagedOptionValues = optionValues(select).filter((v) => v === 'damaged_exchange')
+    expect(damagedOptionValues).toHaveLength(1)
+  })
+
+  it('excluded-view selects never offer damaged_exchange (backend rejects it on the shared status endpoints)', async () => {
+    const user = userEvent.setup()
+    vi.mocked(useExcludedItems).mockReturnValue({
+      data: {
+        count: 1,
+        results: [
+          {
+            id: 101,
+            order_name: '#2001',
+            sku: 'SKU-HOLD',
+            title: '보류 도서',
+            vendor: '처음교육',
+            quantity: 1,
+            purchase_status: 'on_hold',
+          },
+        ],
+      },
+      isPending: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useExcludedItems>)
+
+    render(<UnorderedItemsTab />)
+    await switchToExcludedView(user)
+
+    expect(
+      optionValues(screen.getByLabelText('보류 도서 발주 상태 변경'))
+    ).not.toContain('damaged_exchange')
+    expect(
+      optionValues(screen.getByLabelText('일괄 변경할 발주 상태 선택'))
+    ).not.toContain('damaged_exchange')
+  })
 })
