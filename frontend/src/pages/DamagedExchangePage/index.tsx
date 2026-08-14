@@ -71,7 +71,12 @@ export function DamagedExchangePage() {
         <div className="overflow-x-auto rounded border">
           <table className="w-full text-sm border-collapse">
             <thead>
-              <tr className="border-b bg-muted/50">
+              {/* whitespace-nowrap on every header: without it the narrow
+                  numeric columns get squeezed below their text width in a
+                  cramped container and Korean headers shatter one character
+                  per line. The wrapper's overflow-x-auto absorbs the extra
+                  width as a horizontal scroll instead. */}
+              <tr className="border-b bg-muted/50 [&>th]:whitespace-nowrap">
                 <th className="py-2 px-3 text-left font-medium">주문번호</th>
                 <th className="py-2 px-3 text-left font-medium">SKU</th>
                 <th className="py-2 px-3 text-left font-medium">도서명</th>
@@ -122,7 +127,7 @@ function DamagedExchangeRow({
   const isValid = !isNaN(parsed) && parsed >= 1 && parsed <= maxQuantity
 
   return (
-    <tr className="border-b last:border-0 hover:bg-muted/30">
+    <tr className="border-b last:border-0 hover:bg-muted/30 [&>td]:whitespace-nowrap">
       <td className="py-2 px-3 font-mono text-xs">{row.order_name ?? '-'}</td>
       <td className="py-2 px-3 font-mono text-xs">{row.sku}</td>
       <td className="py-2 px-3 max-w-xs truncate" title={row.title}>

@@ -1,7 +1,7 @@
 ---
 id: SPEC-PURCHASE-ORDER-011
 document: acceptance
-version: 1.4.0
+version: 1.5.0
 status: draft
 updated: 2026-08-14
 ---
@@ -17,6 +17,8 @@ Given/When/Then 형태의 실행 가능한 테스트 시나리오. 각 시나리
 **v1.3.1 변경 요지** (plan-auditor iteration 3 FAIL의 잔여 blocking 2건 대응): **D24(blocking)** 시나리오 13의 `damaged_exchange` 행을 `logistics_status="received"`로 고정 — 미고정 시 `0033_backfill_order_ready_to_ship.py`를 그대로 베껴 `damaged_exchange` 단락을 누락한 마이그레이션도 통과했다(이 기준이 D13을 지탱하는 유일한 가드이므로 필수). 시나리오 13a의 두 번째 Order에 `sku` not null 고정 추가 — 백필 스코프가 "추적 가능 LineItem 1건 이상"이라 미고정 시 기준이 공허. **D23(blocking)** 시나리오 12f를 화이트박스 단언으로 재작성 — `VendorComparisonView`는 응답에 수량 필드를 내보내지 않고(`purchase_order_views.py:808-833`), 이 픽스처에서 수량 의존 출력이 `10`/`3` 모두 동일해 블랙박스로는 실행도 판별도 불가능했다.
 
 **v1.4.0 변경 요지** (Run 단계에서 발견된 결함, plan-audit 3라운드 모두 놓침, 결정 G 반영 — 코드는 이미 구현·커밋되어 있고 이 문서만 그에 맞춘다): REQ-DEX-012의 무조건 `quantity→damaged_quantity` 치환이 안전하려면 `damaged_exchange`이면서 `damaged_quantity=0`인 행이 존재할 수 없어야 하는데, 그런 행을 만들 수 있는 레거시 쓰기 경로 3곳(`LineItemStatusUpdateView`, `LineItemBulkStatusUpdateView`, `UploadDailyReviewView`의 `선택="파손/교환"` 매핑)이 남아 있었다 — `TestUnorderedItemsViewDamagedExchange`의 기존 테스트 3건이 이 결함으로 실패했었다. 사용자는 그 3곳을 전면 차단하는 쪽을 선택했다(대안: `net_qty` 계산에 0-폴백을 추가하는 것 — 기각). 신규 시나리오 14/14a/14b(단건·일괄 상태 변경 API 차단, 다른 값은 정상 동작), 15/15a(Daily Review 엑셀 `선택="파손/교환"` 거부·보고, PurchaseOrder 미생성), 16/16a(프론트엔드 드롭다운에서 제외, 이미 그 상태인 행은 비활성 옵션으로 표시) 추가 — 전부 실제 커밋된 테스트(`test_spec_purchase_order_011.py::TestDamagedExchangeLegacyWritePathsBlocked`, `test_purchase_orders.py::TestLineItemStatusUpdateView`, `test_daily_review_upload.py::TestParseDailyReviewDamagedExchangeBlocked`/`TestUploadDamagedExchangeSelectionRejected`)의 실제 단언과 대조해 작성했다.
+
+**v1.5.0 변경 요지** (PR 오픈 후 사용자가 요청한 소규모 기능 추가, 결정 H — 코드는 이미 구현·커밋·테스트되어 있고 이 문서만 그에 맞춘다): 파손 교환 페이지에 렉번호(`LineItem.rack_number`, SPEC-ORDER-013 REQ-RACK-001에서 이미 도입된 기존 필드)를 읽기 전용으로 노출한다 — 신규 쿼리·신규 편집 경로 없음. 신규 시나리오 17(백엔드가 저장된 `rack_number`를 정확히 반환), 17a(검색 요청이 `rack_number`를 쓰지 않음), 18/18a(프론트엔드가 저장된 값 또는 "미지정" 폴백을 정확히 렌더링) 추가 — 전부 실제 커밋된 테스트(`test_spec_purchase_order_011.py::TestDamagedExchangeSearch::test_search_response_exposes_stored_rack_number`/`test_search_does_not_write_rack_number`, `frontend/src/pages/DamagedExchangePage/index.test.tsx`의 두 렉번호 테스트)의 실제 단언과 대조해 작성했다.
 
 ## 데이터 모델 시나리오
 
@@ -89,6 +91,32 @@ Given/When/Then 형태의 실행 가능한 테스트 시나리오. 각 시나리
 **Given** 존재하지 않는 ISBN `"0000000000000"`이다.
 **When** 해당 값으로 검색한다.
 **Then** HTTP 성공 응답과 함께 빈 결과 목록을 받는다 — 404/500 오류가 아니다.
+
+## 렉번호(rack_number) 읽기 전용 노출 시나리오 (v1.5.0 신규, 결정 H — PR 오픈 후 추가 요청)
+
+### 시나리오 17 — Traces: AC-DEX-017 (백엔드가 저장된 rack_number를 정확히 반환)
+
+**Given** 동일 SKU를 가진 LineItem 2건이 서로 다른 부모 Order에 속해 있다 — (1) `rack_number="B-12"`, (2) `rack_number=""`(미배정).
+**When** 해당 SKU로 검색한다.
+**Then** 결과에서 (1)의 `rack_number`는 `"B-12"`, (2)의 `rack_number`는 `""`로 각각 정확히 보고된다 — 두 행 모두에 고정 문자열을 반환하거나, 미배정 기본값을 그대로 에코하거나, 엉뚱한 필드를 읽는 구현은 이 기준에서 실패한다(`test_spec_purchase_order_011.py::TestDamagedExchangeSearch::test_search_response_exposes_stored_rack_number`).
+
+### 시나리오 17a — Traces: AC-DEX-017a (검색 요청은 rack_number를 쓰지 않음)
+
+**Given** `rack_number="C-07"`인 LineItem이 있다.
+**When** 그 LineItem이 매칭되는 SKU로 검색 요청을 보낸다.
+**Then** 요청 처리 후에도 그 LineItem의 `rack_number`는 여전히 `"C-07"`이다 — 검색을 서빙하는 과정에서 이 필드가 조용히 재기록되지 않는다(`test_spec_purchase_order_011.py::TestDamagedExchangeSearch::test_search_does_not_write_rack_number`).
+
+### 시나리오 18 — Traces: AC-DEX-018 (프론트엔드가 저장된 값을 렌더링)
+
+**Given** 검색 결과 행의 `rack_number`가 `"B-12"`다.
+**When** 파손 교환 페이지의 결과 테이블이 그 행을 렌더링한다.
+**Then** 렉번호 컬럼에 `"B-12"`가 표시되고, 그 행 어디에도 "미지정"이 함께 표시되지 않는다 — 저장된 값과 무관하게 항상 "미지정"으로 폴백하는 구현은 "컬럼이 존재한다"는 확인만으로는 잡히지 않지만 이 기준에서는 실패한다(`frontend/src/pages/DamagedExchangePage/index.test.tsx`, "렉번호 컬럼: renders the stored rack_number for a matched row").
+
+### 시나리오 18a — Traces: AC-DEX-018a (빈 값은 "미지정"으로 렌더링)
+
+**Given** 검색 결과 행의 `rack_number`가 `""`(미배정)다.
+**When** 파손 교환 페이지의 결과 테이블이 그 행을 렌더링한다.
+**Then** 렉번호 컬럼에 "미지정"이 표시된다 — 공백이나 다른 nullable 컬럼이 쓰는 "-"가 아니다(`frontend/src/pages/DamagedExchangePage/index.test.tsx`, "렉번호 컬럼: renders 미지정 when rack_number is the empty unassigned value").
 
 ## 파손 신고 제출 시나리오
 
@@ -238,8 +266,9 @@ Given/When/Then 형태의 실행 가능한 테스트 시나리오. 각 시나리
 
 ## 품질 게이트 (Quality Gate)
 
-- 백엔드 pytest: REQ-DEX-001~016(하위 항목 005a/006a/006b/009a/009b/009c/009d/012a/012b/012c/013a/014a/016a 포함) 전 항목에 대해 최소 1개 이상의 테스트 매핑(AC-DEX-001~016, 하위 004a/005a/005b/005c/009a/009b/009c/012a~012f/013a/014a/014b/015a 전량 포함).
+- 백엔드 pytest: REQ-DEX-001~018(하위 항목 005a/006a/006b/009a/009b/009c/009d/012a/012b/012c/013a/014a/016a/017a 포함) 전 항목에 대해 최소 1개 이상의 테스트 매핑(AC-DEX-001~018, 하위 004a/005a/005b/005c/009a/009b/009c/012a~012f/013a/014a/014b/015a/017a/018a 전량 포함).
 - **파손 접수 경로 배타성 테스트(v1.4.0 신규, 결정 G)**: `backend/order/tests/test_spec_purchase_order_011.py::TestDamagedExchangeLegacyWritePathsBlocked`(3개), `test_purchase_orders.py::TestLineItemStatusUpdateView::test_patch_damaged_exchange_rejected`, `test_daily_review_upload.py::TestParseDailyReviewDamagedExchangeBlocked`/`TestUploadDamagedExchangeSelectionRejected`가 REQ-DEX-014/014a/015를 커버한다. `TestUnorderedItemsViewDamagedExchange`의 픽스처가 `damaged_quantity`를 명시적으로 채우도록 갱신되어 있어야 한다(그렇지 않던 3개 테스트가 원래 이 결함으로 실패했음).
+- **렉번호 읽기 전용 노출 테스트(v1.5.0 신규, 결정 H)**: `backend/order/tests/test_spec_purchase_order_011.py::TestDamagedExchangeSearch::test_search_response_exposes_stored_rack_number`/`test_search_does_not_write_rack_number`가 REQ-DEX-017/017a를 커버하고, `frontend/src/pages/DamagedExchangePage/index.test.tsx`의 "렉번호 컬럼" 테스트 2건이 REQ-DEX-018을 커버한다.
 - pytest 실행은 **순차 실행**만 허용 — 원격 공유 MySQL 테스트 DB 특성상 동시 실행 시 무관한 테스트가 가짜로 실패할 수 있다.
 - **기존 특성화 테스트 확인(신규 작성 아님)**: `_recompute_order_aggregates`의 `damaged_exchange` 단락(REQ-DEX-009c) 추가 전, `backend/order/tests/test_spec_012.py`의 `TestRecomputeOrderAggregatesReadyToShip` 클래스(9개 테스트 — `cs_required` 단락, `all(received/in_stock)` 판정, 추적 가능 LineItem 0건→`None` 세 분기 전부 커버)가 그대로 통과하는지 확인한다(plan.md M1.5). 이 9개는 새로 작성하는 것이 아니라 기존에 이미 존재하는 스위트다.
 - 검색 엔드포인트 쿼리 수 테스트: 결과 행 수(예: 2건 vs 10건 매칭)와 무관하게 고정된 쿼리 수임을 `django.test.utils.CaptureQueriesContext` 또는 동등한 방법으로 증명하는 테스트 최소 1건 포함(N+1 회귀 방지, plan.md "기술적 접근" 참조).
@@ -249,6 +278,7 @@ Given/When/Then 형태의 실행 가능한 테스트 시나리오. 각 시나리
 - 마이그레이션: `damaged_quantity` 필드 마이그레이션과 `ready_to_ship` 백필 마이그레이션 적용 후 기존 데이터 손실/오류 없이 `python manage.py migrate` 성공.
 - Exclusions 위반 없음: `book.Info.qty`, `order.WarehouseStock`, `LineItem.fulfillment_status`, `Order.status`를 도출하는 규칙(REQ-DEX-009d — 컬럼 자체는 매 호출마다 다시 쓰이므로 "컬럼 write 없음"이 아니라 "규칙 불변"이 검증 대상), `RunComparisonView`/`DailyReviewExcelView`/`UploadDailyReviewView`/`GenerateOrderFileView`/`VendorComparisonView`/`ConfirmOrderView`의 수량 계산에 대한 변경이 diff에 존재하지 않아야 한다. `Order.ready_to_ship`은 Exclusion이 아니다 — REQ-DEX-009c가 그 계산 규칙을 의도적으로 수정하고 REQ-DEX-013이 기존 데이터를 백필한다. `damaged_exchange ⇒ damaged_quantity >= 1` 불변식의 모델 레벨 강제(`clean()`/`save()` 오버라이드, DB 제약)는 diff에 존재하지 않아야 한다 — REQ-DEX-014/015가 강제하는 엔드포인트 레벨 검사만 범위 안이다(v1.4.0 신규, 결정 G, 알려진 한계).
 - **운영 커뮤니케이션(v1.4.0 신규, 결정 G)**: Daily Review 엑셀 `선택` 컬럼에 "파손/교환"을 사용해 오던 팀에게 신규 `/damaged-exchange` 페이지로 전환하라는 공지가 전달되었는지 확인 — 이는 자동화된 테스트로 검증할 수 없는 운영 변경사항이므로 배포 체크리스트에서 별도 확인한다.
+- **Exclusions 위반 없음(v1.5.0 신규, 결정 H)**: `rack_number`를 생성·수정하는 diff(모델 `save()`/`clean()` 변경, SPEC-ORDER-013 편집 엔드포인트 수정, 신규 편집 엔드포인트 추가)가 존재하지 않아야 한다 — 이 SPEC은 그 필드를 읽기 전용으로만 소비한다.
 
 ## Definition of Done
 
@@ -259,7 +289,8 @@ Given/When/Then 형태의 실행 가능한 테스트 시나리오. 각 시나리
 - [ ] `ready_to_ship` 백필 마이그레이션 구현 완료 — 배치 쿼리 설계 확인(REQ-DEX-013/013a, v1.3.0 신규)
 - [x] 파손 접수 레거시 경로 3곳(단건/일괄 상태 변경 API, Daily Review 엑셀 `선택` 매핑) 차단 구현 완료 — 이미 커밋됨(REQ-DEX-014/014a/015, v1.4.0 신규, 결정 G)
 - [x] 프론트엔드 `PURCHASE_STATUS_OPTIONS`에서 `damaged_exchange` 제외 + `PURCHASE_STATUS_LABELS` 신설 + 비활성 옵션 렌더링 구현 완료 — 이미 커밋됨(REQ-DEX-016/016a, v1.4.0 신규, 결정 G)
-- [ ] REQ-DEX-001~016(하위 항목 포함, 총 29개 항목) 및 AC-DEX-001~016(하위 항목 포함, 총 34개 항목) 테스트 전량 통과
+- [x] 렉번호(rack_number) 읽기 전용 노출 — 백엔드 응답 필드 추가 + 프론트엔드 컬럼/미지정 폴백 구현 완료 — 이미 커밋됨(REQ-DEX-017/017a/018, v1.5.0 신규, 결정 H)
+- [ ] REQ-DEX-001~018(하위 항목 포함, 총 32개 항목) 및 AC-DEX-001~018(하위 항목 포함, 총 38개 항목) 테스트 전량 통과
 - [ ] 신규 `/damaged-exchange` 프론트엔드 페이지 + 사이드바 메뉴 항목 구현 완료
 - [ ] SPEC-PURCHASE-ORDER-010, 발주 관리 페이지, SPEC-ORDER-012(`ready_to_ship`, `OrderResyncView` 포함), `test_daily_review_upload.py` 기존 테스트 스위트(백엔드+프론트엔드) 확인 완료 — SPEC-ORDER-012 관련 스위트는 "회귀 없음"이 아니라 "의도된 변경 반영" 기준
 - [x] 결정 A(환불 차감 적용 범위)와 결정 B("전체 출고 수량" 합산 범위 — 취소·미추적 행 제외)에 대한 사용자 확인 완료(2026-08-14, `spec.md` 설계 결정 섹션 참조)
@@ -267,5 +298,6 @@ Given/When/Then 형태의 실행 가능한 테스트 시나리오. 각 시나리
 - [x] 결정 E(공유 함수 `_recompute_order_aggregates` 범위 확장, fan-in 8→9, 다운스트림 소비자 전수 명시)에 대한 사용자 확인 완료(2026-08-14)
 - [x] 결정 F(`ready_to_ship` 1회성 백필 마이그레이션 신규 추가)에 대한 사용자 확인 완료(2026-08-14, v1.3.0 신규 — D13)
 - [x] 결정 G(파손 접수 레거시 경로 3곳 차단, `damaged_quantity==0` 폴백 대안 기각, 모델 레벨 불변식 미강제를 알려진 한계로 기록)에 대한 사용자 확인 완료(2026-08-14, v1.4.0 신규 — Run 단계에서 발견)
+- [x] 결정 H(렉번호 읽기 전용 노출 추가, SPEC-ORDER-013과의 관계를 읽기 전용 소비자로 명시)에 대한 사용자 확인 완료(2026-08-14, v1.5.0 신규 — PR 오픈 후 추가 요청)
 - [ ] `product.md` 기능 목록에 SPEC-PURCHASE-ORDER-011 항목 추가(sync 단계)
 - [ ] `spec.md` `status: draft → completed` 전이 및 HISTORY 갱신
