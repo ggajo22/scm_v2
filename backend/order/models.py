@@ -551,3 +551,34 @@ class ShopifySkuSetMapping(models.Model):
 
     def __str__(self) -> str:
         return f"ShopifySkuSetMapping({self.bundle_sku} -> {self.member_isbn})"
+
+
+class StoreSyncWatermark(models.Model):
+    """Per-store incremental-sync cursor for sync_store()'s updated_at_min fetch.
+
+    Deliberately decoupled from Order.shopify_updated_at: that column is also
+    written by the single-order resync path (sync_single_order_from_shopify,
+    used by OrderResyncView), which touches exactly one order and does not
+    sweep the rest of the store. A resync of an OLD order can therefore carry
+    a shopify_updated_at newer than any order actually covered by the last
+    full sync, which — if the store-wide MAX(shopify_updated_at) were used as
+    the watermark — jumps the next sync's fetch window forward and silently
+    skips every order in between. This is not hypothetical: on 2026-08-15 a
+    resync of order #37413 (created 2026-08-03) jumped the gimssine watermark
+    ~28 hours forward and orphaned 102 open orders, #38163 through #38266.
+    One row per store_type.
+    """
+
+    store_type = models.CharField(
+        max_length=20,
+        choices=[("gimssine", "Gimssine"), ("etoile", "Etoile")],
+        unique=True,
+    )
+    last_synced_updated_at = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "orders_store_sync_watermark"
+
+    def __str__(self) -> str:
+        return f"StoreSyncWatermark({self.store_type}: {self.last_synced_updated_at})"

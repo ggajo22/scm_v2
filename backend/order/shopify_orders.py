@@ -4,6 +4,7 @@ import urllib.error
 import urllib.request
 
 from django.conf import settings
+from django.utils.dateparse import parse_datetime
 
 from book.models import Inven
 
@@ -317,7 +318,7 @@ def sync_single_order_from_shopify(shopify_order_id: int, store_type: str) -> di
 
 
 def sync_store(store_type):
-    from .models import LineItem, Order
+    from .models import LineItem, Order, StoreSyncWatermark
 
     if store_type == "gimssine":
         domain = settings.SHOPIFY_GIMSSINE_DOMAIN
@@ -326,16 +327,32 @@ def sync_store(store_type):
         domain = settings.SHOPIFY_ETOILE_DOMAIN
         token = settings.SHOPIFY_ETOILE_TOKEN
 
-    last_updated = (
-        Order.objects.filter(store_type=store_type)
-        .order_by("-shopify_updated_at")
-        .values_list("shopify_updated_at", flat=True)
-        .first()
-    )
+    # Watermark lives in its own table, NOT derived from
+    # Order.shopify_updated_at — that column is also written by the
+    # single-order resync path (sync_single_order_from_shopify), which can
+    # bump one old order's shopify_updated_at far ahead of the rest of the
+    # store and silently skip everything in between on the next sync.
+    watermark, _ = StoreSyncWatermark.objects.get_or_create(store_type=store_type)
+    last_updated = watermark.last_synced_updated_at
+    if last_updated is None:
+        # First run after deploy (or a brand-new store): seed from the
+        # current Order MAX so day-one behaviour is unchanged and we don't
+        # re-pull the store's entire history.
+        last_updated = (
+            Order.objects.filter(store_type=store_type)
+            .order_by("-shopify_updated_at")
+            .values_list("shopify_updated_at", flat=True)
+            .first()
+        )
+        if last_updated is not None:
+            watermark.last_synced_updated_at = last_updated
+            watermark.save(update_fields=["last_synced_updated_at"])
+
     updated_at_min = last_updated.strftime("%Y-%m-%dT%H:%M:%SZ") if last_updated else None
 
     orders = fetch_all_open_orders(domain, token, updated_at_min=updated_at_min)
     if not orders:
+        # Zero orders fetched: leave the watermark untouched.
         return {"synced_count": 0, "updated_count": 0, "error": None, "updated_at_min": updated_at_min}
 
     shopify_ids = [o["id"] for o in orders]
@@ -375,6 +392,20 @@ def sync_store(store_type):
             synced_count += 1
         else:
             updated_count += 1
+
+    # Advance the watermark to MAX(updated_at) of the orders actually
+    # returned in THIS batch — never a global MAX over the Order table
+    # (that is exactly the bug this rewrite fixes). Monotonic: never move
+    # the watermark backwards.
+    batch_max = None
+    for order_data in orders:
+        parsed = parse_datetime(order_data["updated_at"]) if order_data.get("updated_at") else None
+        if parsed is not None and (batch_max is None or parsed > batch_max):
+            batch_max = parsed
+    if batch_max is not None and (last_updated is None or batch_max > last_updated):
+        watermark.last_synced_updated_at = batch_max
+        watermark.save(update_fields=["last_synced_updated_at"])
+
     return {
         "synced_count": synced_count,
         "updated_count": updated_count,
