@@ -357,7 +357,6 @@ function KyboCategorySection({ info, bookId }: { info: BookInfo; bookId: number 
       kyobo_category3: info.kyobo_category3,
       kyobo_category4: info.kyobo_category4,
       kyobo_category5: info.kyobo_category5,
-      kyobo_weight: info.kyobo_weight,
     })
   }, [info])
 
@@ -413,6 +412,7 @@ function WeightSection({ info, bookId }: { info: BookInfo; bookId: number }) {
   useEffect(() => {
     setForm({
       weight: info.weight,
+      kyobo_weight: info.kyobo_weight,
       yes24_weight: info.yes24_weight,
       aladin_weight: info.aladin_weight,
       manual_weight: info.manual_weight,

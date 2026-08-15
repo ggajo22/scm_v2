@@ -150,8 +150,8 @@ export async function generateOrderFile(data: {
   })
 
   // If backend returns warning JSON (non-blob content type), parse it
-  const contentType = res.headers['content-type'] ?? ''
-  if (contentType.includes('application/json')) {
+  const contentType = res.headers['content-type']
+  if (typeof contentType === 'string' && contentType.includes('application/json')) {
     const text = await (res.data as Blob).text()
     return JSON.parse(text) as WarningResponse
   }
