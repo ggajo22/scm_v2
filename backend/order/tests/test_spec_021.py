@@ -1,8 +1,12 @@
 """SPEC-ORDER-021: 마진 계산에 배송비·한국창고비 반영 (TDD).
 
 T1~T13 map 1:1 to AC-COST-001~013 in `.moai/specs/SPEC-ORDER-021/acceptance.md`.
+T14~T18 (v1.3.0) map to AC-COST-014~018 (confirmed_cost/total_cost exposure).
+T19~T22 (v1.4.0) map to AC-COST-020~023 (exchange_rate/exchange_rate_date
+exposure) — see acceptance.md 확장 절.
 """
 import re
+from datetime import timedelta
 from decimal import Decimal
 
 import pytest
@@ -488,5 +492,94 @@ def test_t18_confirmed_cost_and_total_cost_null_when_no_confirmed_price(auth_cli
 
     assert res.status_code == 200
     for field in ("confirmed_cost", "total_cost"):
+        assert field in res.data, f"{field} missing from response"
+        assert res.data[field] is None, f"{field} expected None, got {res.data[field]!r}"
+
+
+# ---------------------------------------------------------------------------
+# T19 (AC-COST-020) — exchange_rate/exchange_rate_date exact values when the
+# order date has its own ExchangeRate record (no fallback involved).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_t19_exchange_rate_and_date_match_order_date_record(auth_client, db):
+    today = timezone.now().date()
+    ExchangeRate.objects.create(effective_date=today, rate=Decimal("1427.05"))
+    order = _make_order("100.00", 921019)
+    _make_line_item(order, 1, quantity=3, confirmed_price=Decimal("10000.00"), grams=0)
+
+    res = auth_client.get(DETAIL_URL.format(pk=order.pk))
+
+    assert res.status_code == 200
+    assert res.data["exchange_rate"] == "1427.05"
+    assert res.data["exchange_rate_date"] == today.isoformat()
+
+
+# ---------------------------------------------------------------------------
+# T20 (AC-COST-021) — discriminating fallback test: order dated D has no
+# ExchangeRate record of its own; only a record at D-3 exists.
+# exchange_rate_date must reflect the applied record's effective_date (D-3),
+# NOT the order date (D) — the whole point of surfacing this field is to make
+# the previously-invisible fallback visible.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_t20_exchange_rate_date_reflects_fallback_record_not_order_date(auth_client, db):
+    order = _make_order("100.00", 921020)
+    order_date = order.shopify_created_at.date()
+    fallback_date = order_date - timedelta(days=3)
+    ExchangeRate.objects.create(effective_date=fallback_date, rate=Decimal("1300.00"))
+    _make_line_item(order, 1, quantity=3, confirmed_price=Decimal("10000.00"), grams=0)
+
+    res = auth_client.get(DETAIL_URL.format(pk=order.pk))
+
+    assert res.status_code == 200
+    assert res.data["exchange_rate"] == "1300.00"
+    assert res.data["exchange_rate_date"] == fallback_date.isoformat()
+    assert res.data["exchange_rate_date"] != order_date.isoformat()
+
+
+# ---------------------------------------------------------------------------
+# T21 (AC-COST-022) — exchange_rate/exchange_rate_date stay non-null even
+# when margin_amount is null because no line item has a confirmed_price.
+# This is the discriminating test for the SEPARATE null gate: an
+# implementation that routes these two fields through
+# _compute_cost_breakdown (the has_any_confirmed-gated helper) fails here.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_t21_exchange_rate_non_null_when_margin_amount_null_no_confirmed_price(
+    auth_client, rate_1000
+):
+    order = _make_order("100.00", 921021)
+    _make_line_item(order, 1, quantity=3, confirmed_price=None, grams=500)
+
+    res = auth_client.get(DETAIL_URL.format(pk=order.pk))
+
+    assert res.status_code == 200
+    assert res.data["margin_amount"] is None
+    assert res.data["exchange_rate"] == "1000.00"
+    assert res.data["exchange_rate_date"] == rate_1000.effective_date.isoformat()
+
+
+# ---------------------------------------------------------------------------
+# T22 (AC-COST-023) — exchange_rate/exchange_rate_date are null only when
+# _get_exchange_rate(obj) itself returns None (no ExchangeRate record at or
+# before the order date). Key-presence assertions, not `.get(...)`.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_t22_exchange_rate_and_date_null_when_no_exchange_rate_record(auth_client, db):
+    order = _make_order("100.00", 921022)
+    _make_line_item(order, 1, quantity=3, confirmed_price=Decimal("10000.00"), grams=0)
+
+    res = auth_client.get(DETAIL_URL.format(pk=order.pk))
+
+    assert res.status_code == 200
+    for field in ("exchange_rate", "exchange_rate_date"):
         assert field in res.data, f"{field} missing from response"
         assert res.data[field] is None, f"{field} expected None, got {res.data[field]!r}"

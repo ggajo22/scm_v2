@@ -66,6 +66,8 @@ function buildOrderDetail(overrides: Partial<OrderDetail> = {}): OrderDetail {
     korea_warehouse_cost: null,
     confirmed_cost: null,
     total_cost: null,
+    exchange_rate: null,
+    exchange_rate_date: null,
     customer: null,
     shipping_address: null,
     line_items: [
@@ -566,5 +568,84 @@ describe('OrderDetailPage — SPEC-ORDER-021 extension: 결제 정보 restructur
     const confirmedCostRow = screen.getByText('원가 (확정 단가 합계)').closest('div')
     expect(totalCostRow?.textContent).toContain('—')
     expect(confirmedCostRow?.textContent).toContain('—')
+  })
+})
+
+// SPEC-ORDER-021 extension (v1.4.0, AC-COST-024): surfaces the applied
+// exchange rate + the record's effective_date at the bottom of 결제 정보,
+// after 마진율 and OUTSIDE the pl-3 indented 비용 합계 sub-item group (it is
+// calculation metadata, not a cost component).
+describe('OrderDetailPage — SPEC-ORDER-021 extension: applied exchange rate display (AC-COST-024)', () => {
+  beforeEach(() => {
+    vi.mocked(useCreateLineItemNote).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+    } as unknown as ReturnType<typeof useCreateLineItemNote>)
+    vi.mocked(useResolveLineItemNote).mockReturnValue({
+      mutate: vi.fn(),
+    } as unknown as ReturnType<typeof useResolveLineItemNote>)
+  })
+
+  it('renders 적용 환율 with the formatted rate and date after 마진율', () => {
+    vi.mocked(useOrderDetail).mockReturnValue({
+      data: buildOrderDetail({
+        margin_amount: '159.58',
+        margin_rate: '79.79',
+        exchange_rate: '1427.05',
+        exchange_rate_date: '2026-08-03',
+      }),
+      isPending: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useOrderDetail>)
+
+    renderPage()
+
+    expect(screen.getByText('적용 환율')).toBeInTheDocument()
+    expect(screen.getByText(/1,427\.05 KRW\/USD \(2026-08-03\)/)).toBeInTheDocument()
+
+    const isBefore = (a: Element, b: Element) =>
+      !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING)
+    const marginRate = screen.getByText('마진율')
+    const exchangeRateLabel = screen.getByText('적용 환율')
+    expect(isBefore(marginRate, exchangeRateLabel)).toBe(true)
+  })
+
+  it('falls back to "—" when exchange_rate or exchange_rate_date is null', () => {
+    vi.mocked(useOrderDetail).mockReturnValue({
+      data: buildOrderDetail({
+        exchange_rate: null,
+        exchange_rate_date: null,
+      }),
+      isPending: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useOrderDetail>)
+
+    renderPage()
+
+    const exchangeRateRow = screen.getByText('적용 환율').closest('div')
+    expect(exchangeRateRow?.textContent).toContain('—')
+  })
+
+  it('renders 적용 환율 outside the pl-3 indented cost sub-item group', () => {
+    vi.mocked(useOrderDetail).mockReturnValue({
+      data: buildOrderDetail({
+        exchange_rate: '1427.05',
+        exchange_rate_date: '2026-08-03',
+      }),
+      isPending: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useOrderDetail>)
+
+    renderPage()
+
+    const exchangeRateRow = screen.getByText('적용 환율').closest('div')
+    expect(exchangeRateRow).not.toBeNull()
+    expect(exchangeRateRow?.className).not.toMatch(/pl-\d/)
   })
 })

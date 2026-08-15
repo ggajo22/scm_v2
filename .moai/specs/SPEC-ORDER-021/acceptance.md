@@ -1,7 +1,7 @@
 ---
 id: SPEC-ORDER-021
 document: acceptance
-version: 1.3.0
+version: 1.4.0
 status: implemented
 updated: 2026-08-15
 ---
@@ -238,6 +238,59 @@ Traces: REQ-COST-023, REQ-COST-027, REQ-COST-028, REQ-COST-029
   - (d) `total_cost`/`confirmed_cost`가 `null`이면 각 줄에 `"—"`가 렌더링된다(기존 `margin_amount=null` 폴백과 동일 패턴).
 - **판별력**: 순서를 뒤바꾸거나(예: `마진`을 `비용 합계`보다 먼저 렌더링) 라벨을 갱신하지 않으면(`한국창고비` 잔존) (a)/(b)가 실패한다. 세 세부항목에 들여쓰기·저채도 클래스를 적용하지 않으면(c)가 실패한다.
 
+## 확장 — 적용 환율 노출 (v1.4.0)
+
+이 절의 AC-COST-020~024는 v1.4.0에서 추가된 신규 필드(`exchange_rate`, `exchange_rate_date`)와 `OrderDetailPage`의 적용 환율 표시를 검증한다. `spec.md` v1.4.0의 REQ-COST-030~036을 인용한다.
+
+### AC-COST-020 — 주문일 자체에 환율 레코드가 있을 때 `exchange_rate`/`exchange_rate_date`가 정확한 값을 반환한다 `[BE]`
+
+Traces: REQ-COST-030, REQ-COST-031
+
+- **Given**: `Order(shopify_created_at=오늘)`, `ExchangeRate(effective_date=오늘, rate="1427.05")`, 확정 매입가가 있는 라인아이템 1개.
+- **When**: `GET /api/orders/{pk}/`.
+- **Then**: `exchange_rate == "1427.05"`, `exchange_rate_date == 오늘의 ISO 문자열`.
+- **판별력**: `exchange_rate`를 노출하지 않거나 다른 값을 반환하면 실패한다. 단, `exchange_rate_date`를 레코드의 `effective_date`가 아니라 주문일을 그대로 에코해도 이 시나리오만으로는 잡히지 않는다 — 이 케이스는 폴백이 없어 두 값이 우연히 같기 때문이다. 그 mutation은 AC-COST-021이 전담한다.
+
+### AC-COST-021 — 폴백 발생 시 `exchange_rate_date`는 주문일이 아니라 실제 적용된 레코드의 날짜다(핵심 판별 테스트) `[BE]`
+
+Traces: REQ-COST-030, REQ-COST-031, REQ-COST-034
+
+- **Given**: `Order(shopify_created_at=D)`, `D` 당일에는 `ExchangeRate` 레코드가 없고 `D-3`에만 `ExchangeRate(effective_date=D-3, rate="1300.00")`가 존재, 확정 매입가가 있는 라인아이템 1개.
+- **When**: `GET /api/orders/{pk}/`.
+- **Then**: `exchange_rate == "1300.00"`, `exchange_rate_date == (D-3)의 ISO 문자열`, **그리고** `exchange_rate_date != D의 ISO 문자열`.
+- **이 AC가 필요한 이유**: 이 기능 전체의 존재 이유는 `_get_exchange_rate`의 폴백(`backend/order/serializers.py:208-` 인근)을 눈에 보이게 만드는 것이다 — `exchange_rate_date`가 조회 결과의 `effective_date`가 아니라 `obj.shopify_created_at.date()`를 그대로 에코하면, 값 자체는 그럴듯해 보이지만 폴백이 발생했다는 사실이 여전히 완전히 숨겨진다.
+- **판별력**: `get_exchange_rate_date`를 `obj.shopify_created_at.date().isoformat()`으로 구현하면(레코드 조회 결과를 무시하고 주문일을 그대로 반환) `exchange_rate_date == D`가 되어 정답(`D-3`)과 명확히 어긋난다.
+
+### AC-COST-022 — `margin_amount`가 `null`이어도 `exchange_rate`/`exchange_rate_date`는 `null`이 아니다(별도 게이트) `[BE]`
+
+Traces: REQ-COST-033
+
+- **Given**: `Order(total_price="100.00")`, 유효한 `ExchangeRate`, 라인아이템 1개 `LineItem(quantity=3, grams=500, confirmed_price=None)`(AC-COST-007과 동일 — 확정 매입가 전무).
+- **When**: `GET /api/orders/{pk}/`.
+- **Then**: `margin_amount is None`이면서 동시에 `exchange_rate`, `exchange_rate_date` 둘 다 **non-null**이다.
+- **판별력**: 이 두 필드를 `_compute_cost_breakdown`(`has_any_confirmed` 게이트를 가진 기존 헬퍼)의 반환값을 거쳐 구현하면 `margin_amount`와 동일하게 `null`이 되어 실패한다 — 설계 결정 H(별도의 좁은 게이트)의 직접 판별 지점.
+
+### AC-COST-023 — 환율 레코드 자체가 없을 때만 `exchange_rate`/`exchange_rate_date`가 `null`이다 `[BE]`
+
+Traces: REQ-COST-032
+
+- **Given**: AC-COST-006과 동일 조건(해당 주문일 이전 어떤 날짜에도 `ExchangeRate` 레코드가 없음), 확정 매입가가 있는 라인아이템 1개.
+- **When**: `GET /api/orders/{pk}/`.
+- **Then**: `exchange_rate`, `exchange_rate_date` 두 키 모두 응답에 존재하며(`"exchange_rate" in res.data`), 값이 `None`이다 — AC-COST-006/017과 동일한 키 존재 + `None` 값 이중 단정 요건(D6 계승).
+- **판별력**: 두 필드를 아예 구현하지 않으면(`Meta.fields` 누락) 키 존재 단정이 실패한다.
+
+### AC-COST-024 — 프론트엔드가 적용 환율을 마진율 다음, 비용 세부항목 그룹 밖에 표시한다 `[FE]`
+
+Traces: REQ-COST-035, REQ-COST-036
+
+- **Given**: `buildOrderDetail({ exchange_rate: "1427.05", exchange_rate_date: "2026-08-03" })`로 `useOrderDetail` 모킹.
+- **When**: `renderPage()`.
+- **Then**: "적용 환율" 라벨과 "1,427.05 KRW/USD (2026-08-03)" 텍스트가 렌더링되고, DOM 순서상 `마진율` **다음**에 위치하며, 컨테이너 class에 `pl-` 들여쓰기 클래스가 **없다**(비용 세부항목 그룹과 시각적으로 구분됨).
+- **Given (2차)**: `exchange_rate: null, exchange_rate_date: null`로 오버라이드.
+- **When (2차)**: `renderPage()`.
+- **Then (2차)**: "적용 환율" 줄에 "—"가 렌더링된다.
+- **판별력**: `OrderDetail` 타입에 두 필드를 추가하지 않으면 컴포넌트가 접근하는 코드 자체가 `tsc -b` 컴파일 오류로 실패한다(회귀 게이트). 표시 위치를 `pl-3` 들여쓰기 그룹 안에 넣으면 "들여쓰기 없음" 단정이 실패한다. `null` 폴백을 빠뜨리면 2차 단정이 실패한다.
+
 ---
 
 ## 기존 회귀 테스트 — 기대값 변경 (재작성이 아니라 값만 갱신)
@@ -279,6 +332,11 @@ Traces: REQ-COST-023, REQ-COST-027, REQ-COST-028, REQ-COST-029
 | AC-COST-017 `[BE]` | `test_spec_021.py` | T17 | 025 |
 | AC-COST-018 `[BE]` | `test_spec_021.py` | T18 | 026 |
 | AC-COST-019 `[FE]` | `OrderDetailPage.test.tsx` | (신규 describe 블록, v1.3.0) | 023, 027, 028, 029 |
+| AC-COST-020 `[BE]` | `test_spec_021.py` | T19 | 030, 031 |
+| AC-COST-021 `[BE]` | `test_spec_021.py` | T20 | 030, 031, 034 |
+| AC-COST-022 `[BE]` | `test_spec_021.py` | T21 | 033 |
+| AC-COST-023 `[BE]` | `test_spec_021.py` | T22 | 032 |
+| AC-COST-024 `[FE]` | `OrderDetailPage.test.tsx` | (신규 describe 블록, v1.4.0) | 035, 036 |
 
 이 표는 각 AC 섹션 상단의 `Traces:` 목록과 완전히 일치한다(감사 D7 — 이전 버전은 AC-COST-001 행에 REQ-007을 잘못 나열했고 AC-COST-003 행에 REQ-012를 이중 나열하면서도 REQ-COST-011/012/013의 REQ→AC 역방향 표는 AC-COST-001/003을 빠뜨리는 등 네 곳이 서로 어긋나 있었다).
 
@@ -296,3 +354,11 @@ Traces: REQ-COST-023, REQ-COST-027, REQ-COST-028, REQ-COST-029
 - AC-COST-009(쿼리 수 불변식)는 **무수정**으로 재실행해 통과해야 한다 — `confirmed_cost`/`total_cost` 게터 2개가 늘어나도 메모이제이션(설계 결정 C/F)으로 인해 `ORDER_DETAIL_QUERY_COUNT`, `orders_line_item`/`orders_exchangerate` 참조 쿼리 수(각 1) 모두 **변하지 않아야** 한다. 변경 시 상수를 실측값으로 갱신하고 그 사실을 `spec.md` HISTORY에 남긴다.
 - `margin_usd`/`get_margin_amount`/`get_margin_rate`/두 None 게이트는 **한 글자도 변경되지 않는다** — `git diff`로 확인.
 - `OrderListSerializer`는 무수정.
+
+## v1.4.0 확장 회귀 게이트
+
+- AC-COST-009(쿼리 수 불변식)는 **무수정**으로 재실행해 통과해야 한다 — `exchange_rate`/`exchange_rate_date` 게터 2개가 늘어나(9개 `SerializerMethodField`) `_get_exchange_rate`가 직접 호출되는 경로가 새로 생겼음에도, `_get_exchange_rate` 자체의 메모이제이션(REQ-COST-034)으로 인해 `ORDER_DETAIL_QUERY_COUNT`, `orders_line_item`/`orders_exchangerate` 참조 쿼리 수(각 1) 모두 **변하지 않아야** 한다. 실측 결과: 변경 전 `ORDER_DETAIL_QUERY_COUNT=7`(`orders_line_item`=1, `orders_exchangerate`=1) → 변경 후 동일(무수정 상수로 재통과, 21/21 테스트 통과 실측 확인).
+- `margin_usd`/`get_margin_amount`/`get_margin_rate`/`_compute_cost_breakdown`(및 그 uncached 버전)의 계산 로직/두 None 게이트는 **한 글자도 변경되지 않는다** — `git diff`로 확인(`_get_exchange_rate`의 메모이제이션 래핑만 예외, 폴백 조회 로직 자체는 무변경).
+- `OrderListSerializer`는 무수정.
+- `backend/order/tests/test_spec_008.py`, `test_spec_009.py` 전량 무수정 재통과(마진 계산 영향 없음 확인, 17/17 테스트 통과 실측 확인).
+- `tsc -b` 에러 수는 이 SPEC 이전부터 존재하던 베이스라인과 동일해야 하며(실측 베이스라인은 26건 — 과거 버전 문서가 기록한 24건과 2건 차이가 있고, 그 2건은 `frontend/src/hooks/usePurchaseOrderQueries.test.tsx`에 이 SPEC과 무관하게 이미 존재했다), `types/order.ts`/`OrderDetailPage.tsx`/`OrderDetailPage.test.tsx`/`SearchTab.test.tsx` 4개 파일에는 신규 에러가 0건이어야 한다.

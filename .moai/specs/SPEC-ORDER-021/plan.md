@@ -1,14 +1,14 @@
 ---
 id: SPEC-ORDER-021
 document: plan
-version: 1.3.0
+version: 1.4.0
 status: implemented
 updated: 2026-08-15
 ---
 
 # 구현 계획 — SPEC-ORDER-021 마진 계산에 배송비·한국창고비 반영
 
-`spec.md`의 요구사항(REQ-COST-001~019, v1.3.0 확장 REQ-COST-020~029)을 구현하기 위한 작업 분해, 파일별 변경 계획, TDD 사이클, 리스크와 완화책, MX 태그 계획을 정리한다.
+`spec.md`의 요구사항(REQ-COST-001~019, v1.3.0 확장 REQ-COST-020~029, v1.4.0 확장 REQ-COST-030~036)을 구현하기 위한 작업 분해, 파일별 변경 계획, TDD 사이클, 리스크와 완화책, MX 태그 계획을 정리한다.
 
 [HARD] 규범 진술의 단일 출처는 `spec.md`다. 이 문서는 그것을 **어떻게** 구현할지만 다루며, 요구사항을 재진술하지 않고 REQ ID로 참조한다.
 
@@ -24,6 +24,14 @@ updated: 2026-08-15
 - **M7 (High) — GREEN**: `confirmed_cost`/`total_cost` `SerializerMethodField` 2개 + `Meta.fields` 추가. 기존 `margin_usd`/`get_margin_amount`/`get_margin_rate`/두 None 게이트는 한 글자도 수정하지 않았다(REQ-COST-024 인접 제약). T14~T18 GREEN 확인, 기존 T1~T13 무수정 통과 재확인(회귀 없음).
 - **M8 (High) — 프론트엔드 RED→GREEN**: `types/order.ts`에 `confirmed_cost`/`total_cost` 추가, 두 `buildOrderDetail()`(`OrderDetailPage.test.tsx`, `SearchTab.test.tsx`)에 `null` 기본값 추가. `OrderDetailPage.test.tsx`에 신규 describe 블록(AC-COST-019, 6개 `it`)을 작성해 RED 확인 후, `OrderDetailPage.tsx`의 결제 정보 섹션을 재구성해 GREEN 전환.
 - **M9 (Medium) — 회귀 확인**: `test_spec_021.py` 17개 전량, `backend/order/tests/` 전체 스위트, `OrderDetailPage.test.tsx`+`SearchTab.test.tsx` 34개, `tsc -b`(에러 24건 불변, 4개 대상 파일 신규 에러 0건), AC-COST-009 쿼리 수 무수정 통과(`ORDER_DETAIL_QUERY_COUNT=7` 등 실측값 변화 없음) 확인.
+
+## v1.4.0 확장 요약 — 적용 환율 노출
+
+M0~M9는 그대로 유지하고(무수정), 동일한 RED-GREEN-REFACTOR 사이클로 아래를 추가했다. 목적: 주문 상세 화면에 적용된 환율과 그 근거 날짜(`_get_exchange_rate`의 폴백 포함)를 노출한다 — 이 폴백은 지금까지 완전히 비가시적이었고, 2개월간 90%의 주문을 잘못 계산한 데이터 파이프라인 문제(SPEC-ORDER-022가 수정)의 근본 원인이었다.
+
+- **M10 (High) — RED**: `test_spec_021.py`에 T19~T22(AC-COST-020~023)를 `exchange_rate`/`exchange_rate_date` 구현 **전**에 작성했다. 4건 실행 결과 전부 `KeyError: 'exchange_rate'`(T19/T20/T21) 또는 키 부재 단정 실패(T22)로 RED를 직접 확인했다(pytest 출력 채증). `frontend/src/pages/OrderDetailPage.test.tsx`의 `buildOrderDetail()`에 `exchange_rate: null, exchange_rate_date: null` 기본값을 추가하고 신규 describe 블록(AC-COST-024, 3개 `it`)을 작성한 뒤 `npx vitest run`으로 RED를 확인했다(3 failed / 16 passed) — 이 시점에는 아직 `OrderDetail` 타입에 필드를 추가하지 않아 `npx tsc -b`도 신규 에러 4건(`OrderDetailPage.test.tsx`)으로 RED임을 별도 확인했다.
+- **M11 (High) — GREEN**: 백엔드 — `_get_exchange_rate`를 `obj.pk` 키의 인스턴스 딕셔너리로 메모이즈하고(REQ-COST-034, 조회 로직 자체는 무변경), `get_exchange_rate`/`get_exchange_rate_date` `SerializerMethodField` 2개를 추가해 이 메모이즈된 메서드를 **직접** 호출(REQ-COST-030/031/033) — `_compute_cost_breakdown`(`has_any_confirmed` 게이트)을 거치지 않는다(설계 결정 H). `Meta.fields`에 추가. T19~T22 GREEN 확인, 기존 T1~T18 무수정 통과 재확인(21/21). 프론트엔드 — `frontend/src/types/order.ts`의 `OrderDetail`에 `exchange_rate`/`exchange_rate_date` 추가, `frontend/src/pages/RackNumberPage/tabs/SearchTab.test.tsx:47`의 두 번째 `buildOrderDetail()`에도 `null` 기본값 추가(v1.3.0 감사 D2와 동일한 패턴, 놓치기 쉬움). `OrderDetailPage.tsx`의 결제 정보 섹션에 `마진율` 다음, `pl-3` 그룹 **밖**에 `적용 환율` 줄 추가 — `text-muted-foreground/70 text-xs`(비용 세부항목과 동일한 저채도)를 재사용하되 `pl-3`는 적용하지 않는다(계산 결과가 아니라 계산 근거이므로 비용 그룹의 일부처럼 보이면 안 됨). GREEN 확인(37/37: `OrderDetailPage.test.tsx` 19 + `SearchTab.test.tsx` 18).
+- **M12 (Medium) — 회귀 확인**: `test_spec_021.py` 21개 전량(T1~T22, T11 제외 — FE), `test_spec_008.py`+`test_spec_009.py` 17개, AC-COST-009 쿼리 수 불변식 무수정 재통과(`ORDER_DETAIL_QUERY_COUNT=7`, `orders_line_item`/`orders_exchangerate` 참조 쿼리 수 각 1 — DRF가 평가하는 `SerializerMethodField`가 7개→9개로 늘었음에도 실측값 불변, `_get_exchange_rate` 메모이제이션 덕분). `npx tsc -b`(4개 대상 파일 신규 에러 0건 — **실측 베이스라인은 26건**, 과거 버전이 기록한 24건과 2건 차이가 있음: `frontend/src/hooks/usePurchaseOrderQueries.test.tsx`에 이 SPEC과 무관한 기존 에러 2건이 추가로 존재했다, 원인 불명·범위 밖). `npx vite build` 성공 확인(opacity-modifier Tailwind 클래스 컴파일 확인). `git diff`로 `margin_usd`/`get_margin_amount`/`get_margin_rate`/`_compute_cost_breakdown`(uncached 포함)의 계산 로직과 두 None 게이트가 한 글자도 바뀌지 않았음을 확인(`_get_exchange_rate`의 메모이제이션 래핑만 예외).
 
 ---
 
