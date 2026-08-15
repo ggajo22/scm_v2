@@ -10,7 +10,7 @@ import {
   useBulkUpdateLineItemStatus,
 } from '@/hooks/usePurchaseOrderQueries'
 import { usePurchaseOrderStore } from '@/stores/usePurchaseOrderStore'
-import { PURCHASE_STATUS_OPTIONS } from '@/services/purchaseOrderApi'
+import { PURCHASE_STATUS_OPTIONS, PURCHASE_STATUS_LABELS } from '@/services/purchaseOrderApi'
 import type { WarningResponse } from '@/services/purchaseOrderApi'
 
 // Helper: format Date as YYYYMMDD string
@@ -37,12 +37,6 @@ function downloadBlob(blob: Blob, filename: string) {
 function isWarningResponse(value: Blob | WarningResponse): value is WarningResponse {
   return !!(value as WarningResponse).unknown_skus
 }
-
-// SPEC-ORDER-018 REQ-RESTORE-017: value -> Korean label lookup for the status
-// column of the excluded-items view.
-const PURCHASE_STATUS_LABELS: Record<string, string> = Object.fromEntries(
-  PURCHASE_STATUS_OPTIONS.map((o) => [o.value, o.label])
-)
 
 export function UnorderedItemsTab() {
   const { data, isPending, isError } = useUnorderedItems()
@@ -483,6 +477,21 @@ export function UnorderedItemsTab() {
                         className="text-sm border rounded px-2 py-1"
                         aria-label={`${item.title} 발주 상태 변경`}
                       >
+                        {/* SPEC-PURCHASE-ORDER-011: this table also shows
+                            damaged_exchange rows (_reorder_candidate_filter
+                            re-admits them into the reorder queue), but that
+                            status is no longer a selectable option below —
+                            it may only be set via the dedicated
+                            /damaged-exchange page. Without this extra
+                            disabled option, a row already at damaged_exchange
+                            would have no matching <option>, silently
+                            rendering the first option ("미발주") instead of
+                            its true status. */}
+                        {item.purchase_status === 'damaged_exchange' && (
+                          <option value="damaged_exchange" disabled>
+                            {PURCHASE_STATUS_LABELS.damaged_exchange}
+                          </option>
+                        )}
                         {PURCHASE_STATUS_OPTIONS.map((opt) => (
                           <option key={opt.value} value={opt.value}>
                             {opt.label}

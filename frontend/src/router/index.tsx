@@ -134,6 +134,13 @@ export const router = createBrowserRouter([
             },
           },
           {
+            path: '/damaged-exchange',
+            lazy: async () => {
+              const { DamagedExchangePage } = await import('@/pages/DamagedExchangePage')
+              return { Component: DamagedExchangePage }
+            },
+          },
+          {
             path: '/settings/sku-sets',
             lazy: async () => {
               const { SkuSetsPage } = await import('@/features/sku-sets/SkuSetsPage')

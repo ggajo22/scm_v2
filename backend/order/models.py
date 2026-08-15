@@ -227,6 +227,15 @@ class LineItem(models.Model):
     # received_quantity reaches `quantity` (see _process_warehouse_receipt_rows).
     received_quantity = models.IntegerField(default=0)
     received_at = models.DateTimeField(null=True, blank=True)
+    # SPEC-PURCHASE-ORDER-011 REQ-DEX-001: damage/exchange quantity reported
+    # for this LineItem, distinct from `quantity` (the original order
+    # quantity). Only meaningful when purchase_status == "damaged_exchange"
+    # (REQ-DEX-012a) — it is not read for display or reorder-quantity
+    # purposes on any other row. Resubmission overwrites this value rather
+    # than accumulating it (REQ-DEX-009b). The existing refund-subtraction
+    # convention (결정 A) applies on top of this value the same way it
+    # already applies to `quantity` elsewhere (UnorderedItemsView).
+    damaged_quantity = models.IntegerField(default=0)
 
     class Meta:
         db_table = "orders_line_item"

@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link, useNavigate, useLocation } from 'react-router-dom'
-import { Users, LogOut, BookOpen, ChevronDown, ShoppingCart, Package, Warehouse, StickyNote, Tag, MapPin, Truck, PackageCheck } from 'lucide-react'
+import { Users, LogOut, BookOpen, ChevronDown, ShoppingCart, Package, Warehouse, StickyNote, Tag, MapPin, Truck, PackageCheck, PackageX } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useAuthStore } from '@/store/authStore'
 import { cn } from '@/lib/utils'
@@ -79,6 +79,14 @@ const flatNavItems: FlatNavItem[] = [
     label: '출고 처리',
     href: '/outbound',
     icon: Truck,
+  },
+  {
+    // SPEC-PURCHASE-ORDER-011 REQ-DEX-003: standalone damaged-exchange
+    // intake page, placed right after 출고 처리 — damage is discovered
+    // during the same warehouse-floor outbound workflow.
+    label: '파손 교환',
+    href: '/damaged-exchange',
+    icon: PackageX,
   },
   {
     label: 'SKU 세트 매핑',
