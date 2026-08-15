@@ -509,6 +509,47 @@ export function OrderDetailPage() {
             <span>최종 결제 금액</span>
             <span>{netPaidAmount.toLocaleString()}{data.currency ? ` ${data.currency}` : ''}</span>
           </div>
+          {/* SPEC-ORDER-021 extension: 비용 합계(total_cost) groups the three
+              cost sub-items below it -- 원가/배송비/한국물류 are rendered one
+              level quieter (text-muted-foreground/70) and indented (pl-3) to
+              read as visually subordinate to this row, reusing the
+              codebase's existing opacity-modifier convention (see
+              VendorFileUploadTab.tsx) rather than inventing new CSS. */}
+          <div className="flex justify-between text-muted-foreground">
+            <span>비용 합계</span>
+            <span>
+              {data.total_cost !== null
+                ? `${Number(data.total_cost).toLocaleString()} USD`
+                : '—'}
+            </span>
+          </div>
+          <div className="flex justify-between text-muted-foreground/70 text-xs pl-3">
+            <span>원가 (확정 단가 합계)</span>
+            <span>
+              {data.confirmed_cost !== null
+                ? `${Number(data.confirmed_cost).toLocaleString()} USD`
+                : '—'}
+            </span>
+          </div>
+          {/* SPEC-ORDER-021 REQ-COST-016: shipping cost breakdown, same
+              "{value} USD" / "—" fallback convention as margin_amount. */}
+          <div className="flex justify-between text-muted-foreground/70 text-xs pl-3">
+            <span>배송비</span>
+            <span>
+              {data.shipping_cost !== null
+                ? `${Number(data.shipping_cost).toLocaleString()} USD`
+                : '—'}
+            </span>
+          </div>
+          {/* SPEC-ORDER-021 extension: label renamed 한국창고비 -> 한국물류. */}
+          <div className="flex justify-between text-muted-foreground/70 text-xs pl-3">
+            <span>한국물류</span>
+            <span>
+              {data.korea_warehouse_cost !== null
+                ? `${Number(data.korea_warehouse_cost).toLocaleString()} USD`
+                : '—'}
+            </span>
+          </div>
           <div className="flex justify-between text-muted-foreground">
             <span>마진</span>
             <span>

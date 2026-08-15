@@ -195,6 +195,17 @@ export interface OrderDetail {
   has_refund: boolean
   margin_amount: string | null
   margin_rate: string | null
+  // SPEC-ORDER-021 REQ-COST-017: cost breakdown backing the margin fields
+  // above — shipping cost (weight-based) and Korea-warehouse handling fee,
+  // both USD, same null gate as margin_amount/margin_rate.
+  shipping_cost: string | null
+  korea_warehouse_cost: string | null
+  // SPEC-ORDER-021 extension: confirmed purchase cost (confirmed_cost_usd)
+  // and total_cost (confirmed_cost + shipping_cost + korea_warehouse_cost,
+  // summed server-side from unrounded values — do not re-derive this by
+  // summing the three fields above on the frontend). Same null gate.
+  confirmed_cost: string | null
+  total_cost: string | null
   customer: OrderCustomerDetail | null
   shipping_address: ShippingAddress | null
   line_items: LineItemDetail[]

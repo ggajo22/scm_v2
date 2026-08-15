@@ -165,21 +165,27 @@ def test_margin_uses_exchange_rate_for_usd_conversion(
 ) -> None:
     """REQ-010, REQ-012: confirmed_cost_krw를 USD로 환산 후 마진 계산.
 
+    SPEC-ORDER-021: margin now also subtracts shipping_cost_usd (grams
+    unset → 0 in this fixture) and korea_warehouse_usd.
+
     total_price = 100.00 USD, rate = 1300.00 KRW/USD
-    confirmed_cost_krw = 50000.00 * 2 = 100000.00 (item B는 null 제외)
+    confirmed_cost_krw = 50000.00 * 2 = 100000.00 (item B는 null 제외, 하지만
+      quantity=1은 total_book_count에는 포함됨)
     confirmed_cost_usd = 100000.00 / 1300.00 = 76.923076...
-    margin_amount = 100.00 - 76.923076... = 23.076923... → 23.08 USD (ROUND_HALF_UP)
-    margin_rate = (23.076923... / 100.00) * 100 = 23.076... → 23.08%
+    total_book_count = 2 + 1 = 3 → korea_warehouse_krw = 1250 + 500×2 = 2250
+    korea_warehouse_usd = 2250 / 1300 = 1.730769...
+    margin_amount = 100.00 - 76.923076... - 0 - 1.730769... = 21.346153... → 21.35 USD
+    margin_rate = (21.346153... / 100.00) * 100 = 21.346... → 21.35%
     """
     url = ORDER_DETAIL_URL.format(pk=order_with_confirmed_items_usd.pk)
     res = auth_client.get(url)
     assert res.status_code == 200
     margin = res.data.get("margin_amount")
     assert margin is not None
-    assert Decimal(str(margin)) == Decimal("23.08")
+    assert Decimal(str(margin)) == Decimal("21.35")
     rate = res.data.get("margin_rate")
     assert rate is not None
-    assert Decimal(str(rate)) == Decimal("23.08")
+    assert Decimal(str(rate)) == Decimal("21.35")
 
 
 @pytest.mark.django_db
@@ -191,6 +197,9 @@ def test_margin_fallback_to_prior_date_rate(
 ) -> None:
     """REQ-003, REQ-012: 주문일 이전 가장 최근 환율 폴백 적용.
 
+    SPEC-ORDER-021: margin now also subtracts shipping_cost_usd (grams
+    unset → 0 in this fixture) and korea_warehouse_usd.
+
     order date = 2026-01-12
     available rates: 2026-01-10 (1280.00), 2026-01-15 (1300.00)
     fallback → 2026-01-10 (1280.00) 적용
@@ -198,18 +207,20 @@ def test_margin_fallback_to_prior_date_rate(
     total_price = 50.00 USD
     confirmed_cost_krw = 30000.00 KRW
     confirmed_cost_usd = 30000.00 / 1280.00 = 23.4375
-    margin_amount = 50.00 - 23.4375 = 26.5625 → 26.56 USD (ROUND_HALF_UP)
-    margin_rate = (26.5625 / 50.00) * 100 = 53.125 → 53.13%
+    total_book_count = 1 → korea_warehouse_krw = 1250 + 500×0 = 1250
+    korea_warehouse_usd = 1250 / 1280 = 0.9765625
+    margin_amount = 50.00 - 23.4375 - 0 - 0.9765625 = 25.5859375 → 25.59 USD (ROUND_HALF_UP)
+    margin_rate = (25.5859375 / 50.00) * 100 = 51.171875 → 51.17%
     """
     url = ORDER_DETAIL_URL.format(pk=order_dated_2026_01_12.pk)
     res = auth_client.get(url)
     assert res.status_code == 200
     margin = res.data.get("margin_amount")
     assert margin is not None
-    assert Decimal(str(margin)) == Decimal("26.56")
+    assert Decimal(str(margin)) == Decimal("25.59")
     rate = res.data.get("margin_rate")
     assert rate is not None
-    assert Decimal(str(rate)) == Decimal("53.13")
+    assert Decimal(str(rate)) == Decimal("51.17")
 
 
 @pytest.mark.django_db
