@@ -523,6 +523,25 @@ export function OrderDetailPage() {
               {data.margin_rate !== null ? `${data.margin_rate}%` : '—'}
             </span>
           </div>
+          {/* SPEC-ORDER-021 REQ-COST-016: shipping/Korea-warehouse cost
+              breakdown, same "{value} USD" / "—" fallback convention as
+              margin_amount above. */}
+          <div className="flex justify-between text-muted-foreground">
+            <span>배송비</span>
+            <span>
+              {data.shipping_cost !== null
+                ? `${Number(data.shipping_cost).toLocaleString()} USD`
+                : '—'}
+            </span>
+          </div>
+          <div className="flex justify-between text-muted-foreground">
+            <span>한국창고비</span>
+            <span>
+              {data.korea_warehouse_cost !== null
+                ? `${Number(data.korea_warehouse_cost).toLocaleString()} USD`
+                : '—'}
+            </span>
+          </div>
         </div>
       </section>
 

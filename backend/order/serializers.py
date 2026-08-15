@@ -4,6 +4,17 @@ from rest_framework import serializers
 
 from .models import Customer, ExchangeRate, LineItem, LineItemNote, Order, Refund, ShippingAddress, ShippingLine
 
+# @MX:NOTE: [AUTO] SPEC-ORDER-021 REQ-COST-001: shipping/Korea-warehouse fee
+# constants, used by OrderDetailSerializer._compute_cost_breakdown() below.
+# Collocated with the serializer rather than a shared constants.py — this
+# app has no such module today and these three values change rarely (design
+# decision A). Changing any of these values also changes the fixed-value
+# assertions in backend/order/tests/test_spec_021.py (AC-COST-001, 002, 003,
+# 005, 008, 012, 013).
+SHIPPING_COST_USD_PER_KG = Decimal("5.45")
+KOREA_WAREHOUSE_BASE_KRW = Decimal("1250")
+KOREA_WAREHOUSE_PER_BOOK_KRW = Decimal("500")
+
 
 class CustomerSummarySerializer(serializers.ModelSerializer):
     class Meta:
@@ -149,6 +160,12 @@ class OrderDetailSerializer(serializers.ModelSerializer):
     has_refund = serializers.SerializerMethodField()
     margin_amount = serializers.SerializerMethodField()
     margin_rate = serializers.SerializerMethodField()
+    # SPEC-ORDER-021 REQ-COST-011/012/013: cost breakdown backing the margin
+    # fields above. Same null gate as margin_amount/margin_rate (design
+    # decision D) and same underlying memoized helper (design decision C/E).
+    shipping_cost = serializers.SerializerMethodField()
+    korea_warehouse_cost = serializers.SerializerMethodField()
+    total_weight_grams = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
@@ -162,6 +179,9 @@ class OrderDetailSerializer(serializers.ModelSerializer):
             "has_refund", "customer", "shipping_address",
             "line_items", "shipping_lines", "refunds",
             "margin_amount", "margin_rate",
+            # SPEC-ORDER-021 REQ-COST-011/012/013: shipping/Korea-warehouse
+            # cost breakdown backing the margin fields.
+            "shipping_cost", "korea_warehouse_cost", "total_weight_grams",
             # SPEC-ORDER-011 T11: expose the logistics_status aggregate so the
             # frontend has a data source for the Order-level aggregate badge.
             "status",
@@ -186,43 +206,143 @@ class OrderDetailSerializer(serializers.ModelSerializer):
             effective_date__lte=order_date
         ).order_by("-effective_date").first()
 
-    def _compute_margin_usd(self, obj: Order):
-        """Returns (margin_usd, total_price_usd) as exact Decimals, or None when unavailable."""
+    # @MX:NOTE: [AUTO] SPEC-ORDER-021 REQ-COST-002~008/019: single helper
+    # backing all 5 cost-related SerializerMethodFields (margin_amount,
+    # margin_rate, shipping_cost, korea_warehouse_cost, total_weight_grams).
+    # Weight/book-count aggregation runs unconditionally over every line item
+    # in the SAME loop as the confirmed-cost aggregation (REQ-COST-002/004 —
+    # deliberately outside the `confirmed_price is not None` gate, so
+    # unconfirmed line items still count toward shipping/Korea-warehouse
+    # fees). The zero-book-count branch (REQ-COST-006) is checked before the
+    # general formula so a 0-book order is never charged the base fee.
+    # Extending with a 4th cost term (e.g. US-warehouse fee) later only
+    # requires adding a key to the returned dict and a term to margin_usd —
+    # no getter's control flow needs to change (design decision E).
+    def _compute_cost_breakdown(self, obj: Order):
+        """Returns a dict of unquantized Decimal/int cost components, or None
+        when margin cannot be computed (no exchange rate, or no line item has
+        a non-null confirmed_price).
+
+        Memoized per `obj` for the lifetime of this serializer instance
+        (REQ-COST-015, design decisions C/F): each of the 5
+        SerializerMethodFields above is evaluated independently by DRF, so
+        without this cache the line-item loop and the ExchangeRate lookup
+        would each run up to 5x per request against a remote RDS instance.
+        """
+        # @MX:NOTE: [AUTO] SPEC-ORDER-021 REQ-COST-015: all 5 cost getters
+        # (get_margin_amount, get_margin_rate, get_shipping_cost,
+        # get_korea_warehouse_cost, get_total_weight_grams) MUST go through
+        # this cache. Bypassing it (calling _compute_cost_breakdown_uncached
+        # directly, or adding a 6th getter that skips this method) reopens
+        # the up-to-5x ExchangeRate query multiplication AC-COST-009 (c)
+        # guards against.
+        cache = getattr(self, "_cost_breakdown_cache", None)
+        if cache is None:
+            cache = {}
+            self._cost_breakdown_cache = cache
+        if obj.pk in cache:
+            return cache[obj.pk]
+
+        result = self._compute_cost_breakdown_uncached(obj)
+        cache[obj.pk] = result
+        return result
+
+    def _compute_cost_breakdown_uncached(self, obj: Order):
         er = self._get_exchange_rate(obj)
         if er is None:
             return None
+
         confirmed_cost_krw = Decimal("0")
         has_any_confirmed = False
+        total_weight_grams = 0
+        total_book_count = 0
         for item in obj.line_items.all():
+            quantity = item.quantity or 0
+            grams = item.grams or 0
+            # REQ-COST-002/004: weight/book-count aggregation is unconditional —
+            # it must NOT be nested inside the `confirmed_price is not None`
+            # branch below (AC-COST-005 is the discriminating test).
+            total_weight_grams += grams * quantity
+            total_book_count += quantity
             if item.confirmed_price is not None:
                 has_any_confirmed = True
-                confirmed_cost_krw += item.confirmed_price * (item.quantity or 0)
+                confirmed_cost_krw += item.confirmed_price * quantity
+
         if not has_any_confirmed:
             return None
+
         total_price_usd = Decimal(str(obj.total_price or "0"))
         confirmed_cost_usd = confirmed_cost_krw / er.rate
-        return total_price_usd - confirmed_cost_usd, total_price_usd
+        shipping_cost_usd = (
+            SHIPPING_COST_USD_PER_KG * Decimal(total_weight_grams) / Decimal("1000")
+        )
+
+        # REQ-COST-006: the zero-branch must be checked FIRST — folding it
+        # into `max(total_book_count - 1, 0)` alone would still charge the
+        # base fee for a 0-book order (AC-COST-008 catches this).
+        if total_book_count == 0:
+            korea_warehouse_krw = Decimal("0")
+        else:
+            korea_warehouse_krw = KOREA_WAREHOUSE_BASE_KRW + KOREA_WAREHOUSE_PER_BOOK_KRW * max(
+                total_book_count - 1, 0
+            )
+        # REQ-COST-007: reuses the SAME order-date exchange rate as
+        # confirmed_cost_usd above — never hardcode a divisor here
+        # (AC-COST-012 catches that mutation).
+        korea_warehouse_usd = korea_warehouse_krw / er.rate
+
+        margin_usd = total_price_usd - confirmed_cost_usd - shipping_cost_usd - korea_warehouse_usd
+
+        return {
+            "margin_usd": margin_usd,
+            "total_price_usd": total_price_usd,
+            "shipping_cost_usd": shipping_cost_usd,
+            "korea_warehouse_usd": korea_warehouse_usd,
+            "total_weight_grams": total_weight_grams,
+        }
 
     def get_margin_amount(self, obj: Order):
-        """USD 단위 마진: total_price_usd - (confirmed_cost_krw / rate). 환율 없으면 None."""
-        result = self._compute_margin_usd(obj)
+        """USD 단위 마진: total_price_usd - confirmed_cost_usd - shipping_cost_usd
+        - korea_warehouse_usd. 환율/확정매입가 없으면 None."""
+        result = self._compute_cost_breakdown(obj)
         if result is None:
             return None
-        margin_usd, _ = result
-        return str(margin_usd.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+        return str(result["margin_usd"].quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
     def get_margin_rate(self, obj: Order):
         """마진율: (margin_usd / total_price_usd) × 100, 소수점 2자리 ROUND_HALF_UP."""
-        result = self._compute_margin_usd(obj)
+        result = self._compute_cost_breakdown(obj)
         if result is None:
             return None
-        margin_usd, total_price_usd = result
+        margin_usd = result["margin_usd"]
+        total_price_usd = result["total_price_usd"]
         if total_price_usd == Decimal("0"):
             return None
         rate = (margin_usd / total_price_usd * Decimal("100")).quantize(
             Decimal("0.01"), rounding=ROUND_HALF_UP
         )
         return str(rate)
+
+    def get_shipping_cost(self, obj: Order):
+        """REQ-COST-011: shipping_cost_usd, 소수점 2자리 ROUND_HALF_UP, 문자열."""
+        result = self._compute_cost_breakdown(obj)
+        if result is None:
+            return None
+        return str(result["shipping_cost_usd"].quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+    def get_korea_warehouse_cost(self, obj: Order):
+        """REQ-COST-012: korea_warehouse_usd, 소수점 2자리 ROUND_HALF_UP, 문자열."""
+        result = self._compute_cost_breakdown(obj)
+        if result is None:
+            return None
+        return str(result["korea_warehouse_usd"].quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+    def get_total_weight_grams(self, obj: Order):
+        """REQ-COST-013: 원시 그램 정수, 양자화하지 않음."""
+        result = self._compute_cost_breakdown(obj)
+        if result is None:
+            return None
+        return result["total_weight_grams"]
 
 
 class ExchangeRateSerializer(serializers.ModelSerializer):

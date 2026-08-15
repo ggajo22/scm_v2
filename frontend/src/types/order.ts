@@ -195,6 +195,11 @@ export interface OrderDetail {
   has_refund: boolean
   margin_amount: string | null
   margin_rate: string | null
+  // SPEC-ORDER-021 REQ-COST-017: cost breakdown backing the margin fields
+  // above — shipping cost (weight-based) and Korea-warehouse handling fee,
+  // both USD, same null gate as margin_amount/margin_rate.
+  shipping_cost: string | null
+  korea_warehouse_cost: string | null
   customer: OrderCustomerDetail | null
   shipping_address: ShippingAddress | null
   line_items: LineItemDetail[]

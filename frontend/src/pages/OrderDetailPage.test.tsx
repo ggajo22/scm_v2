@@ -62,6 +62,8 @@ function buildOrderDetail(overrides: Partial<OrderDetail> = {}): OrderDetail {
     has_refund: false,
     margin_amount: null,
     margin_rate: null,
+    shipping_cost: null,
+    korea_warehouse_cost: null,
     customer: null,
     shipping_address: null,
     line_items: [
@@ -386,5 +388,63 @@ describe('OrderDetailPage — SPEC-ORDER-013 rack_number exclusion (REQ-RACK-012
     expect(screen.queryByText('RACK-Z9')).not.toBeInTheDocument()
     expect(screen.queryByText(/렉번호/)).not.toBeInTheDocument()
     expect(screen.queryByDisplayValue('RACK-Z9')).not.toBeInTheDocument()
+  })
+})
+
+describe('OrderDetailPage — SPEC-ORDER-021 shipping/Korea-warehouse cost display (AC-COST-011)', () => {
+  beforeEach(() => {
+    vi.mocked(useCreateLineItemNote).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+    } as unknown as ReturnType<typeof useCreateLineItemNote>)
+    vi.mocked(useResolveLineItemNote).mockReturnValue({
+      mutate: vi.fn(),
+    } as unknown as ReturnType<typeof useResolveLineItemNote>)
+  })
+
+  it('displays shipping_cost and korea_warehouse_cost next to margin_amount/margin_rate', () => {
+    // Values match AC-COST-003's fixture shape. shipping_cost intentionally
+    // uses "8.18" (not "0.00") — Number("0.00").toLocaleString() === "0",
+    // which would render "0 USD" and make this assertion fail even against a
+    // correct implementation (audit D3).
+    vi.mocked(useOrderDetail).mockReturnValue({
+      data: buildOrderDetail({
+        margin_amount: '159.58',
+        margin_rate: '79.79',
+        shipping_cost: '8.18',
+        korea_warehouse_cost: '2.25',
+      }),
+      isPending: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useOrderDetail>)
+
+    renderPage()
+
+    expect(screen.getByText(/8\.18 USD/)).toBeInTheDocument()
+    expect(screen.getByText(/2\.25 USD/)).toBeInTheDocument()
+  })
+
+  it('falls back to "—" when shipping_cost and korea_warehouse_cost are null', () => {
+    vi.mocked(useOrderDetail).mockReturnValue({
+      data: buildOrderDetail({
+        shipping_cost: null,
+        korea_warehouse_cost: null,
+      }),
+      isPending: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useOrderDetail>)
+
+    renderPage()
+
+    // Scope to each label's own row so this does not coincidentally pass
+    // against pre-existing unrelated "—" fallbacks (e.g. confirmed_price).
+    const shippingRow = screen.getByText('배송비').closest('div')
+    const warehouseRow = screen.getByText('한국창고비').closest('div')
+    expect(shippingRow?.textContent).toContain('—')
+    expect(warehouseRow?.textContent).toContain('—')
   })
 })
