@@ -575,6 +575,16 @@ class StoreSyncWatermark(models.Model):
         unique=True,
     )
     last_synced_updated_at = models.DateTimeField(null=True, blank=True)
+    # SPEC: staleness-detection cursor, distinct from last_synced_updated_at.
+    # Written on every successful sync_store() invocation for this store —
+    # including a quiet run that fetches zero orders, and a run whose batch
+    # max does not advance the fetch watermark above — because detecting a
+    # silently-stopped scheduled sync is the entire point of this field.
+    # NULL means "has not run since this deployed", not "never checked".
+    # Never set on a run that raises (the caller wraps sync_store() in
+    # transaction.atomic(), so a failed run rolls back and correctly stays
+    # unset/stale).
+    last_run_at = models.DateTimeField(null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:

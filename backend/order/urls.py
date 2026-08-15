@@ -43,6 +43,7 @@ from .views import (
     OrderNoteListView,
     OrderNoteResolveView,
     OrderResyncView,
+    OrderSyncStatusView,
     OrderSyncView,
 )
 from .warehouse_views import (
@@ -58,6 +59,10 @@ urlpatterns = [
     path("shopify-sku-sets/<str:bundle_sku>/", ShopifySkuSetDetailView.as_view(), name="shopify-sku-set-detail"),
     # Shopify order sync and list
     path("orders/sync/", OrderSyncView.as_view(), name="order-sync"),
+    # SPEC-PURCHASE-ORDER-011: super_admin-only read of last scheduled-sync
+    # run time per store. Static literal segment ("sync-status" is not an
+    # int), so no conflict with orders/<int:pk>/ below.
+    path("orders/sync-status/", OrderSyncStatusView.as_view(), name="order-sync-status"),
     path("orders/notes/", OrderNoteListView.as_view(), name="order-note-list"),
     path("orders/", OrderListView.as_view(), name="order-list"),
     path("orders/<int:pk>/sync/", OrderResyncView.as_view(), name="order-resync"),

@@ -1,10 +1,82 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { RefreshCw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useOrders } from '@/features/order/hooks/useOrders'
 import { useOrderSync } from '@/features/order/hooks/useOrderSync'
+import { useOrderSyncStatus } from '@/features/order/hooks/useOrderSyncStatus'
+import { useAuthStore } from '@/store/authStore'
 import type { Order, OrderListParams } from '@/types/order'
+
+// SPEC-ORDER-SYNC-HEALTH: thresholds for the sync-health indicator below.
+// The point is not decoration — a stopped 5-minute scheduled sync has cost
+// 102 lost orders before, so a stale value must visually intrude while a
+// fresh one stays quiet.
+const SYNC_WARN_THRESHOLD_MIN = 15
+const SYNC_ALERT_THRESHOLD_MIN = 60
+
+type SyncLevel = 'fresh' | 'warn' | 'alert'
+
+function getSyncLevel(minutesAgo: number | null): SyncLevel {
+  if (minutesAgo === null || minutesAgo >= SYNC_ALERT_THRESHOLD_MIN) return 'alert'
+  if (minutesAgo >= SYNC_WARN_THRESHOLD_MIN) return 'warn'
+  return 'fresh'
+}
+
+const SYNC_LEVEL_STYLES: Record<SyncLevel, string> = {
+  fresh: 'text-xs text-muted-foreground',
+  warn: 'text-xs font-medium text-amber-700 bg-amber-100 px-2 py-1 rounded',
+  alert: 'text-xs font-bold text-red-700 bg-red-100 px-2 py-1 rounded animate-pulse',
+}
+
+function formatMinutesAgo(minutes: number): string {
+  if (minutes < 1) return '방금 전'
+  if (minutes < 60) return `${minutes}분 전`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}시간 전`
+  return `${Math.floor(hours / 24)}일 전`
+}
+
+// react-hooks/purity: Date.now() is impure and must not be called directly
+// in a render body — track it as state, ticked on an interval, so the
+// "n분 전" label also keeps advancing while the page sits open between the
+// hook's own 60s refetches.
+function useNow(intervalMs: number): number {
+  const [now, setNow] = useState<number>(() => Date.now())
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), intervalMs)
+    return () => clearInterval(id)
+  }, [intervalMs])
+  return now
+}
+
+// REQ-SYNC-HEALTH: only ever mounted for super_admin (see role gate in
+// OrdersPage below) — mounting is what keeps useOrderSyncStatus from firing
+// a request at all for admin, not a client-side no-render check.
+function SyncStatusIndicator() {
+  const { data } = useOrderSyncStatus()
+  const now = useNow(30_000)
+  if (!data) return null
+
+  const lastRunAt = data.last_run_at
+  const minutesAgo = lastRunAt ? Math.floor((now - new Date(lastRunAt).getTime()) / 60000) : null
+  const level = getSyncLevel(minutesAgo)
+
+  const title = lastRunAt ? new Date(lastRunAt).toLocaleString('ko-KR') : '동기화 기록 없음'
+
+  const text =
+    level === 'alert'
+      ? minutesAgo === null
+        ? '동기화 기록 없음 — 자동 동기화가 중단되었을 수 있습니다'
+        : `마지막 동기화 ${formatMinutesAgo(minutesAgo)} — 자동 동기화가 중단되었을 수 있습니다`
+      : `마지막 동기화 ${formatMinutesAgo(minutesAgo ?? 0)}`
+
+  return (
+    <span className={SYNC_LEVEL_STYLES[level]} title={title} data-testid="sync-status-indicator">
+      {text}
+    </span>
+  )
+}
 
 function getDisplayStatus(order: Order): string {
   if (order.financial_status === 'refunded') return '취소'
@@ -51,6 +123,7 @@ export function OrdersPage() {
   const navigate = useNavigate()
   const { data, isPending, isError } = useOrders(params)
   const syncMutation = useOrderSync()
+  const role = useAuthStore((state) => state.user?.role)
 
   const handleSync = () => {
     syncMutation.mutate()
@@ -74,7 +147,10 @@ export function OrdersPage() {
   return (
     <div className="p-6 space-y-4">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">주문관리</h1>
+        <div className="flex items-center gap-3">
+          <h1 className="text-2xl font-bold">주문관리</h1>
+          {role === 'super_admin' && <SyncStatusIndicator />}
+        </div>
         <Button
           onClick={handleSync}
           disabled={syncMutation.isPending}

@@ -182,6 +182,87 @@ def test_single_order_resync_does_not_create_watermark_row():
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# 6. last_run_at (SPEC-PURCHASE-ORDER-011): staleness-detection cursor,
+#    deliberately distinct from last_synced_updated_at / updated_at. Must
+#    advance on EVERY successful sync_store() run, including a quiet run
+#    (zero orders fetched) and a run whose watermark does not advance.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_quiet_run_with_zero_orders_still_updates_last_run_at():
+    """Regression guard for the updated_at trap: a quiet cycle (no new
+    Shopify activity) must still record that the sync actually ran, or the
+    staleness indicator this field exists for becomes useless."""
+    watermark = StoreSyncWatermark.objects.create(
+        store_type="gimssine",
+        last_synced_updated_at=datetime(2026, 8, 13, 22, 11, 30, tzinfo=dt_timezone.utc),
+    )
+    assert watermark.last_run_at is None
+
+    before = timezone.now()
+    with patch("order.shopify_orders.fetch_all_open_orders", return_value=[]):
+        sync_store("gimssine")
+    after = timezone.now()
+
+    watermark.refresh_from_db()
+    assert watermark.last_run_at is not None
+    assert before <= watermark.last_run_at <= after
+    # The fetch cursor itself must remain untouched on a quiet run.
+    assert watermark.last_synced_updated_at == datetime(2026, 8, 13, 22, 11, 30, tzinfo=dt_timezone.utc)
+
+
+@pytest.mark.django_db
+def test_non_advancing_watermark_run_still_updates_last_run_at():
+    """batch_max equal to the stored watermark (no advance) must still
+    update last_run_at — the update_fields list on that save path must not
+    silently omit it."""
+    watermark = StoreSyncWatermark.objects.create(
+        store_type="gimssine",
+        last_synced_updated_at=datetime(2026, 8, 14, 10, 0, 0, tzinfo=dt_timezone.utc),
+    )
+    orders = [_make_shopify_order_payload(500004, "2026-08-14T10:00:00Z")]
+
+    before = timezone.now()
+    with (
+        patch("order.shopify_orders.fetch_all_open_orders", return_value=orders),
+        patch("order.shopify_orders._build_fulfillment_location_data", return_value=("", {})),
+    ):
+        sync_store("gimssine")
+    after = timezone.now()
+
+    watermark.refresh_from_db()
+    assert watermark.last_run_at is not None
+    assert before <= watermark.last_run_at <= after
+    # Watermark itself must not have moved (batch_max == last_updated).
+    assert watermark.last_synced_updated_at == datetime(2026, 8, 14, 10, 0, 0, tzinfo=dt_timezone.utc)
+
+
+@pytest.mark.django_db
+def test_raising_run_leaves_last_run_at_unchanged():
+    """A run that raises must not appear fresh. sync_store() itself does not
+    catch exceptions, but the real caller (OrderSyncView) wraps the call in
+    transaction.atomic() so any partial writes roll back; this test exercises
+    that same contract directly."""
+    from django.db import transaction
+
+    watermark = StoreSyncWatermark.objects.create(
+        store_type="gimssine",
+        last_synced_updated_at=datetime(2026, 8, 13, 22, 11, 30, tzinfo=dt_timezone.utc),
+    )
+    assert watermark.last_run_at is None
+
+    with patch("order.shopify_orders.fetch_all_open_orders", side_effect=RuntimeError("boom")):
+        with pytest.raises(RuntimeError):
+            with transaction.atomic():
+                sync_store("gimssine")
+
+    watermark.refresh_from_db()
+    assert watermark.last_run_at is None
+    assert watermark.last_synced_updated_at == datetime(2026, 8, 13, 22, 11, 30, tzinfo=dt_timezone.utc)
+
+
 @pytest.mark.django_db
 def test_sync_store_seeds_null_watermark_from_order_max():
     Order.objects.create(

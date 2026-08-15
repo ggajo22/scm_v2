@@ -4,6 +4,7 @@ import urllib.error
 import urllib.request
 
 from django.conf import settings
+from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
 from book.models import Inven
@@ -352,7 +353,12 @@ def sync_store(store_type):
 
     orders = fetch_all_open_orders(domain, token, updated_at_min=updated_at_min)
     if not orders:
-        # Zero orders fetched: leave the watermark untouched.
+        # Zero orders fetched: leave last_synced_updated_at (the fetch cursor)
+        # untouched, but last_run_at MUST still advance — a quiet cycle with
+        # no new Shopify activity is a healthy run, not a stopped one, and
+        # this is the field the staleness indicator reads.
+        watermark.last_run_at = timezone.now()
+        watermark.save(update_fields=["last_run_at"])
         return {"synced_count": 0, "updated_count": 0, "error": None, "updated_at_min": updated_at_min}
 
     shopify_ids = [o["id"] for o in orders]
@@ -402,9 +408,16 @@ def sync_store(store_type):
         parsed = parse_datetime(order_data["updated_at"]) if order_data.get("updated_at") else None
         if parsed is not None and (batch_max is None or parsed > batch_max):
             batch_max = parsed
+
+    # last_run_at MUST advance here too even when the watermark itself does
+    # not (batch_max <= last_updated) — a single save covers both fields so
+    # neither update_fields list can silently drop the other.
+    watermark.last_run_at = timezone.now()
+    update_fields = ["last_run_at"]
     if batch_max is not None and (last_updated is None or batch_max > last_updated):
         watermark.last_synced_updated_at = batch_max
-        watermark.save(update_fields=["last_synced_updated_at"])
+        update_fields.append("last_synced_updated_at")
+    watermark.save(update_fields=update_fields)
 
     return {
         "synced_count": synced_count,
