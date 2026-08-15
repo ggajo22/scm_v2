@@ -83,7 +83,7 @@ jobs:
           DJANGO_DEBUG: 'False'
           DJANGO_SECRET_KEY: test-secret-key-do-not-use-in-production
           DJANGO_ALLOWED_HOSTS: 'localhost,127.0.0.1'
-        run: poetry run pytest --no-cov-fail-under
+        run: poetry run pytest
 
   frontend:
     runs-on: ubuntu-latest
