@@ -64,6 +64,20 @@
 | `scripts\sync_orders.bat` | `logs\sync_orders.log` |
 | `scripts\sync_exchange_rates.bat` | `logs\sync_exchange_rates.log` |
 
+### 창 숨김
+
+작업 스케줄러는 `.bat`을 직접 실행하지 않고 `scripts\run_hidden.vbs`를 거친다.
+그렇지 않으면 실행할 때마다 cmd 창이 화면에 뜬다 — `sync_orders`는 5분마다다.
+
+```
+wscript.exe "C:\app\scm_v2\scripts\run_hidden.vbs" "C:\app\scm_v2\scripts\sync_orders.bat"
+```
+
+`wscript.exe`는 창 없는 스크립트 호스트이고, VBS의 `Run(..., 0, True)`가 자식
+프로세스를 숨긴 채 실행한 뒤 **종료 코드를 그대로 전달한다**. 종료 코드를
+삼키면 "마지막 실행 결과"가 항상 0이 되어 실패를 놓치므로, 이 전달은 필수다.
+(검증: 종료 코드 3을 반환하는 배치를 태우면 3이 그대로 나온다.)
+
 `logs\` 는 `.gitignore` 대상이며 스크립트가 없으면 자동 생성한다.
 
 `DJANGO_SETTINGS_MODULE` 은 `manage.py`가 `config.settings.local` 로 기본값을
@@ -76,13 +90,18 @@
 ### PowerShell (관리자 권한)
 
 ```powershell
-$action  = New-ScheduledTaskAction -Execute "C:\app\scm_v2\scripts\sync_orders.bat"
+$vbs     = "C:\app\scm_v2\scripts\run_hidden.vbs"
+$action  = New-ScheduledTaskAction -Execute "wscript.exe" `
+           -Argument ('"{0}" "C:\app\scm_v2\scripts\sync_orders.bat"' -f $vbs)
 $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) `
-           -RepetitionInterval (New-TimeSpan -Minutes 5)
+           -RepetitionInterval (New-TimeSpan -Minutes 5) `
+           -RepetitionDuration (New-TimeSpan -Days 3650)
 $set     = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew `
            -ExecutionTimeLimit (New-TimeSpan -Minutes 10) -StartWhenAvailable
+$prin    = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" `
+           -LogonType Interactive -RunLevel Limited
 Register-ScheduledTask -TaskName "scm_v2 sync_orders" `
-    -Action $action -Trigger $trigger -Settings $set `
+    -Action $action -Trigger $trigger -Settings $set -Principal $prin `
     -Description "Shopify 주문 증분 동기화 (5분 주기)"
 ```
 
@@ -98,10 +117,10 @@ Register-ScheduledTask -TaskName "scm_v2 sync_exchange_rates" `
 
 환율은 KST 10:00에 돌린다. UTC 기준 01:00이라 전일 환율이 확정된 뒤다.
 
-> ⚠️ `-Once` + `-RepetitionInterval` 조합은 PowerShell 버전에 따라
-> `-RepetitionDuration` 을 함께 주지 않으면 반복이 1회로 끝나는 사례가 있다.
-> 등록 후 반드시 아래 4절의 확인 절차를 거칠 것. 문제가 있으면 GUI로 등록하는
-> 편이 확실하다.
+> ⚠️ `-RepetitionDuration` 에 `[TimeSpan]::MaxValue` 를 주면 안 된다.
+> `P99999999DT23H59M59S` 로 변환되어 작업 스케줄러가 XML을 거부한다
+> (PowerShell 5.1에서 실제로 실패 확인). 위처럼 유한한 값(3650일)을 쓸 것.
+> 등록 후에는 반드시 4절의 확인 절차로 반복 간격이 저장됐는지 볼 것.
 
 ### GUI 대안
 
@@ -161,6 +180,12 @@ Get-Content C:\app\scm_v2\logs\sync_orders.log -Tail 20
 - **PC가 꺼져 있거나 절전 상태면 동기화가 멈춘다.** 이번 #38163~#38266 누락
   사고처럼, 멈춘 사실을 아무도 모르는 상태가 길어질 수 있다. 로그의 마지막
   기록 시각을 가끔 확인할 것.
+- **로그오프 상태에서도 실행되지 않는다.** 현재 등록은 `LogonType Interactive`
+  이며, 계정 비밀번호를 저장하지 않기 위한 선택이다. 로그오프 중에도 돌리려면
+  `LogonType S4U` 로 바꾸면 되는데(이 역시 비밀번호 불필요), **관리자 권한
+  PowerShell이 필요하다.** 비승격 상태에서 `Set-ScheduledTask` 는
+  액세스 거부(0x80070005)로 실패한다. S4U로 바꾸면 비대화형 세션에서 돌기
+  때문에 `run_hidden.vbs` 없이도 창이 뜨지 않는다.
 - **체크아웃된 브랜치의 코드가 실행된다.** 작업 스케줄러는 작업 트리를 그대로
   쓰므로, 브랜치를 바꾸면 동기화 동작도 바뀐다. 워터마크 수정은
   `feat/spec-purchase-order-011-damaged-exchange` 브랜치에 있으므로, master를
