@@ -3,7 +3,7 @@ name = "scm-v2-backend"
 version = "0.1.0"
 description = "SCM v2 Backend - Shopify Book Inventory Management"
 authors = ["ggajo <ggajo22@naver.com>"]
-readme = "README.md"
+package-mode = false
 
 [tool.poetry.dependencies]
 python = "^3.11"

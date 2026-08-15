@@ -22,6 +22,26 @@ from book.services import (
 # Fixtures
 # ---------------------------------------------------------------------------
 
+@pytest.fixture(autouse=True)
+def shopify_settings(settings):
+    """Give every test in this module known Shopify credentials.
+
+    book/services.py reads django settings (SHOPIFY_BOOXEN_* for the inven
+    functions, SHOPIFY_ETOILE_* for the etoile/tags ones), NOT os.environ.
+    These tests previously monkeypatched SHOPIFY_STORE_URL and
+    SHOPIFY_ACCESS_TOKEN — env vars nothing in the codebase reads — which had
+    two consequences: the "configured" tests silently depended on whatever
+    real credentials sat in the developer's .env (so they failed anywhere
+    else, including CI), and the "no config" tests never actually removed the
+    config, letting an unmocked request reach the real Shopify store on every
+    local run. Setting the values the code truly consults fixes both.
+    """
+    settings.SHOPIFY_BOOXEN_DOMAIN = "booxen-test.myshopify.com"
+    settings.SHOPIFY_BOOXEN_TOKEN = "booxen-test-token"
+    settings.SHOPIFY_ETOILE_DOMAIN = "etoile-test.myshopify.com"
+    settings.SHOPIFY_ETOILE_TOKEN = "etoile-test-token"
+
+
 @pytest.fixture
 def inven_with_shopify(db):
     """Create an Inven with an associated Shopify_product."""
@@ -116,29 +136,27 @@ def test_fetch_shopify_product_by_etoile_inven_id_not_found(db):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.django_db
-def test_set_shopify_status_for_inven_no_config_returns_false(inven_with_shopify, monkeypatch):
-    """Returns False when SHOPIFY_STORE_URL is not configured."""
-    monkeypatch.delenv("SHOPIFY_STORE_URL", raising=False)
-    monkeypatch.delenv("SHOPIFY_ACCESS_TOKEN", raising=False)
+def test_set_shopify_status_for_inven_no_config_returns_false(inven_with_shopify, settings):
+    """Returns False when the Shopify domain/token settings are blank."""
+    settings.SHOPIFY_BOOXEN_DOMAIN = ""
+    settings.SHOPIFY_BOOXEN_TOKEN = ""
+    settings.SHOPIFY_ETOILE_DOMAIN = ""
+    settings.SHOPIFY_ETOILE_TOKEN = ""
     inven, _ = inven_with_shopify
     result = set_shopify_product_status_for_inven(inven.id, "active")
     assert result is False
 
 
 @pytest.mark.django_db
-def test_set_shopify_status_for_inven_no_product_returns_false(db, monkeypatch):
+def test_set_shopify_status_for_inven_no_product_returns_false(db):
     """Returns False when no Shopify_product exists for the inven."""
-    monkeypatch.setenv("SHOPIFY_STORE_URL", "https://test.myshopify.com")
-    monkeypatch.setenv("SHOPIFY_ACCESS_TOKEN", "test-token")
     result = set_shopify_product_status_for_inven(99999, "active")
     assert result is False
 
 
 @pytest.mark.django_db
-def test_set_shopify_status_for_inven_api_success(inven_with_shopify, monkeypatch):
+def test_set_shopify_status_for_inven_api_success(inven_with_shopify):
     """Returns True when Shopify API returns 200."""
-    monkeypatch.setenv("SHOPIFY_STORE_URL", "https://test.myshopify.com")
-    monkeypatch.setenv("SHOPIFY_ACCESS_TOKEN", "test-token")
     inven, _ = inven_with_shopify
 
     mock_response = MagicMock()
@@ -152,11 +170,9 @@ def test_set_shopify_status_for_inven_api_success(inven_with_shopify, monkeypatc
 
 
 @pytest.mark.django_db
-def test_set_shopify_status_for_inven_api_error_returns_false(inven_with_shopify, monkeypatch):
+def test_set_shopify_status_for_inven_api_error_returns_false(inven_with_shopify):
     """Returns False when urllib raises URLError."""
     import urllib.error
-    monkeypatch.setenv("SHOPIFY_STORE_URL", "https://test.myshopify.com")
-    monkeypatch.setenv("SHOPIFY_ACCESS_TOKEN", "test-token")
     inven, _ = inven_with_shopify
 
     with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("connection failed")):
@@ -169,20 +185,20 @@ def test_set_shopify_status_for_inven_api_error_returns_false(inven_with_shopify
 # ---------------------------------------------------------------------------
 
 @pytest.mark.django_db
-def test_set_shopify_status_for_etoile_no_config_returns_false(etoile_with_shopify, monkeypatch):
-    """Returns False when SHOPIFY_STORE_URL is not configured."""
-    monkeypatch.delenv("SHOPIFY_STORE_URL", raising=False)
-    monkeypatch.delenv("SHOPIFY_ACCESS_TOKEN", raising=False)
+def test_set_shopify_status_for_etoile_no_config_returns_false(etoile_with_shopify, settings):
+    """Returns False when the Shopify domain/token settings are blank."""
+    settings.SHOPIFY_BOOXEN_DOMAIN = ""
+    settings.SHOPIFY_BOOXEN_TOKEN = ""
+    settings.SHOPIFY_ETOILE_DOMAIN = ""
+    settings.SHOPIFY_ETOILE_TOKEN = ""
     etoile_inven, _ = etoile_with_shopify
     result = set_shopify_product_status_for_etoile_inven(etoile_inven.id, "active")
     assert result is False
 
 
 @pytest.mark.django_db
-def test_set_shopify_status_for_etoile_api_success(etoile_with_shopify, monkeypatch):
+def test_set_shopify_status_for_etoile_api_success(etoile_with_shopify):
     """Returns True when Shopify API returns 200."""
-    monkeypatch.setenv("SHOPIFY_STORE_URL", "https://test.myshopify.com")
-    monkeypatch.setenv("SHOPIFY_ACCESS_TOKEN", "test-token")
     etoile_inven, _ = etoile_with_shopify
 
     mock_response = MagicMock()
@@ -196,20 +212,16 @@ def test_set_shopify_status_for_etoile_api_success(etoile_with_shopify, monkeypa
 
 
 @pytest.mark.django_db
-def test_set_shopify_status_for_etoile_no_product_returns_false(db, monkeypatch):
+def test_set_shopify_status_for_etoile_no_product_returns_false(db):
     """Returns False when no EtoileShopifyProduct exists."""
-    monkeypatch.setenv("SHOPIFY_STORE_URL", "https://test.myshopify.com")
-    monkeypatch.setenv("SHOPIFY_ACCESS_TOKEN", "test-token")
     result = set_shopify_product_status_for_etoile_inven(99999, "active")
     assert result is False
 
 
 @pytest.mark.django_db
-def test_set_shopify_status_for_etoile_api_error_returns_false(etoile_with_shopify, monkeypatch):
+def test_set_shopify_status_for_etoile_api_error_returns_false(etoile_with_shopify):
     """Returns False when urllib raises URLError."""
     import urllib.error
-    monkeypatch.setenv("SHOPIFY_STORE_URL", "https://test.myshopify.com")
-    monkeypatch.setenv("SHOPIFY_ACCESS_TOKEN", "test-token")
     etoile_inven, _ = etoile_with_shopify
 
     with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("connection failed")):
@@ -222,20 +234,20 @@ def test_set_shopify_status_for_etoile_api_error_returns_false(etoile_with_shopi
 # ---------------------------------------------------------------------------
 
 @pytest.mark.django_db
-def test_set_shopify_tags_no_config_returns_false(etoile_with_shopify, monkeypatch):
-    """Returns False when SHOPIFY_STORE_URL is not configured."""
-    monkeypatch.delenv("SHOPIFY_STORE_URL", raising=False)
-    monkeypatch.delenv("SHOPIFY_ACCESS_TOKEN", raising=False)
+def test_set_shopify_tags_no_config_returns_false(etoile_with_shopify, settings):
+    """Returns False when the Shopify domain/token settings are blank."""
+    settings.SHOPIFY_BOOXEN_DOMAIN = ""
+    settings.SHOPIFY_BOOXEN_TOKEN = ""
+    settings.SHOPIFY_ETOILE_DOMAIN = ""
+    settings.SHOPIFY_ETOILE_TOKEN = ""
     etoile_inven, _ = etoile_with_shopify
     result = set_shopify_product_tags_for_etoile_inven(etoile_inven.id, ["tag1"])
     assert result is False
 
 
 @pytest.mark.django_db
-def test_set_shopify_tags_api_success(etoile_with_shopify, monkeypatch):
+def test_set_shopify_tags_api_success(etoile_with_shopify):
     """Returns True when Shopify API returns 200."""
-    monkeypatch.setenv("SHOPIFY_STORE_URL", "https://test.myshopify.com")
-    monkeypatch.setenv("SHOPIFY_ACCESS_TOKEN", "test-token")
     etoile_inven, _ = etoile_with_shopify
 
     mock_response = MagicMock()
@@ -249,20 +261,16 @@ def test_set_shopify_tags_api_success(etoile_with_shopify, monkeypatch):
 
 
 @pytest.mark.django_db
-def test_set_shopify_tags_no_product_returns_false(db, monkeypatch):
+def test_set_shopify_tags_no_product_returns_false(db):
     """Returns False when no EtoileShopifyProduct exists."""
-    monkeypatch.setenv("SHOPIFY_STORE_URL", "https://test.myshopify.com")
-    monkeypatch.setenv("SHOPIFY_ACCESS_TOKEN", "test-token")
     result = set_shopify_product_tags_for_etoile_inven(99999, ["tag1"])
     assert result is False
 
 
 @pytest.mark.django_db
-def test_set_shopify_tags_api_error_returns_false(etoile_with_shopify, monkeypatch):
+def test_set_shopify_tags_api_error_returns_false(etoile_with_shopify):
     """Returns False when urllib raises URLError."""
     import urllib.error
-    monkeypatch.setenv("SHOPIFY_STORE_URL", "https://test.myshopify.com")
-    monkeypatch.setenv("SHOPIFY_ACCESS_TOKEN", "test-token")
     etoile_inven, _ = etoile_with_shopify
 
     with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("connection failed")):

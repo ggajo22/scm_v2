@@ -45,7 +45,7 @@ function makeHarness() {
   return { wrapper, invalidateSpy }
 }
 
-function invalidatedKeys(spy: ReturnType<typeof vi.spyOn>): unknown[] {
+function invalidatedKeys(spy: ReturnType<typeof makeHarness>['invalidateSpy']): unknown[] {
   return spy.mock.calls.map((call) => (call[0] as { queryKey: unknown }).queryKey)
 }
 

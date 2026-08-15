@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { DashboardPage } from './DashboardPage'
+import type { DashboardMetrics } from '@/types/book'
 
 vi.mock('@/features/book/hooks/useDashboardMetrics')
 
@@ -32,7 +33,7 @@ const fullMetrics = {
   cost_zero_count: 4,
 }
 
-const zeroMetrics = {
+const zeroMetrics: DashboardMetrics = {
   status_counts: [],
   shopify_created_24h: 0,
   error_total: 0,
