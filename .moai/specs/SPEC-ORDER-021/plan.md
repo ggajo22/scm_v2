@@ -1,20 +1,29 @@
 ---
 id: SPEC-ORDER-021
 document: plan
-version: 1.2.0
+version: 1.3.0
 status: implemented
 updated: 2026-08-15
 ---
 
 # 구현 계획 — SPEC-ORDER-021 마진 계산에 배송비·한국창고비 반영
 
-`spec.md`의 요구사항(REQ-COST-001~019)을 구현하기 위한 작업 분해, 파일별 변경 계획, TDD 사이클, 리스크와 완화책, MX 태그 계획을 정리한다.
+`spec.md`의 요구사항(REQ-COST-001~019, v1.3.0 확장 REQ-COST-020~029)을 구현하기 위한 작업 분해, 파일별 변경 계획, TDD 사이클, 리스크와 완화책, MX 태그 계획을 정리한다.
 
 [HARD] 규범 진술의 단일 출처는 `spec.md`다. 이 문서는 그것을 **어떻게** 구현할지만 다루며, 요구사항을 재진술하지 않고 REQ ID로 참조한다.
 
 **개발 방법론**: TDD (RED-GREEN-REFACTOR). `.moai/config/sections/quality.yaml`의 `development_mode: "tdd"`(`:4`), `test_first_required: true`(`:43`), `min_coverage_per_commit: 80`(`:46`)에 따른다. 브라운필드 변경이므로 각 RED 단계 전에 대상 코드를 먼저 읽는다(`.claude/rules/moai/workflow/workflow-modes.md`의 Brownfield Enhancement 절).
 
 **이 SPEC의 특이점**: 모델/마이그레이션 변경이 없다 — `backend/order/serializers.py` 한 파일의 계산 로직 확장과, 그 위에 얹히는 프론트엔드 타입/표시 변경뿐이다. 기존 테스트 2개 파일(`test_spec_008.py`, `test_spec_009.py`)의 마진 기대값 5건이 새 공식에 맞춰 바뀐다 — `spec.md` "기존 테스트 갱신 대상" 표가 규범 출처다.
+
+## v1.3.0 확장 요약
+
+기존 M0~M5 마일스톤은 그대로 유지하고(무수정), 아래를 동일한 RED-GREEN-REFACTOR 사이클로 추가했다.
+
+- **M6 (High) — confirmed_cost/total_cost RED**: `_compute_cost_breakdown_uncached`가 이미 계산해 두던 `confirmed_cost_usd`를 반환값 dict에 추가하고, `total_cost_usd`(반올림 전 세 항의 합)를 새로 계산해 함께 반환하도록 하기 **전**, `test_spec_021.py`에 T14~T18(AC-COST-014~018)을 먼저 작성했다. 구현을 임시로 `git stash`해 되돌린 상태에서 5개 전부 `KeyError`로 실패함을 직접 확인한 뒤(RED), stash를 복원했다.
+- **M7 (High) — GREEN**: `confirmed_cost`/`total_cost` `SerializerMethodField` 2개 + `Meta.fields` 추가. 기존 `margin_usd`/`get_margin_amount`/`get_margin_rate`/두 None 게이트는 한 글자도 수정하지 않았다(REQ-COST-024 인접 제약). T14~T18 GREEN 확인, 기존 T1~T13 무수정 통과 재확인(회귀 없음).
+- **M8 (High) — 프론트엔드 RED→GREEN**: `types/order.ts`에 `confirmed_cost`/`total_cost` 추가, 두 `buildOrderDetail()`(`OrderDetailPage.test.tsx`, `SearchTab.test.tsx`)에 `null` 기본값 추가. `OrderDetailPage.test.tsx`에 신규 describe 블록(AC-COST-019, 6개 `it`)을 작성해 RED 확인 후, `OrderDetailPage.tsx`의 결제 정보 섹션을 재구성해 GREEN 전환.
+- **M9 (Medium) — 회귀 확인**: `test_spec_021.py` 17개 전량, `backend/order/tests/` 전체 스위트, `OrderDetailPage.test.tsx`+`SearchTab.test.tsx` 34개, `tsc -b`(에러 24건 불변, 4개 대상 파일 신규 에러 0건), AC-COST-009 쿼리 수 무수정 통과(`ORDER_DETAIL_QUERY_COUNT=7` 등 실측값 변화 없음) 확인.
 
 ---
 

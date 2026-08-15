@@ -1,7 +1,7 @@
 ---
 id: SPEC-ORDER-021
 document: acceptance
-version: 1.2.0
+version: 1.3.0
 status: implemented
 updated: 2026-08-15
 ---
@@ -172,6 +172,72 @@ Traces: REQ-COST-003, REQ-COST-011
 - **이 AC가 필요한 이유(감사 D11)**: AC-COST-003의 반올림 경계값(`8.175→8.18`, `159.575→159.58`)은 반올림 대상 자릿수 바로 앞의 숫자가 홀수(7)라서, ROUND_HALF_UP과 ROUND_HALF_EVEN(은행가 반올림 — 짝수로 반올림)이 우연히 같은 결과를 낸다(둘 다 올림해서 짝수 8이 되므로). 즉 `ROUND_HALF_EVEN` 구현도 AC-COST-003을 통과해버린다. `2.725`는 앞자리가 짝수(2)라서 HALF_UP은 올림(`"2.73"`)하고 HALF_EVEN은 이미 짝수인 앞자리를 유지하려 내림(`"2.72"`)한다 — 두 방식이 실제로 갈리는 케이스다.
 - **판별력**: `ROUND_HALF_EVEN`으로 양자화하면 `shipping_cost == "2.72"`가 되어 정답(`"2.73"`)과 어긋난다.
 
+## 확장 — confirmed_cost / total_cost 노출 및 결제 정보 화면 재구성 (v1.3.0)
+
+이 절의 AC-COST-014~019는 v1.3.0에서 추가된 두 신규 필드(`confirmed_cost`, `total_cost`)와 `OrderDetailPage`의 결제 정보 섹션 재구성을 검증한다. `spec.md` v1.3.0의 REQ-COST-020~029를 인용한다.
+
+### AC-COST-014 — `confirmed_cost`는 확정 매입원가(USD)를 정확히 반영한다 `[BE]`
+
+Traces: REQ-COST-020, REQ-COST-022
+
+- **Given**: AC-COST-001과 동일한 라인아이템 구성(`total_price="100.00"`, `rate="1000.00"`, `LineItem(quantity=3, confirmed_price="10000.00", grams=0)`).
+- **When**: `GET /api/orders/{pk}/`.
+- **Then**: `confirmed_cost == "30.00"`(`confirmed_cost_usd = 10000×3/1000 = 30.00`, AC-COST-001이 이미 감사한 중간값).
+- **판별력**: `confirmed_cost`를 노출하지 않거나 다른 값(예: `total_price_usd`, `margin_usd`)을 반환하면 실패한다.
+
+### AC-COST-015 — `total_cost`는 반올림되지 않은 세 항의 합을 서버에서 계산한다(프론트엔드가 반올림된 세 필드를 합산하지 않는다) `[BE]`
+
+Traces: REQ-COST-021, REQ-COST-023
+
+- **Given**: `Order(total_price="100.00")`, `ExchangeRate(rate="1000.00")`, 라인아이템 1개 `LineItem(quantity=1, confirmed_price="10005.00", grams=500)`.
+- **When**: `GET /api/orders/{pk}/`.
+- **Then**:
+  - `confirmed_cost == "10.01"`(정확값 `10.005`를 ROUND_HALF_UP).
+  - `shipping_cost == "2.73"`(정확값 `2.725`를 ROUND_HALF_UP).
+  - `korea_warehouse_cost == "1.25"`(정확값, 반올림 없음).
+  - `total_cost == "13.98"`(정확값 `10.005+2.725+1.25=13.980`을 **한 번만** ROUND_HALF_UP한 결과).
+- **판별력(핵심)**: 위 세 노출 필드(`confirmed_cost`+`shipping_cost`+`korea_warehouse_cost` = `"10.01"+"2.73"+"1.25"`)를 그대로 합산하면 `"13.99"`가 된다 — 정답(`"13.98"`)과 **1센트 차이**가 난다. 이 픽스처는 `confirmed_cost_usd`(`.005`)와 `shipping_cost_usd`(`.725`)가 각각 개별 반올림 시 올림되어 두 번의 `+0.005`가 누적되지만, 정확값의 합(`13.980`)은 이미 2자리 정밀도라 추가 반올림이 필요 없다는 사실에서 그 차이가 발생한다 — "반올림된 세 필드를 프론트엔드에서 합산하지 않고 서버가 반올림 전 정확값으로 `total_cost`를 계산한다"([HARD] 요건)는 것을 직접 판별하는 유일한 시나리오다.
+
+### AC-COST-016 — `margin_amount == total_price − total_cost`(1센트 이내) `[BE]`
+
+Traces: REQ-COST-021, REQ-COST-024
+
+- **Given**: AC-COST-015와 동일한 픽스처.
+- **When**: `GET /api/orders/{pk}/`.
+- **Then**: `margin_amount == "86.02"`(`margin_usd = 100 - 10.005 - 2.725 - 1.25 = 86.020`). `Decimal(total_price) - Decimal(total_cost)`와 `Decimal(margin_amount)`의 차이가 `0.01` 이하임을 수치로 단정한다(`100.00 - 13.98 = 86.02`, 이 픽스처에서는 정확히 일치).
+- **판별력**: `margin_usd` 계산이 변경되거나 `total_cost` 계산이 잘못되면 두 값의 차이가 1센트를 초과해 실패한다.
+
+### AC-COST-017 — 환율 없음 → `confirmed_cost`/`total_cost`도 `null`(기존 5필드 게이트에 합류) `[BE]`
+
+Traces: REQ-COST-025
+
+- **Given**: AC-COST-006과 동일(환율 레코드 없음).
+- **When**: `GET /api/orders/{pk}/`.
+- **Then**: `confirmed_cost`, `total_cost` 두 키 모두 응답에 존재하며(`"confirmed_cost" in res.data`), 값이 `None`이다 — AC-COST-006과 동일한 키 존재 + `None` 값 이중 단정 요건(D6 계승).
+- **판별력**: 두 필드를 아예 구현하지 않으면(`Meta.fields` 누락) 키 존재 단정이 실패한다. 두 필드가 단일 게이트를 공유하지 않고 독립적으로 계산되면(설계 결정 D 위반) 값이 반환되어 `None` 단정이 실패한다.
+
+### AC-COST-018 — 확정 매입가 전무 → `confirmed_cost`/`total_cost`도 `null` `[BE]`
+
+Traces: REQ-COST-026
+
+- **Given**: AC-COST-007과 동일(유효한 환율, `confirmed_price=null`, `grams=500`).
+- **When**: `GET /api/orders/{pk}/`.
+- **Then**: `confirmed_cost`, `total_cost` 두 키 모두 응답에 존재하며 값이 `None`이다.
+- **판별력**: AC-COST-017과 대칭 — `has_any_confirmed` 게이트 밖에서 독립 계산되면 실패한다.
+
+### AC-COST-019 — 결제 정보 섹션이 새 순서·라벨로 재구성되고, 비용 세부항목은 시각적으로 하위 표시된다 `[FE]`
+
+Traces: REQ-COST-023, REQ-COST-027, REQ-COST-028, REQ-COST-029
+
+- **Given**: `buildOrderDetail({ margin_amount: "159.58", margin_rate: "79.79", shipping_cost: "8.18", korea_warehouse_cost: "2.25", confirmed_cost: "30.00", total_cost: "40.43" })`로 `useOrderDetail` 모킹(AC-COST-003 기반 픽스처 + 손계산한 `confirmed_cost`/`total_cost`).
+- **When**: `renderPage()`.
+- **Then**:
+  - (a) DOM 순서가 `최종 결제 금액` → `비용 합계` → `원가 (확정 단가 합계)` → `배송비` → `한국물류` → `마진` → `마진율`이다(`compareDocumentPosition`으로 단정).
+  - (b) `한국물류` 라벨이 렌더링되고, 이전 라벨 `한국창고비`는 더 이상 존재하지 않는다.
+  - (c) `원가`/`배송비`/`한국물류` 세 줄의 컨테이너 class가 `비용 합계` 줄의 class와 다르고(`pl-` 들여쓰기 클래스를 포함), 기존 코드베이스의 옅어짐 관례(`text-muted-foreground/70`, `VendorFileUploadTab.tsx:93` 선례)를 재사용해 시각적으로 한 단계 더 옅다.
+  - (d) `total_cost`/`confirmed_cost`가 `null`이면 각 줄에 `"—"`가 렌더링된다(기존 `margin_amount=null` 폴백과 동일 패턴).
+- **판별력**: 순서를 뒤바꾸거나(예: `마진`을 `비용 합계`보다 먼저 렌더링) 라벨을 갱신하지 않으면(`한국창고비` 잔존) (a)/(b)가 실패한다. 세 세부항목에 들여쓰기·저채도 클래스를 적용하지 않으면(c)가 실패한다.
+
 ---
 
 ## 기존 회귀 테스트 — 기대값 변경 (재작성이 아니라 값만 갱신)
@@ -207,6 +273,12 @@ Traces: REQ-COST-003, REQ-COST-011
 | AC-COST-011 `[FE]` | `OrderDetailPage.test.tsx` | T11 | 016, 017 |
 | AC-COST-012 `[BE]` | `test_spec_021.py` | T12 | 007 |
 | AC-COST-013 `[BE]` | `test_spec_021.py` | T13 | 003, 011 |
+| AC-COST-014 `[BE]` | `test_spec_021.py` | T14 | 020, 022 |
+| AC-COST-015 `[BE]` | `test_spec_021.py` | T15 | 021, 023 |
+| AC-COST-016 `[BE]` | `test_spec_021.py` | T16 | 021, 024 |
+| AC-COST-017 `[BE]` | `test_spec_021.py` | T17 | 025 |
+| AC-COST-018 `[BE]` | `test_spec_021.py` | T18 | 026 |
+| AC-COST-019 `[FE]` | `OrderDetailPage.test.tsx` | (신규 describe 블록, v1.3.0) | 023, 027, 028, 029 |
 
 이 표는 각 AC 섹션 상단의 `Traces:` 목록과 완전히 일치한다(감사 D7 — 이전 버전은 AC-COST-001 행에 REQ-007을 잘못 나열했고 AC-COST-003 행에 REQ-012를 이중 나열하면서도 REQ-COST-011/012/013의 REQ→AC 역방향 표는 AC-COST-001/003을 빠뜨리는 등 네 곳이 서로 어긋나 있었다).
 
@@ -218,3 +290,9 @@ Traces: REQ-COST-003, REQ-COST-011
 - `backend/order/tests/test_spec_009.py` 전량(2건 기대값 갱신 포함)
 - `frontend/src/pages/OrderDetailPage.test.tsx` 전량
 - `frontend/src/pages/RackNumberPage/tabs/SearchTab.test.tsx` 전량 — REQ-COST-017이 `OrderDetail`에 필수 필드 2개를 추가하면서 이 파일의 별도 `buildOrderDetail()`(`:47`)도 갱신 대상이 된다(감사 D2). `npm run build`(`tsc -b`)가 이 파일을 포함해 통과해야 한다.
+
+## v1.3.0 확장 회귀 게이트
+
+- AC-COST-009(쿼리 수 불변식)는 **무수정**으로 재실행해 통과해야 한다 — `confirmed_cost`/`total_cost` 게터 2개가 늘어나도 메모이제이션(설계 결정 C/F)으로 인해 `ORDER_DETAIL_QUERY_COUNT`, `orders_line_item`/`orders_exchangerate` 참조 쿼리 수(각 1) 모두 **변하지 않아야** 한다. 변경 시 상수를 실측값으로 갱신하고 그 사실을 `spec.md` HISTORY에 남긴다.
+- `margin_usd`/`get_margin_amount`/`get_margin_rate`/두 None 게이트는 **한 글자도 변경되지 않는다** — `git diff`로 확인.
+- `OrderListSerializer`는 무수정.

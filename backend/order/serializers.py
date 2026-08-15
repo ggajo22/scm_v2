@@ -166,6 +166,14 @@ class OrderDetailSerializer(serializers.ModelSerializer):
     shipping_cost = serializers.SerializerMethodField()
     korea_warehouse_cost = serializers.SerializerMethodField()
     total_weight_grams = serializers.SerializerMethodField()
+    # SPEC-ORDER-021 extension: confirmed_cost (confirmed_cost_usd, already
+    # computed internally by _compute_cost_breakdown_uncached) and total_cost
+    # (confirmed_cost_usd + shipping_cost_usd + korea_warehouse_usd, summed
+    # from the UNROUNDED Decimals and quantized once -- see design decision B
+    # and _compute_cost_breakdown_uncached below). Same null gate + memoized
+    # helper as the other cost fields above.
+    confirmed_cost = serializers.SerializerMethodField()
+    total_cost = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
@@ -182,6 +190,10 @@ class OrderDetailSerializer(serializers.ModelSerializer):
             # SPEC-ORDER-021 REQ-COST-011/012/013: shipping/Korea-warehouse
             # cost breakdown backing the margin fields.
             "shipping_cost", "korea_warehouse_cost", "total_weight_grams",
+            # SPEC-ORDER-021 extension: confirmed_cost (confirmed purchase
+            # cost only) and total_cost (all three cost components summed
+            # server-side from unrounded values).
+            "confirmed_cost", "total_cost",
             # SPEC-ORDER-011 T11: expose the logistics_status aggregate so the
             # frontend has a data source for the Order-level aggregate badge.
             "status",
@@ -207,8 +219,9 @@ class OrderDetailSerializer(serializers.ModelSerializer):
         ).order_by("-effective_date").first()
 
     # @MX:NOTE: [AUTO] SPEC-ORDER-021 REQ-COST-002~008/019: single helper
-    # backing all 5 cost-related SerializerMethodFields (margin_amount,
-    # margin_rate, shipping_cost, korea_warehouse_cost, total_weight_grams).
+    # backing all 7 cost-related SerializerMethodFields (margin_amount,
+    # margin_rate, shipping_cost, korea_warehouse_cost, total_weight_grams,
+    # confirmed_cost, total_cost).
     # Weight/book-count aggregation runs unconditionally over every line item
     # in the SAME loop as the confirmed-cost aggregation (REQ-COST-002/004 —
     # deliberately outside the `confirmed_price is not None` gate, so
@@ -224,18 +237,18 @@ class OrderDetailSerializer(serializers.ModelSerializer):
         a non-null confirmed_price).
 
         Memoized per `obj` for the lifetime of this serializer instance
-        (REQ-COST-015, design decisions C/F): each of the 5
+        (REQ-COST-015, design decisions C/F): each of the 7
         SerializerMethodFields above is evaluated independently by DRF, so
         without this cache the line-item loop and the ExchangeRate lookup
-        would each run up to 5x per request against a remote RDS instance.
+        would each run up to 7x per request against a remote RDS instance.
         """
-        # @MX:NOTE: [AUTO] SPEC-ORDER-021 REQ-COST-015: all 5 cost getters
+        # @MX:NOTE: [AUTO] SPEC-ORDER-021 REQ-COST-015: all 7 cost getters
         # (get_margin_amount, get_margin_rate, get_shipping_cost,
-        # get_korea_warehouse_cost, get_total_weight_grams) MUST go through
-        # this cache. Bypassing it (calling _compute_cost_breakdown_uncached
-        # directly, or adding a 6th getter that skips this method) reopens
-        # the up-to-5x ExchangeRate query multiplication AC-COST-009 (c)
-        # guards against.
+        # get_korea_warehouse_cost, get_total_weight_grams, get_confirmed_cost,
+        # get_total_cost) MUST go through this cache. Bypassing it (calling
+        # _compute_cost_breakdown_uncached directly, or adding a getter that
+        # skips this method) reopens the up-to-7x ExchangeRate query
+        # multiplication AC-COST-009 (c) guards against.
         cache = getattr(self, "_cost_breakdown_cache", None)
         if cache is None:
             cache = {}
@@ -293,11 +306,21 @@ class OrderDetailSerializer(serializers.ModelSerializer):
 
         margin_usd = total_price_usd - confirmed_cost_usd - shipping_cost_usd - korea_warehouse_usd
 
+        # SPEC-ORDER-021 extension: total_cost_usd is summed from the three
+        # UNROUNDED Decimals above (confirmed_cost_usd, shipping_cost_usd,
+        # korea_warehouse_usd) and quantized exactly once by get_total_cost.
+        # Do NOT derive this by summing the already-quantized confirmed_cost/
+        # shipping_cost/korea_warehouse_cost strings -- that would double-round
+        # and can be off by a cent from this value (design decision B).
+        total_cost_usd = confirmed_cost_usd + shipping_cost_usd + korea_warehouse_usd
+
         return {
             "margin_usd": margin_usd,
             "total_price_usd": total_price_usd,
+            "confirmed_cost_usd": confirmed_cost_usd,
             "shipping_cost_usd": shipping_cost_usd,
             "korea_warehouse_usd": korea_warehouse_usd,
+            "total_cost_usd": total_cost_usd,
             "total_weight_grams": total_weight_grams,
         }
 
@@ -343,6 +366,25 @@ class OrderDetailSerializer(serializers.ModelSerializer):
         if result is None:
             return None
         return result["total_weight_grams"]
+
+    def get_confirmed_cost(self, obj: Order):
+        """SPEC-ORDER-021 extension: confirmed_cost_usd, 소수점 2자리
+        ROUND_HALF_UP, 문자열. Same convention/null-gate as shipping_cost."""
+        result = self._compute_cost_breakdown(obj)
+        if result is None:
+            return None
+        return str(result["confirmed_cost_usd"].quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+    def get_total_cost(self, obj: Order):
+        """SPEC-ORDER-021 extension: confirmed_cost_usd + shipping_cost_usd +
+        korea_warehouse_usd, summed from the unrounded Decimals in
+        _compute_cost_breakdown_uncached and quantized here exactly once --
+        NOT summed from the already-quantized confirmed_cost/shipping_cost/
+        korea_warehouse_cost fields (design decision B)."""
+        result = self._compute_cost_breakdown(obj)
+        if result is None:
+            return None
+        return str(result["total_cost_usd"].quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
 
 class ExchangeRateSerializer(serializers.ModelSerializer):

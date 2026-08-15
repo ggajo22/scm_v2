@@ -365,3 +365,128 @@ def test_t13_round_half_up_distinguished_from_round_half_even(auth_client, rate_
 
     assert res.status_code == 200
     assert res.data["shipping_cost"] == "2.73"
+
+
+# ---------------------------------------------------------------------------
+# T14 (AC-COST-014) — confirmed_cost exact value, reusing T1's audited
+# fixture (confirmed_cost_usd=30.00 is already part of T1's hand-derivation
+# for margin_amount="67.75").
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_t14_confirmed_cost_matches_hand_derivation(auth_client, rate_1000):
+    order = _make_order("100.00", 921014)
+    _make_line_item(order, 1, quantity=3, confirmed_price=Decimal("10000.00"), grams=0)
+
+    res = auth_client.get(DETAIL_URL.format(pk=order.pk))
+
+    assert res.status_code == 200
+    # confirmed_cost_usd = 10000×3/1000 = 30.00 (exact) — same intermediate
+    # value T1 already audits en route to margin_amount="67.75".
+    assert res.data["confirmed_cost"] == "30.00"
+
+
+# ---------------------------------------------------------------------------
+# T15 (AC-COST-015) — total_cost is computed server-side from the UNROUNDED
+# components, not by summing the three rounded/exposed cost fields.
+#
+# Discriminating fixture: quantity=1, confirmed_price=10005.00, grams=500,
+# rate=1000.00, total_price=100.00.
+#   confirmed_cost_usd = 10005×1/1000       = 10.005  (rounds to "10.01")
+#   shipping_cost_usd  = 5.45×500/1000      =  2.725  (rounds to "2.73")
+#   korea_warehouse_usd = 1250/1000         =  1.25   (exact, "1.25")
+#   sum of the THREE ROUNDED fields  = 10.01+2.73+1.25 = 13.99  (wrong)
+#   total_cost_usd (unrounded sum, quantized once)
+#                       = 10.005+2.725+1.25 = 13.980 -> "13.98" (correct)
+# The two differ by exactly one cent — this is the discriminating case for
+# "compute total_cost server-side from unrounded values" (spec.md [HARD]).
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def order_x15(db, rate_1000):
+    order = _make_order("100.00", 921015)
+    _make_line_item(order, 1, quantity=1, confirmed_price=Decimal("10005.00"), grams=500)
+    return order
+
+
+@pytest.mark.django_db
+def test_t15_total_cost_computed_from_unrounded_components(auth_client, order_x15):
+    res = auth_client.get(DETAIL_URL.format(pk=order_x15.pk))
+
+    assert res.status_code == 200
+    assert res.data["confirmed_cost"] == "10.01"
+    assert res.data["shipping_cost"] == "2.73"
+    assert res.data["korea_warehouse_cost"] == "1.25"
+    # The discriminating assertion: total_cost must be "13.98" (computed from
+    # the unrounded 10.005+2.725+1.25=13.980), NOT "13.99" (the sum of the
+    # three rounded fields above: 10.01+2.73+1.25=13.99).
+    assert res.data["total_cost"] == "13.98"
+    naive_frontend_sum = round(
+        Decimal(res.data["confirmed_cost"])
+        + Decimal(res.data["shipping_cost"])
+        + Decimal(res.data["korea_warehouse_cost"]),
+        2,
+    )
+    assert naive_frontend_sum == Decimal("13.99")
+    assert Decimal(res.data["total_cost"]) != naive_frontend_sum
+
+
+# ---------------------------------------------------------------------------
+# T16 (AC-COST-016) — margin_amount == total_price − total_cost, within one
+# cent (numeric invariant), on the same T15 fixture.
+# margin_usd = 100 - 10.005 - 2.725 - 1.25 = 86.020 -> margin_amount="86.02".
+# total_price(100.00) - total_cost(13.98) = 86.02 — matches exactly here.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_t16_margin_equals_total_price_minus_total_cost(auth_client, order_x15):
+    res = auth_client.get(DETAIL_URL.format(pk=order_x15.pk))
+
+    assert res.status_code == 200
+    assert res.data["margin_amount"] == "86.02"
+    total_price = Decimal(str(order_x15.total_price))
+    total_cost = Decimal(res.data["total_cost"])
+    margin_amount = Decimal(res.data["margin_amount"])
+    assert abs((total_price - total_cost) - margin_amount) <= Decimal("0.01")
+
+
+# ---------------------------------------------------------------------------
+# T17 (AC-COST-017) — confirmed_cost/total_cost are null under the existing
+# no-exchange-rate gate (same fixture shape as T6), asserted with key
+# presence (not `.get(...)`, which would pass against unimplemented fields).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_t17_confirmed_cost_and_total_cost_null_when_no_exchange_rate(auth_client, db):
+    order = _make_order("100.00", 921017)
+    _make_line_item(order, 1, quantity=3, confirmed_price=Decimal("10000.00"), grams=0)
+
+    res = auth_client.get(DETAIL_URL.format(pk=order.pk))
+
+    assert res.status_code == 200
+    for field in ("confirmed_cost", "total_cost"):
+        assert field in res.data, f"{field} missing from response"
+        assert res.data[field] is None, f"{field} expected None, got {res.data[field]!r}"
+
+
+# ---------------------------------------------------------------------------
+# T18 (AC-COST-018) — confirmed_cost/total_cost are null under the existing
+# no-confirmed-price gate (same fixture shape as T7).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_t18_confirmed_cost_and_total_cost_null_when_no_confirmed_price(auth_client, rate_1000):
+    order = _make_order("100.00", 921018)
+    _make_line_item(order, 1, quantity=3, confirmed_price=None, grams=500)
+
+    res = auth_client.get(DETAIL_URL.format(pk=order.pk))
+
+    assert res.status_code == 200
+    for field in ("confirmed_cost", "total_cost"):
+        assert field in res.data, f"{field} missing from response"
+        assert res.data[field] is None, f"{field} expected None, got {res.data[field]!r}"

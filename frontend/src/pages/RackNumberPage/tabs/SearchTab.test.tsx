@@ -76,6 +76,8 @@ function buildOrderDetail(overrides: Partial<OrderDetail> = {}): OrderDetail {
     margin_rate: null,
     shipping_cost: null,
     korea_warehouse_cost: null,
+    confirmed_cost: null,
+    total_cost: null,
     customer: null,
     shipping_address: null,
     line_items: [
