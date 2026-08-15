@@ -1,9 +1,9 @@
 ---
 id: SPEC-PURCHASE-ORDER-011
 version: 1.5.0
-status: draft
+status: completed
 created_at: 2026-08-14
-updated: 2026-08-14
+updated: 2026-08-15
 author: ggajo
 priority: High
 issue_number: 29
