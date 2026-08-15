@@ -121,13 +121,22 @@ class TestBookSearchEmptyQuery:
 
 
 # ---------------------------------------------------------------------------
-# REQ-SEARCH-001: OR icontains on inven_SKU AND info.name
+# REQ-SEARCH-001: two-path search (see BookListViewSet.get_queryset)
+#   - digits-only query -> inven_SKU startswith (index scan)
+#   - any other text    -> FULLTEXT MATCH AGAINST ngram on info.name
+# These paths are exclusive: a text query does NOT search inven_SKU. The
+# comment here previously described an older "OR icontains on inven_SKU AND
+# info.name" implementation that no longer exists.
+#
+# The FULLTEXT tests below need django_db(transaction=True): InnoDB does not
+# expose rows to MATCH AGAINST until the inserting transaction commits, so
+# under the default rolled-back test transaction every MATCH returns zero.
 # ---------------------------------------------------------------------------
 
-@pytest.mark.django_db
 class TestBookSearchQuery:
-    """REQ-SEARCH-001: search matches inven_SKU OR info.name (case-insensitive)."""
+    """REQ-SEARCH-001: digits match inven_SKU by prefix; text matches info.name."""
 
+    @pytest.mark.django_db
     def test_search_by_sku_partial_match(self, auth_client, db):
         make_book("978-3-16-148410-0", "어떤 도서")
         make_book("000-0-00-000000-0", "다른 도서")
@@ -138,6 +147,7 @@ class TestBookSearchQuery:
         assert data["count"] == 1
         assert data["results"][0]["inven_SKU"] == "978-3-16-148410-0"
 
+    @pytest.mark.django_db(transaction=True)
     def test_search_by_title_partial_match(self, auth_client, db):
         make_book("ISBN-001", "파이썬 프로그래밍")
         make_book("ISBN-002", "자바스크립트 완전 정복")
@@ -148,25 +158,40 @@ class TestBookSearchQuery:
         assert data["count"] == 1
         assert data["results"][0]["name"] == "파이썬 프로그래밍"
 
+    @pytest.mark.django_db(transaction=True)
     def test_search_case_insensitive(self, auth_client, db):
-        make_book("isbn-abc", "Python Book")
+        make_book("isbn-abc", "Python ISBN Guide")
 
         resp = auth_client.get(SEARCH_URL, {"search": "ISBN"})
         assert resp.status_code == 200
         assert resp.json()["count"] == 1
 
-    def test_search_matches_both_sku_and_title(self, auth_client, db):
-        # This book matches by SKU
-        make_book("UNIQUE-SKU-999", "일반 도서 제목")
-        # This book matches by title
-        make_book("OTHER-SKU-111", "UNIQUE 제목")
-        # This book matches neither
-        make_book("NO-MATCH-000", "관련없는 도서")
+    @pytest.mark.django_db(transaction=True)
+    def test_text_search_returns_every_title_containing_the_term(self, auth_client, db):
+        make_book("SKU-999", "UNIQUE 한국책")
+        make_book("SKU-111", "UNIQUE 영어책")
+        make_book("SKU-000", "관련없는 도서")
 
         resp = auth_client.get(SEARCH_URL, {"search": "UNIQUE"})
         assert resp.status_code == 200
         assert resp.json()["count"] == 2
 
+    @pytest.mark.django_db(transaction=True)
+    def test_text_search_does_not_match_sku(self, auth_client, db):
+        """The two paths are exclusive — a text query never looks at inven_SKU.
+
+        This previously lived inside a test asserting SKU-OR-title matching,
+        written against the old icontains implementation. Pinning the real
+        behaviour explicitly keeps the next reader from assuming the OR is
+        still there just because no test contradicts it.
+        """
+        make_book("UNIQUE-SKU-999", "관련없는 도서")
+
+        resp = auth_client.get(SEARCH_URL, {"search": "UNIQUE"})
+        assert resp.status_code == 200
+        assert resp.json()["count"] == 0
+
+    @pytest.mark.django_db
     def test_search_no_match_returns_empty(self, auth_client, db):
         make_book("ISBN-001", "파이썬 도서")
 
@@ -218,6 +243,7 @@ class TestBookSearchPagination:
 class TestBookSearchNoNPlus1:
     """REQ-SEARCH-008: results include info fields without extra queries."""
 
+    @pytest.mark.django_db(transaction=True)
     def test_results_include_info_name(self, auth_client, db):
         """name field in result proves info was joined, not lazy-loaded."""
         make_book("ISBN-001", "테스트 도서 제목")
