@@ -564,6 +564,20 @@ export function OrderDetailPage() {
               {data.margin_rate !== null ? `${data.margin_rate}%` : '—'}
             </span>
           </div>
+          {/* SPEC-ORDER-021 extension (v1.4.0, REQ-COST-035): applied
+              exchange rate — calculation metadata, not a cost component, so
+              it sits at the bottom OUTSIDE the pl-3 indented 원가/배송비/
+              한국물류 group rather than inside it. Same de-emphasized style
+              (text-muted-foreground/70 text-xs) as those sub-items, no
+              indent. "—" fallback when either field is null. */}
+          <div className="flex justify-between text-muted-foreground/70 text-xs">
+            <span>적용 환율</span>
+            <span>
+              {data.exchange_rate !== null && data.exchange_rate_date !== null
+                ? `${Number(data.exchange_rate).toLocaleString()} KRW/USD (${data.exchange_rate_date})`
+                : '—'}
+            </span>
+          </div>
         </div>
       </section>
 

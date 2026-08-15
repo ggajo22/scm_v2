@@ -1,13 +1,13 @@
 ---
 id: SPEC-ORDER-021
-version: 1.3.0
+version: 1.4.0
 status: implemented
 created_at: 2026-08-14
 updated: 2026-08-15
 author: ggajo
 priority: High
 issue_number: 0
-labels: [order, margin, cost-breakdown, backend, frontend]
+labels: [order, margin, cost-breakdown, backend, frontend, exchange-rate]
 ---
 
 # 마진 계산에 배송비·한국창고비 반영
@@ -16,6 +16,7 @@ labels: [order, margin, cost-breakdown, backend, frontend]
 
 | 버전 | 날짜 | 작성자 | 변경 내용 |
 |------|------|--------|-----------|
+| 1.4.0 | 2026-08-15 | ggajo | TDD 확장(manager-tdd, 동일 worktree `rate-display`, 브랜치 `feature/SPEC-ORDER-021-rate-display`). 적용 환율을 주문 상세 화면에 노출한다. `OrderDetailSerializer`에 `exchange_rate`(`ExchangeRate.rate`, 문자열)와 `exchange_rate_date`(적용된 레코드의 `effective_date`, ISO 문자열) 신규 `SerializerMethodField` 2개를 추가했다(REQ-COST-030/031, AC-COST-020~023). **이 두 필드는 기존 7개 비용 필드가 공유하는 `has_any_confirmed` 게이트(설계 결정 D)를 공유하지 않는다** — `_get_exchange_rate(obj)`가 레코드를 반환하기만 하면 `margin_amount`가 `null`이어도(확정 매입가 전무) 이 둘은 값을 반환한다(REQ-COST-033, AC-COST-022) — 그래야 "이 날짜에 환율 레코드가 없다"와 "환율은 있지만 아직 확정된 게 없다"를 구분할 수 있다. `null`은 오직 `_get_exchange_rate(obj)`가 `None`을 반환할 때(해당 주문일 이전 어떤 레코드도 없거나, `shopify_created_at` 자체가 없을 때)만 발생한다(REQ-COST-032, AC-COST-023). 신규 쿼리를 추가하지 않기 위해 `_get_exchange_rate`(기존에는 `_compute_cost_breakdown_uncached` 내부에서만 호출되던, 메모이제이션 없는 메서드)를 주문(`obj.pk`) 단위로 메모이즈했다(REQ-COST-034) — `_compute_cost_breakdown_uncached`도 이 메모이즈된 버전을 그대로 재사용하므로, 신규 게터 2개가 늘어나 DRF가 평가하는 `SerializerMethodField`가 7개에서 9개가 되었음에도 `orders_exchangerate` 참조 쿼리 수는 여전히 정확히 1이다(AC-COST-009 무수정 재통과로 실측 확인 — `ORDER_DETAIL_QUERY_COUNT=7`도 변화 없음, `orders_line_item` 참조 쿼리 수도 1로 불변). `margin_usd`/`get_margin_amount`/`get_margin_rate`/두 None 게이트(REQ-COST-009/010)는 **한 글자도 변경하지 않았다** — `git diff`로 확인(완료 조건). 프론트엔드는 `OrderDetail`(`frontend/src/types/order.ts`)에 두 필드를 추가하고, `OrderDetailPage.tsx`의 결제 정보 섹션 최하단(마진율 다음, `pl-3` 들여쓰기 그룹 **밖**)에 `적용 환율` 줄을 추가했다(REQ-COST-035/036, AC-COST-024) — 계산 결과가 아니라 계산에 쓰인 근거 값이므로 비용 하위 항목 그룹에 포함시키지 않는다. `null` 폴백은 기존 관례(`"—"`)를 따른다. `frontend/src/pages/OrderDetailPage.test.tsx`와 `frontend/src/pages/RackNumberPage/tabs/SearchTab.test.tsx`(`:47`)의 두 `buildOrderDetail()` 픽스처 모두에 `exchange_rate: null, exchange_rate_date: null` 기본값을 추가했다(SPEC-ORDER-021 v1.3.0 D2 전례와 동일한 이유 — 신규 필수 필드 추가 시 두 번째 픽스처를 놓치기 쉽다). **발견한 베이스라인 불일치(이 SPEC이 만든 것이 아님, 수정하지 않음)**: `tsc -b`의 실제 베이스라인은 이 문서의 이전 버전들이 기록한 24건이 아니라 26건이다 — `frontend/src/hooks/usePurchaseOrderQueries.test.tsx`(`:65,78`)에 이 SPEC 이전부터 존재하던 신규 에러 2건이 추가로 있었다(원인 미상, 이 SPEC의 범위 밖). 이 SPEC이 수정한 4개 파일(`types/order.ts`, `OrderDetailPage.tsx`, `OrderDetailPage.test.tsx`, `SearchTab.test.tsx`)에는 신규 에러 0건이며, 전체 에러 수는 26건에서 26건으로 불변임을 실측 확인했다. |
 | 1.3.0 | 2026-08-15 | ggajo | TDD 확장(manager-tdd, 동일 worktree `SPEC-ORDER-021`, 브랜치 `feature/SPEC-ORDER-021`). `OrderDetailSerializer`에 `confirmed_cost`(`confirmed_cost_usd`)와 `total_cost`(`confirmed_cost_usd+shipping_cost_usd+korea_warehouse_usd`, **반올림 전 정확값의 합을 한 번만 양자화**)를 신규 노출하고(REQ-COST-020~026, AC-COST-014~018), `OrderDetailPage.tsx`의 결제 정보 섹션을 `최종 결제 금액 → 비용 합계(total_cost) → [원가(confirmed_cost)/배송비(shipping_cost)/한국물류(korea_warehouse_cost), 들여쓰기+저채도로 시각적 하위 표시] → 마진 → 마진율` 순서로 재구성했다(REQ-COST-027/028, AC-COST-019). `한국창고비` 라벨을 `한국물류`로 변경했다(REQ-COST-029). `margin_usd`/`get_margin_amount`/`get_margin_rate`/두 None 게이트(REQ-COST-009/010)는 **한 글자도 변경하지 않았다** — 두 신규 필드는 기존 메모이즈된 `_compute_cost_breakdown` 헬퍼가 이미 계산해 두던 `confirmed_cost_usd`를 반환값 dict에 추가 노출하고, `total_cost_usd`는 그 dict 안에서 반올림 전 세 항(`confirmed_cost_usd`, `shipping_cost_usd`, `korea_warehouse_usd`)을 합산해 추가했을 뿐이다. AC-COST-009(쿼리 수 불변식)는 게터가 5개에서 7개로 늘었음에도 메모이제이션 덕분에 **무수정으로 통과**했다 — `ORDER_DETAIL_QUERY_COUNT=7`, `orders_line_item`/`orders_exchangerate` 참조 쿼리 수(각 1)가 확장 전후로 완전히 동일함을 실측 확인했다(변경 없음, 상수 갱신 불필요). **알려진 기존 불일치(수정하지 않음, 발견만 기록)**: `OrderDetailPage.tsx:168`(`netPaidAmount = total_price − totalRefunded`)이 최종 결제 금액 표시에 쓰는 기준과, 마진 계산(`total_price_usd`만 사용, 환불 미반영)의 기준이 다르다 — 환불이 있는 주문에서는 `최종 결제 금액 − 비용 합계 ≠ 마진`이 된다. 새 세로 레이아웃은 이 뺄셈이 성립하는 것처럼 보이게 만들어 이전보다 눈에 띄지만, 이 SPEC의 범위가 아니므로(사용자가 별도 결정) 그대로 둔다 — "알려진 제약사항" 절 참조. |
 | 1.0.0 | 2026-08-14 | ggajo | 최초 작성. 현재 마진(`margin_usd = total_price_usd - confirmed_cost_usd`, `OrderDetailSerializer._compute_margin_usd`, `backend/order/serializers.py:189-204`)이 배송비·한국창고비를 반영하지 않아 실제 수익성보다 과대 표시되는 문제를 확정된 사용자 요구사항에 따라 해소한다. 모든 `file:line` 인용은 이 세션에서 직접 재검증했다 — 선행 SPEC의 인용을 재사용하지 않았다. |
 | 1.2.0 | 2026-08-15 | ggajo | TDD 구현 완료(manager-tdd, worktree `SPEC-ORDER-021`). 계획 대비 발산 2건을 여기 기록한다 — (1) `plan.md`/`acceptance.md`가 인용하는 `backend/order/tests/test_spec_018.py`(쿼리 캡처·워밍업·`UNORDERED_ENDPOINT_QUERY_COUNT` 관례의 근거 파일)가 이 브랜치(master 556f1b5 기준)에는 존재하지 않는다 — 다른 SPEC 브랜치에서만 존재했던 것으로 보인다. `test_spec_021.py`는 대신 `test_spec_015.py:1118-1121`(`CaptureQueriesContext` 사용)과 `test_spec_011.py:24,267-269`(같은 패턴)를 실제 존재하는 선례로 삼아 동일한 관례(캡처 + 절대값 고정 + 워밍업 요청)를 독립 구현했다 — 동작과 판별력은 `plan.md`/`acceptance.md`가 의도한 것과 동일하다. `ORDER_DETAIL_QUERY_COUNT = 7`은 실측값이다(추측 아님, `test_spec_021.py` 상단 주석 참조). (2) `plan.md` 완료 조건의 "`npm run build`(`tsc -b`) 통과"는 이 브랜치의 현재 상태에서 문자 그대로는 거짓이다 — 이 SPEC 이전부터 `src/pages/PurchaseOrders/tabs/ConfirmOrderTab.tsx`(20건), `src/pages/BookDetailPage.tsx`(2건), `src/pages/DashboardPage.test.tsx`(1건), `src/services/purchaseOrderApi.ts`(1건), 총 24건의 `tsc -b` 에러가 이 SPEC과 무관하게 이미 존재했다(구현 시작 전 실측, 구현 완료 후에도 정확히 24건 동일 — `git diff` 대상 4개 파일에는 신규 에러 0건). 올바른 게이트는 "`tsc -b` 에러 수가 24건에서 변하지 않고, 이 SPEC이 수정한 4개 파일(`types/order.ts`, `OrderDetailPage.tsx`, `OrderDetailPage.test.tsx`, `SearchTab.test.tsx`)에 신규 에러가 0건"이다 — `plan.md`/`acceptance.md`의 "통과" 문구는 이 베이스라인 전제 없이 오해를 유발하므로 여기 정정을 남긴다. |
@@ -71,6 +72,17 @@ labels: [order, margin, cost-breakdown, backend, frontend]
 | [MODIFY] | `frontend/src/types/order.ts`의 `OrderDetail` | `confirmed_cost: string \| null`, `total_cost: string \| null` 추가(REQ-COST-023). |
 | [MODIFY] | `frontend/src/pages/OrderDetailPage.tsx`의 결제 정보 섹션 | `최종 결제 금액 → 비용 합계(total_cost) → [원가(confirmed_cost)/배송비/한국물류, 들여쓰기+저채도] → 마진 → 마진율` 순서로 재구성(REQ-COST-027/028). `한국창고비` 라벨을 `한국물류`로 변경(REQ-COST-029). |
 | [EXISTING] | `margin_usd`, `get_margin_amount`, `get_margin_rate`, `_get_exchange_rate`, 두 None 게이트 | 한 글자도 변경하지 않는다 — `git diff`로 확인(완료 조건). |
+
+### v1.4.0 확장 — 델타
+
+| 마커 | 대상 | 내용 |
+|---|---|---|
+| [MODIFY] | `OrderDetailSerializer._get_exchange_rate`(`backend/order/serializers.py`) | 조회 로직(폴백 포함)은 무변경 — `obj.pk` 키의 인스턴스 딕셔너리로 결과를 메모이즈하도록 감싸기만 했다(REQ-COST-034). 반환값의 의미(어떤 레코드가 선택되는지)는 한 글자도 바뀌지 않는다. |
+| [NEW] | `OrderDetailSerializer`의 `exchange_rate`/`exchange_rate_date` `SerializerMethodField` 2개 | 메모이즈된 `_get_exchange_rate`를 직접 호출(REQ-COST-030/031) — `_compute_cost_breakdown`(`has_any_confirmed` 게이트)을 거치지 않는다(설계 결정 H). `Meta.fields`에 추가. |
+| [MODIFY] | `frontend/src/types/order.ts`의 `OrderDetail` | `exchange_rate: string \| null`, `exchange_rate_date: string \| null` 추가(REQ-COST-036). |
+| [MODIFY] | `frontend/src/pages/OrderDetailPage.tsx`의 결제 정보 섹션 | `마진율` 다음, `pl-3` 그룹 밖에 `적용 환율` 표시 줄 추가(REQ-COST-035). |
+| [MODIFY] | `frontend/src/pages/OrderDetailPage.test.tsx`, `frontend/src/pages/RackNumberPage/tabs/SearchTab.test.tsx`의 `buildOrderDetail()` 2곳 | `exchange_rate: null, exchange_rate_date: null` 기본값 추가(v1.3.0 감사 D2와 동일한 이유). |
+| [EXISTING] | `margin_usd`, `get_margin_amount`, `get_margin_rate`, 두 None 게이트, `_compute_cost_breakdown`/`_compute_cost_breakdown_uncached`의 계산 로직 | 한 글자도 변경하지 않는다 — `git diff`로 확인(완료 조건). |
 
 ## 관련 SPEC
 
@@ -159,6 +171,22 @@ labels: [order, margin, cost-breakdown, backend, frontend]
 
 **REQ-COST-029** (Ubiquitous): The Korea-warehouse cost row label shall read `한국물류` (renamed from `한국창고비`).
 
+### 모듈 11 — 적용 환율 노출 (v1.4.0)
+
+**REQ-COST-030** (Ubiquitous): `OrderDetailSerializer` shall expose `exchange_rate` as the `ExchangeRate.rate` value applied by `_get_exchange_rate(obj)`, returned as a string.
+
+**REQ-COST-031** (Ubiquitous): `OrderDetailSerializer` shall expose `exchange_rate_date` as the applied `ExchangeRate` record's `effective_date`, formatted as an ISO `YYYY-MM-DD` string.
+
+**REQ-COST-032** (Unwanted): If `_get_exchange_rate(obj)` returns `None` (no `ExchangeRate` record found at or before the order date, or the order has no `shopify_created_at`), then the system shall return `null` for `exchange_rate` and `exchange_rate_date`.
+
+**REQ-COST-033** (Ubiquitous) [HARD]: `exchange_rate` and `exchange_rate_date` shall be non-null whenever `_get_exchange_rate(obj)` returns a record, **independent of** whether any line item has a `confirmed_price` — these two fields shall NOT share the `has_any_confirmed` gate that `margin_amount`/`margin_rate`/`shipping_cost`/`korea_warehouse_cost`/`total_weight_grams`/`confirmed_cost`/`total_cost` share (design decision D applies only to those seven fields, not to these two). This lets a reader distinguish "no exchange rate exists for this date" (`exchange_rate` is `null`) from "rate exists but nothing is confirmed yet" (`exchange_rate` is non-null, `margin_amount` is `null`).
+
+**REQ-COST-034** (Ubiquitous): The system shall not issue more than one `ExchangeRate` query per serialized order. `_get_exchange_rate` shall be memoized per order object so that `exchange_rate`/`exchange_rate_date` and the cost-breakdown helper (`_compute_cost_breakdown_uncached`) share a single lookup, preserving the invariant established by REQ-COST-015.
+
+**REQ-COST-035** (Event-Driven): When `OrderDetailPage` renders an order's 결제 정보 section, the system shall display `적용 환율` as an additional row at the bottom of the section, after `마진율` and OUTSIDE the indented `원가`/`배송비`/`한국물류` sub-item group (it is calculation metadata, not a cost component). It shall render in the same de-emphasized style as the cost sub-items (`text-muted-foreground/70 text-xs`) but without their indentation, formatted as `"{rate} KRW/USD ({date})"` when both fields are non-null and `"—"` when either is `null`. The rate shall be formatted with `toLocaleString()`, matching the file's existing number-formatting convention.
+
+**REQ-COST-036** (Ubiquitous): The `OrderDetail` TypeScript interface shall declare `exchange_rate: string | null` and `exchange_rate_date: string | null`, matching the backend field names and null semantics.
+
 ---
 
 ## 인수 기준
@@ -227,6 +255,21 @@ labels: [order, margin, cost-breakdown, backend, frontend]
 **AC-COST-019** (Event-Driven) — 결제 정보 섹션이 새 순서·라벨로 재구성되고, 비용 세부항목은 시각적으로 하위 표시된다. Traces: REQ-COST-023, REQ-COST-027, REQ-COST-028, REQ-COST-029. **When** `OrderDetailPage` renders an order whose API response includes `margin_amount="159.58", margin_rate="79.79", shipping_cost="8.18", korea_warehouse_cost="2.25", confirmed_cost="30.00", total_cost="40.43"`(AC-COST-003 기반), the system **shall** render the rows in DOM order `최종 결제 금액 → 비용 합계 → 원가 (확정 단가 합계) → 배송비 → 한국물류 → 마진 → 마진율`, render `한국물류`(NOT `한국창고비`), and render `원가`/`배송비`/`한국물류`의 컨테이너를 `비용 합계`보다 시각적으로 옅고 들여쓴 스타일로 표시한다. `total_cost`/`confirmed_cost`가 `null`이면 각각 `"—"`를 표시한다.
 *Mutation*: 순서를 바꾸거나 라벨을 갱신하지 않으면(`한국창고비` 잔존) 실패한다. 세 세부항목에 들여쓰기·저채도 스타일을 적용하지 않으면 시각적 판별력이 없어진다.
 
+**AC-COST-020** (State-Driven) — 주문일 자체에 환율 레코드가 있는 경우 `exchange_rate`/`exchange_rate_date`가 정확한 값을 반환한다. Traces: REQ-COST-030, REQ-COST-031. **While** an order's `shopify_created_at` date has its own `ExchangeRate(effective_date=주문일, rate=1427.05)` record, the system **shall** report `exchange_rate="1427.05"` and `exchange_rate_date=` 주문일의 ISO 문자열.
+*Mutation*: `exchange_rate`에 `margin_usd`나 다른 값을 반환하거나, `exchange_rate_date`를 주문일을 그대로 에코하는 방식으로(레코드의 `effective_date`를 실제로 조회하지 않고) 구현하면 이 AC 자체는 통과할 수 있다 — 이 mutation은 AC-COST-021이 전담해서 잡는다.
+
+**AC-COST-021** (State-Driven) [HARD] — 폴백 발생 시 `exchange_rate_date`는 주문일이 아니라 실제 적용된 레코드의 `effective_date`를 반환한다(이 기능 전체의 판별 테스트). Traces: REQ-COST-030, REQ-COST-031, REQ-COST-034. **While** an order is dated `D`이고 `D` 당일에는 `ExchangeRate` 레코드가 없으며 `D-3`에만 레코드(`rate=1300.00`)가 존재할 때, the system **shall** report `exchange_rate="1300.00"`, `exchange_rate_date=(D-3)의 ISO 문자열`, **and** `exchange_rate_date != D의 ISO 문자열`.
+*Mutation*: `exchange_rate_date`를 `obj.shopify_created_at.date()`(주문일)로 잘못 구현하면(폴백 레코드의 `effective_date`가 아니라 주문일을 그대로 반환) `exchange_rate_date == D`가 되어 정답(`D-3`)과 어긋난다 — 이 mutation이야말로 이 기능이 존재하는 이유(폴백을 눈에 보이게 만드는 것)를 직접 무효화하므로, 이 AC가 전체 기능의 핵심 판별 지점이다.
+
+**AC-COST-022** (State-Driven) [HARD] — `margin_amount`가 `null`이어도(확정 매입가 전무) `exchange_rate`/`exchange_rate_date`는 `null`이 아니다(별도 게이트의 판별 테스트). Traces: REQ-COST-033. **While** an order has a valid `ExchangeRate`이지만 어떤 라인아이템도 `confirmed_price`가 없을 때(AC-COST-007과 동일 조건), the system **shall** report `margin_amount=null`이면서 동시에 `exchange_rate`/`exchange_rate_date`는 **non-null**.
+*Mutation*: 이 두 필드를 `_compute_cost_breakdown`(`has_any_confirmed` 게이트를 가진 기존 헬퍼)을 거쳐 구현하면 `margin_amount`와 동일하게 `null`이 반환되어 이 AC가 실패한다 — 별도의, 더 좁은 게이트(`_get_exchange_rate(obj) is None`만)를 요구하는 REQ-COST-033의 직접 판별 지점.
+
+**AC-COST-023** (Unwanted) — 환율 레코드 자체가 없을 때만 `exchange_rate`/`exchange_rate_date`가 `null`이다. Traces: REQ-COST-032. **If** no `ExchangeRate` record exists at or before the order date(AC-COST-006과 동일 조건), **then** the system **shall** include the keys `exchange_rate`, `exchange_rate_date` in the response **and** report `null` for both — 키 존재 + `null` 값 이중 단정(D6 계승, `.get(...)` 대신 `"exchange_rate" in res.data`).
+*Mutation*: 두 필드를 구현하지 않으면(`Meta.fields` 누락) 키 존재 단정이 실패한다.
+
+**AC-COST-024** (Event-Driven) — 프론트엔드가 적용 환율을 마진율 다음, 비용 세부항목 그룹 밖에 표시한다. Traces: REQ-COST-035, REQ-COST-036. **When** `OrderDetailPage` renders an order whose API response includes `exchange_rate="1427.05", exchange_rate_date="2026-08-03"`, the system **shall** display `"1,427.05 KRW/USD (2026-08-03)"` in a row labeled `적용 환율`, positioned in DOM order after `마진율`, with a container class that does NOT include a `pl-` indentation class. **While** `exchange_rate` or `exchange_rate_date` is `null`, the system **shall** display `"—"`.
+*Mutation*: `OrderDetail` 타입에 두 필드를 추가하지 않고 컴포넌트에서 접근하면 TypeScript 컴파일이 실패한다(`tsc -b` 회귀 게이트). 표시 위치를 비용 세부항목의 `pl-3` 그룹 안에 넣으면(계산 근거가 아니라 비용 항목처럼 보이게 됨) 들여쓰기 부재 단정이 실패한다. `null` 폴백을 빠뜨리면 두 번째 절이 "null KRW/USD (null)" 같은 값을 렌더링해 실패한다.
+
 ### 기존 테스트 갱신 대상
 
 이 변경으로 다음 기존 테스트의 기대값이 달라진다 — 새 공식(배송비 + 한국창고비 반영) 적용 결과다. 갱신 대상이 아닌 마진 관련 테스트(`test_margin_amount_is_null_when_all_confirmed_price_null`, `test_margin_null_when_no_exchange_rate`)는 애초에 `null`을 기대하므로 영향이 없다.
@@ -274,8 +317,15 @@ labels: [order, margin, cost-breakdown, backend, frontend]
 | REQ-COST-027 | AC-COST-019 |
 | REQ-COST-028 | AC-COST-019 |
 | REQ-COST-029 | AC-COST-019 |
+| REQ-COST-030 | AC-COST-020, AC-COST-021 |
+| REQ-COST-031 | AC-COST-020, AC-COST-021 |
+| REQ-COST-032 | AC-COST-023 |
+| REQ-COST-033 | AC-COST-022 |
+| REQ-COST-034 | AC-COST-021, `plan.md`/`test_spec_021.py::test_t9`(AC-COST-009) 무수정 재통과 (쿼리 수 불변식) |
+| REQ-COST-035 | AC-COST-024 |
+| REQ-COST-036 | AC-COST-024 |
 
-19개 요구사항 중 16개가 13개 인수 기준으로 직접 커버된다. 나머지 3개(REQ-COST-001, 018, 019)는 구조/범위 제약이며 `plan.md`의 완료 조건으로 검증한다. **v1.3.0 확장**: REQ-COST-020~029(10개)가 AC-COST-014~019(6개)로 커버된다 — 전부 런타임 시나리오로 직접 검증된다(구조/범위 제약 없음).
+19개 요구사항 중 16개가 13개 인수 기준으로 직접 커버된다. 나머지 3개(REQ-COST-001, 018, 019)는 구조/범위 제약이며 `plan.md`의 완료 조건으로 검증한다. **v1.3.0 확장**: REQ-COST-020~029(10개)가 AC-COST-014~019(6개)로 커버된다 — 전부 런타임 시나리오로 직접 검증된다(구조/범위 제약 없음). **v1.4.0 확장**: REQ-COST-030~036(7개)이 AC-COST-020~024(5개)로 커버된다 — 전부 런타임 시나리오로 직접 검증된다.
 
 ---
 
@@ -296,6 +346,8 @@ labels: [order, margin, cost-breakdown, backend, frontend]
 
 **G. `total_cost`는 설계 결정 B를 확장한다 — 반올림 전 값의 합을 한 번만 양자화한다(v1.3.0).** `confirmed_cost`/`shipping_cost`/`korea_warehouse_cost`는 설계 결정 B가 이미 정한 대로 각자 독립적으로 양자화된 사본이다. `total_cost`는 이 세 개의 **양자화된 문자열을 다시 파싱해 합산**하지 않는다 — 대신 `_compute_cost_breakdown_uncached`가 갖고 있는 반올림 전 `confirmed_cost_usd + shipping_cost_usd + korea_warehouse_usd`를 그대로 합산한 뒤 `get_total_cost`에서 단 한 번 양자화한다. [HARD] 대안(프론트엔드 또는 백엔드가 이미 노출된 세 반올림 필드를 합산해 `total_cost`를 만드는 방식)은 명시적으로 기각한다 — 사용자 요구사항이 "compute on backend from unrounded values"를 [HARD]로 지정했고, AC-COST-015가 두 방식이 1센트 갈리는 구체적 픽스처(`10.005/2.725/1.25`)로 그 차이를 보여준다. 새 세로 레이아웃(REQ-COST-027)은 `비용 합계`가 `원가`+`배송비`+`한국물류`의 눈에 보이는 합처럼 보이는 위치에 배치되므로, 반올림 오차로 인한 "산술 오류처럼 보이는" 1센트 불일치를 서버가 흡수해야 한다는 것이 이 결정의 핵심 근거다.
 
+**H. `exchange_rate`/`exchange_rate_date`는 설계 결정 D의 단일 게이트를 의도적으로 따르지 않는다(v1.4.0).** 설계 결정 D는 `shipping_cost`/`korea_warehouse_cost`/`total_weight_grams`가 `margin_amount`와 동일한 게이트(환율 없음 OR 확정 매입가 전무)를 공유해야 한다고 정했다 — 그 근거는 "마진은 없는데 배송비만 있는" 상태가 프론트엔드에 혼란을 준다는 것이었다. `exchange_rate`/`exchange_rate_date`는 다르다 — 이 두 필드의 존재 이유 자체가 "확정 매입가가 하나도 없어 마진을 계산할 수 없는 상황에서도, 이 날짜에 어떤 환율이 적용되고 있는지는 보여주고 싶다"는 것이다(문제 정의: `_get_exchange_rate`의 폴백이 지금까지 완전히 비가시적이었다). `has_any_confirmed` 게이트를 공유시키면 이 목적 자체가 무효화된다 — 확정 전 주문(가장 폴백이 궁금한 시점 중 하나)에서 환율이 통째로 사라져버리기 때문이다. 따라서 이 두 필드의 유일한 null 조건은 `_get_exchange_rate(obj) is None`(REQ-COST-032)이며, 설계 결정 D는 기존 7개 필드에만 적용된다. AC-COST-022가 이 분리를 직접 검증한다.
+
 ## 알려진 제약사항 — 순 결제액과 마진 기준의 불일치(수정하지 않음, v1.3.0에서 발견)
 
 `frontend/src/pages/OrderDetailPage.tsx:168`은 `netPaidAmount = Number(data.total_price ?? 0) - totalRefunded`로 **환불을 반영한** 순 결제액을 `최종 결제 금액` 줄에 표시한다. 반면 마진(`margin_amount`, `margin_usd`)은 `total_price_usd`(환불 미반영, `backend/order/serializers.py:287`)만을 기준으로 계산한다 — 이 둘의 기준이 서로 다르다는 사실은 SPEC-ORDER-008/009 도입 시점부터 이미 존재했다.
@@ -311,7 +363,8 @@ labels: [order, margin, cost-breakdown, backend, frontend]
 - 이 SPEC은 백엔드 시리얼라이저·프론트엔드 표시만 다루며 모델/마이그레이션 변경이 없다 — 비용은 런타임 계산이다(SPEC-ORDER-009가 확립한 관례 계승).
 - `korea_warehouse_usd`/`shipping_cost_usd` 환산에 쓰는 환율은 `confirmed_price` 환산과 동일한 주문일 환율이며 별도 환율을 도입하지 않는다.
 - 값의 통화 단위는 전량 USD로 통일한다(SPEC-ORDER-009 관례).
-- `ExchangeRate` 조회는 주문 직렬화당 최대 1회로 제한된다(REQ-COST-015, 설계 결정 F) — 5개 필드 게터가 동일한 메모이즈된 계산 결과를 공유한다.
+- `ExchangeRate` 조회는 주문 직렬화당 최대 1회로 제한된다(REQ-COST-015/034, 설계 결정 F) — `exchange_rate`/`exchange_rate_date`를 포함해 9개 필드 게터가 동일한 메모이즈된 조회를 공유한다(v1.4.0).
+- `exchange_rate`/`exchange_rate_date`는 설계 결정 D의 단일 게이트를 공유하지 않는다(REQ-COST-033, 설계 결정 H) — 이 둘의 null 조건은 나머지 7개 필드보다 좁다.
 
 ## Exclusions (What NOT to Build)
 

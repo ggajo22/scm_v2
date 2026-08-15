@@ -174,6 +174,16 @@ class OrderDetailSerializer(serializers.ModelSerializer):
     # helper as the other cost fields above.
     confirmed_cost = serializers.SerializerMethodField()
     total_cost = serializers.SerializerMethodField()
+    # SPEC-ORDER-021 extension (v1.4.0): the ExchangeRate record actually
+    # applied by _get_exchange_rate() -- exposed so the order detail screen
+    # can show the applied rate and, crucially, the fallback effective_date
+    # when it differs from the order date (previously invisible).
+    # DELIBERATELY NOT gated by has_any_confirmed like the 7 cost fields
+    # above (design decision D does not extend to these two) -- these two
+    # are non-null whenever an ExchangeRate record was found at all, even if
+    # margin_amount is null because no line item has a confirmed_price yet.
+    exchange_rate = serializers.SerializerMethodField()
+    exchange_rate_date = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
@@ -194,6 +204,10 @@ class OrderDetailSerializer(serializers.ModelSerializer):
             # cost only) and total_cost (all three cost components summed
             # server-side from unrounded values).
             "confirmed_cost", "total_cost",
+            # SPEC-ORDER-021 extension (v1.4.0): applied exchange rate + the
+            # record's effective_date (may be earlier than the order date
+            # due to the fallback lookup in _get_exchange_rate).
+            "exchange_rate", "exchange_rate_date",
             # SPEC-ORDER-011 T11: expose the logistics_status aggregate so the
             # frontend has a data source for the Order-level aggregate badge.
             "status",
@@ -210,13 +224,34 @@ class OrderDetailSerializer(serializers.ModelSerializer):
         Look up exchange rate for order date with fallback to prior date.
         Returns ExchangeRate instance or None.
         REQ-003, REQ-013
+
+        Memoized per `obj` for the lifetime of this serializer instance
+        (SPEC-ORDER-021 REQ-COST-034, same pattern as
+        _compute_cost_breakdown below). `get_exchange_rate`/
+        `get_exchange_rate_date` call this directly (they are NOT gated by
+        `_compute_cost_breakdown`'s has_any_confirmed check -- REQ-COST-033),
+        while `_compute_cost_breakdown_uncached` also calls it. Without this
+        cache, the two call sites would each issue their own ExchangeRate
+        query, defeating the "at most 1 query per serialized order" guarantee
+        AC-COST-009 (c) pins.
         """
+        cache = getattr(self, "_exchange_rate_cache", None)
+        if cache is None:
+            cache = {}
+            self._exchange_rate_cache = cache
+        if obj.pk in cache:
+            return cache[obj.pk]
+
         if not obj.shopify_created_at:
-            return None
-        order_date = obj.shopify_created_at.date()
-        return ExchangeRate.objects.filter(
-            effective_date__lte=order_date
-        ).order_by("-effective_date").first()
+            result = None
+        else:
+            order_date = obj.shopify_created_at.date()
+            result = ExchangeRate.objects.filter(
+                effective_date__lte=order_date
+            ).order_by("-effective_date").first()
+
+        cache[obj.pk] = result
+        return result
 
     # @MX:NOTE: [AUTO] SPEC-ORDER-021 REQ-COST-002~008/019: single helper
     # backing all 7 cost-related SerializerMethodFields (margin_amount,
@@ -385,6 +420,27 @@ class OrderDetailSerializer(serializers.ModelSerializer):
         if result is None:
             return None
         return str(result["total_cost_usd"].quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+    def get_exchange_rate(self, obj: Order):
+        """SPEC-ORDER-021 v1.4.0 REQ-COST-030: the ExchangeRate.rate actually
+        applied by _get_exchange_rate(), as a string. Null gate is
+        `_get_exchange_rate(obj) is None` ONLY -- independent of
+        has_any_confirmed, unlike the 7 cost fields above (REQ-COST-033)."""
+        er = self._get_exchange_rate(obj)
+        if er is None:
+            return None
+        return str(er.rate)
+
+    def get_exchange_rate_date(self, obj: Order):
+        """SPEC-ORDER-021 v1.4.0 REQ-COST-031: effective_date of the applied
+        ExchangeRate record (ISO YYYY-MM-DD), which may be earlier than the
+        order date due to the fallback lookup in _get_exchange_rate -- that
+        fallback was previously invisible to readers of the order detail
+        screen. Same null gate as get_exchange_rate."""
+        er = self._get_exchange_rate(obj)
+        if er is None:
+            return None
+        return er.effective_date.isoformat()
 
 
 class ExchangeRateSerializer(serializers.ModelSerializer):

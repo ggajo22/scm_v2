@@ -206,6 +206,14 @@ export interface OrderDetail {
   // summing the three fields above on the frontend). Same null gate.
   confirmed_cost: string | null
   total_cost: string | null
+  // SPEC-ORDER-021 extension (v1.4.0): the ExchangeRate record actually
+  // applied by the backend's _get_exchange_rate() fallback lookup — surfaces
+  // the applied rate and its effective_date (which may be earlier than the
+  // order date when the fallback kicked in). NOT gated by has_any_confirmed
+  // like the fields above — non-null whenever a rate record was found, even
+  // if margin_amount is null because nothing is confirmed yet.
+  exchange_rate: string | null
+  exchange_rate_date: string | null
   customer: OrderCustomerDetail | null
   shipping_address: ShippingAddress | null
   line_items: LineItemDetail[]
