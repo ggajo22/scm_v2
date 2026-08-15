@@ -15,8 +15,10 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.authentication import JWTAuthentication
 
+from accounts.permissions import IsSuperAdmin
+
 from .excel_utils import generate_line_item_notes_excel
-from .models import ExchangeRate, LineItem, LineItemNote, Order
+from .models import ExchangeRate, LineItem, LineItemNote, Order, StoreSyncWatermark
 from .serializers import (
     ExchangeRateSerializer,
     LineItemNoteSerializer,
@@ -26,6 +28,11 @@ from .serializers import (
     OrderNoteSerializer,
 )
 from .shopify_orders import sync_single_order_from_shopify, sync_store
+
+# SPEC-PURCHASE-ORDER-011: canonical store list for the sync-status endpoint.
+# Mirrors the literal store lists already used elsewhere in this app
+# (OrderSyncView.post above, management/commands/sync_orders.py STORE_TYPES).
+SYNC_STATUS_STORE_TYPES = ["gimssine", "etoile"]
 
 
 class OrderDetailView(RetrieveAPIView):
@@ -77,6 +84,66 @@ class OrderSyncView(APIView):
                 "stores": store_results,
                 "total_synced": sum(r["synced_count"] for r in store_results.values()),
                 "total_updated": sum(r["updated_count"] for r in store_results.values()),
+            }
+        )
+
+
+class OrderSyncStatusView(APIView):
+    """GET /api/orders/sync-status/ — surfaces the last time the scheduled
+    Shopify sync (sync_store(), run every 5 minutes by a Windows scheduled
+    task) actually executed, per store, so a super_admin can tell the
+    scheduled job stopped even when it has been quiet (no new Shopify
+    activity) rather than failing.
+
+    Deliberately reads StoreSyncWatermark.last_run_at, NOT
+    last_synced_updated_at or updated_at — see the StoreSyncWatermark model
+    docstring and sync_store() for why those columns can sit stale for hours
+    on a perfectly healthy sync and would make this indicator useless.
+    """
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsSuperAdmin]
+
+    def get(self, request):
+        # Single query for all watermark rows; canonical stores that have no
+        # row yet (or aren't in the DB at all) fall back to nulls below.
+        watermarks_by_store = {
+            row["store_type"]: row
+            for row in StoreSyncWatermark.objects.filter(
+                store_type__in=SYNC_STATUS_STORE_TYPES
+            ).values("store_type", "last_run_at", "last_synced_updated_at")
+        }
+
+        stores = []
+        top_level_last_run_at = None
+        any_unknown = False
+        for store_type in SYNC_STATUS_STORE_TYPES:
+            row = watermarks_by_store.get(store_type)
+            last_run_at = row["last_run_at"] if row else None
+            last_synced_updated_at = row["last_synced_updated_at"] if row else None
+            stores.append(
+                {
+                    "store_type": store_type,
+                    "last_run_at": last_run_at,
+                    "last_synced_updated_at": last_synced_updated_at,
+                }
+            )
+            if last_run_at is None:
+                # Missing watermark row or NULL last_run_at both mean
+                # "unknown" — MIN cannot be trusted once any store is
+                # unknown, so the top-level value must be null too
+                # (unknown beats falsely-fresh).
+                any_unknown = True
+            elif top_level_last_run_at is None or last_run_at < top_level_last_run_at:
+                # MIN across stores, not MAX: a single silently-stopped
+                # store must make the top-level value look stale, which a
+                # MAX would hide.
+                top_level_last_run_at = last_run_at
+
+        return Response(
+            {
+                "last_run_at": None if any_unknown else top_level_last_run_at,
+                "stores": stores,
             }
         )
 

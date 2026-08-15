@@ -45,6 +45,22 @@ export interface OrderSyncResponse {
   total_updated: number
 }
 
+// SPEC-ORDER-SYNC-HEALTH: super_admin-only sync health indicator (GET
+// /api/orders/sync-status/, 403 for admin). `last_run_at` is the MIN across
+// stores and null when any store has never run — treat null as
+// unknown/stopped, never as fresh. `last_synced_updated_at` is a Shopify
+// cursor, not a run time — do not present it as "last sync".
+export interface OrderSyncStatusStore {
+  store_type: 'gimssine' | 'etoile'
+  last_run_at: string | null
+  last_synced_updated_at: string | null
+}
+
+export interface OrderSyncStatus {
+  last_run_at: string | null
+  stores: OrderSyncStatusStore[]
+}
+
 export interface OrderListParams {
   page?: number
   store_type?: 'gimssine' | 'etoile' | ''
