@@ -11,6 +11,15 @@ REQUEST_TIMEOUT = 30
 
 _FRANKFURTER_URL_TEMPLATE = "https://api.frankfurter.dev/v1/{date}?base=USD&symbols=KRW"
 
+# M8 live-backfill incident (2026-08-15): Frankfurter returns HTTP 403 for
+# the stdlib default User-Agent ("Python-urllib/3.x"). Confirmed live on
+# the deployment machine: Request(url) -> 403, Request(url, headers=
+# {"User-Agent": USER_AGENT}) -> 200. No mocked test exercises the real
+# HTTP layer (all tests mock urllib.request.urlopen, per D8), so this was
+# structurally invisible until the live call -- REQ-XRATE-002 now requires
+# a non-default User-Agent explicitly for this reason.
+USER_AGENT = "scm-v2/1.0"
+
 
 class ExchangeRateFetchError(Exception):
     """Raised when the USD/KRW rate for a given date cannot be retrieved."""
@@ -43,7 +52,7 @@ def fetch_usd_krw_rate(request_date: date) -> tuple[date, Decimal]:
     failure modes are normalized to this one exception type).
     """
     url = _FRANKFURTER_URL_TEMPLATE.format(date=request_date.isoformat())
-    req = urllib.request.Request(url)
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     try:
         with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
             body = json.loads(resp.read())

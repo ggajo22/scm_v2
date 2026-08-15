@@ -91,3 +91,26 @@ def test_u8_null_krw_rate_raises_contract_exception():
         )
         with pytest.raises(ExchangeRateFetchError):
             fetch_usd_krw_rate(date(2026, 7, 1))
+
+
+def test_u9_request_sends_non_default_user_agent_header():
+    """Live-backfill incident (M8): Frankfurter returns HTTP 403 for the
+    stdlib default User-Agent (Python-urllib/3.x). Confirmed live on this
+    machine: Request(url) -> 403, Request(url, headers={'User-Agent': ...})
+    -> 200. Request.headers normalizes the key to "User-agent"
+    (Request.add_header uses str.capitalize()), so it must be looked up
+    that way -- "User-Agent" (mixed case) is NOT a valid lookup key here.
+    """
+    with patch("urllib.request.urlopen") as mock_urlopen:
+        mock_urlopen.return_value.__enter__.return_value.read.return_value = (
+            b'{"date":"2026-07-01","rates":{"KRW":1500.00}}'
+        )
+        fetch_usd_krw_rate(date(2026, 7, 1))
+
+    sent_request = mock_urlopen.call_args.args[0]
+    user_agent = sent_request.get_header("User-agent")
+    assert user_agent is not None, "no explicit User-Agent header was set on the request"
+    assert not user_agent.startswith("Python-urllib"), (
+        f"User-Agent still uses the stdlib default ({user_agent!r}), which Frankfurter "
+        "rejects with HTTP 403"
+    )
