@@ -370,7 +370,7 @@ labels: [order, margin, cost-breakdown, backend, frontend, exchange-rate]
 
 - **미국창고비(US warehouse fee)는 구현하지 않는다.** 자리표시자 필드나 0값 필드도 만들지 않는다 — 사용자가 후속 SPEC에서 추가한다(설계 결정 E가 확장 지점만 마련한다).
 - **배송비/한국창고비 상수를 DB나 설정 파일로 관리하는 기능은 만들지 않는다.** 모듈 레벨 상수로 고정한다(설계 결정 A).
-- **`OrderListSerializer`(목록 API)에 비용/마진 필드를 노출하지 않는다.** 기존 관례 유지(REQ-COST-014).
+- **`OrderListSerializer`(목록 API)에 비용/마진 필드를 노출하지 않는다.** 기존 관례 유지(REQ-COST-014). **[SPEC-ORDER-023이 이 항목을 부분 supersede함]** SPEC-ORDER-023(REQ-OLIST-016)이 `OrderListSerializer`에 `margin_rate`(표시 전용)를 노출하도록 이 Exclusion을 명시적으로 뒤집었다 — `margin_amount`/`shipping_cost`/`korea_warehouse_cost`/`total_weight_grams`(REQ-COST-014가 실제로 금지하는 4개 키)는 여전히 노출되지 않으므로 계약 충돌은 아니다. 자세한 내용은 `SPEC-ORDER-023/spec.md`의 "관련 SPEC" 절 참조.
 - **비용 내역을 DB 컬럼으로 저장하지 않는다.** 런타임 계산으로 유지한다(SPEC-ORDER-009 제약사항 계승).
 - **과거 주문에 대한 소급 배치 재계산은 만들지 않는다.** 런타임 계산이므로 조회 시점마다 새 공식이 자동 적용되며, 별도의 백필 마이그레이션이나 배치 작업이 필요 없다.
 - **`ExchangeRate` 조회의 영속적(cross-request) 캐싱 계층은 만들지 않는다.** REQ-COST-015가 요구하는 것은 단일 요청 내 메모이제이션(주문 직렬화당 최대 1회)뿐이다 — Django cache framework, Redis 등 요청 간 캐시는 이 SPEC의 범위가 아니다(설계 결정 F).
