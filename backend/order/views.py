@@ -231,9 +231,14 @@ class OrderListView(ListAPIView):
     pagination_class = OrderPagination
 
     def get_queryset(self):
-        qs = Order.objects.prefetch_related("refunds", "line_items", "customer").order_by(
-            "-shopify_created_at"
-        )
+        # SPEC-ORDER-023 v1.4.0 REQ-OLIST-021: "line_items__purchase_orders"
+        # feeds _is_awaiting_purchase (serializers.py) the PurchaseOrder
+        # linkage REQ-OLIST-013 requires. One extra M2M query for the whole
+        # page regardless of page size — without it the serializer would fall
+        # back to one query per line item.
+        qs = Order.objects.prefetch_related(
+            "refunds", "line_items", "line_items__purchase_orders", "customer"
+        ).order_by("-shopify_created_at")
         params = self.request.query_params
 
         store_type = params.get("store_type")

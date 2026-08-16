@@ -1,7 +1,7 @@
 ---
 id: SPEC-ORDER-023
 document: acceptance
-version: 1.3.0
+version: 1.4.0
 status: completed
 updated: 2026-08-16
 ---
@@ -19,6 +19,8 @@ Given/When/Then 형태의 실행 가능한 테스트 시나리오. 각 시나리
 **v1.2.1 변경**: plan-audit iteration 3(**PASS, 0.87, 차단 결함 0건**) 반영. PASS 상태에서 사용자가 선택한 3건만 반영: **N1**(표준 데이터셋에 Order H = `{outbound_scheduled, shipment_confirmed}` 혼재, 표시값 `partial` 추가 — G만으로는 `outbound_scheduled` uniform 검사의 any/all mutation을 판별하지 못했다. AC-OLIST-022e의 기대 집합을 `{G,H}`로 갱신), **N2**(AC-OLIST-022~022e의 Then에 응답 `count` 필드 단정 추가 — 페이지네이션 이후 Python 사후 필터링은 추가 쿼리 0개라 기존 AC를 전부 통과하면서 프로덕션에서 페이지네이션을 조용히 깨뜨릴 수 있었다. REQ-OLIST-025([HARD] 쿼리 레벨 필터)에 실효 검증 수단이 생겼다), **L8-new**(spec.md REQ-OLIST-024a 문언 정정, 이 문서에는 직접적인 텍스트 변경 없음 — AC-OLIST-022f는 무수정).
 
 **v1.3.0 변경(구현 완료)**: 독립 평가(evaluator-active, PASS — Functionality 93 / Security 96 / Craft 88 / Consistency 88) 확인 후 `status`를 draft→completed로 전환한다. 이 문서의 시나리오 자체는 무수정이다 — 전 AC가 `test_spec_023.py`(31개, 백엔드) 및 `OrdersPage.test.tsx`(프론트엔드, 전체 스위트 304개 중 일부)에서 설계된 mutation을 실제로 재현해 판별력을 확인했다(자세한 내용은 `spec.md` HISTORY v1.3.0 참조).
+
+**v1.4.0 변경(프로덕션 결함 정정)**: 발주상태 AC 계열이 `PurchaseOrder` 링크 조건을 전혀 검사하지 않아, `purchase_status` 단독 검사라는 잘못된 구현을 그대로 통과시켰다(주문 `#38360` 사용자 보고, 프로덕션 trackable 주문의 97.5%가 오표시). AC-OLIST-014를 링크 픽스처 포함으로 강화하고, AC-OLIST-014a(`#38360` 직접 재현)·AC-OLIST-014b(`damaged_exchange`는 링크와 무관하게 미발주)를 신설했다. AC-OLIST-021의 절대 쿼리 수를 7→8로 갱신(`line_items__purchase_orders` M2M prefetch 1회 추가). 자세한 근본 원인은 `spec.md` HISTORY v1.4.0 참조.
 
 **검증 레이어**: `[BE]` = `backend/order/tests/test_spec_023.py`(pytest + DRF `APIClient`), `[FE]` = `frontend/src/pages/OrdersPage.test.tsx`(vitest + React Testing Library).
 
@@ -160,20 +162,38 @@ Traces: REQ-OLIST-011a
 
 ## 발주상태 파생
 
-### AC-OLIST-014 — 미발주 판별 (`any` 대 `all`) `[BE]`
+### AC-OLIST-014 — 미발주 판별 (`any` 대 `all` + 발주서 링크 조건) `[BE]` (강화 v1.4.0)
 
 Traces: REQ-OLIST-013
 
-- **Given**: trackable 라인아이템 2개 — A(`purchase_status="unordered"`), B(`purchase_status="in_stock"`).
+- **Given**: trackable 라인아이템 2개 — A(`purchase_status="unordered"`, 연결된 `PurchaseOrder` **없음**), B(`purchase_status="unordered"`이면서 `status="confirmed"`인 `PurchaseOrder` 1건에 **연결됨**).
+- **When**: `GET /api/orders/`.
+- **Then**: `purchase_display == "unordered"`. 이어서 같은 테스트에서 A를 삭제하고 재요청하면 `purchase_display == "ordered"`.
+- **판별력**: "모든 trackable 항목이 대기 상태"(all)로 구현하면 A/B가 섞여 있어 거짓이 되어 `"ordered"`(오답)가 된다. 후반부 단정(A 삭제 후 `"ordered"`)은 v1.3.0의 `purchase_status` 단독 검사를 직접 잡아낸다 — 그 구현에서는 B만 남아도 `"unordered"`가 나온다.
+
+### AC-OLIST-014a — 발주서에 연결된 `unordered` 항목은 미발주가 아니다 (`#38360` 재현) `[BE]` (신규 v1.4.0)
+
+Traces: REQ-OLIST-013, REQ-OLIST-014, REQ-OLIST-014a
+
+- **Given**: 프로덕션 주문 `#38360`(order.pk=4163)의 실제 형태 — trackable 라인아이템 8개 전부 `purchase_status="unordered"`이고, 각각 `status="confirmed"`인 서로 다른 `PurchaseOrder`에 연결됨.
+- **When**: `GET /api/orders/`.
+- **Then**: `purchase_display == "ordered"`.
+- **판별력**: 이것이 v1.4.0이 고치는 결함의 직접 재현이다. v1.3.0 구현(`any(li.purchase_status == "unordered")`)에서는 `"unordered"`가 나와 반드시 실패한다. 프로덕션에서 trackable 주문 3,613건 중 3,524건(97.5%)이 이 형태였다.
+
+### AC-OLIST-014b — `damaged_exchange`는 발주서 연결과 무관하게 미발주 `[BE]` (신규 v1.4.0)
+
+Traces: REQ-OLIST-013(b), REQ-OLIST-014a
+
+- **Given**: trackable 라인아이템 2개 — A(`purchase_status="damaged_exchange"`, `status="confirmed"`인 `PurchaseOrder` 1건에 **연결됨**), B(`purchase_status="in_stock"`).
 - **When**: `GET /api/orders/`.
 - **Then**: `purchase_display == "unordered"`.
-- **판별력**: "모든 trackable 항목이 unordered"(all)로 구현하면 A/B가 섞여 있어 거짓이 되어 `"ordered"`(오답)가 된다.
+- **판별력**: 링크 예외를 `purchase_status`와 무관하게 일괄 적용하면(즉 `damaged_exchange`에도 "발주서 있으면 발주완료"를 적용하면) `"ordered"`(오답)가 되고, 그 구현은 미발주 목록 탭(`_reorder_candidate_filter`가 `damaged_exchange`를 링크 여부와 무관하게 포함한다)과 어긋나 REQ-OLIST-014a를 위반한다.
 
 ### AC-OLIST-015 — 발주완료 판별 `[BE]`
 
 Traces: REQ-OLIST-014
 
-- **Given**: trackable 라인아이템 2개, 둘 다 `unordered`가 아님(`in_stock`, `cs_required`).
+- **Given**: trackable 라인아이템 2개, 둘 다 발주 대기 상태가 아님(`in_stock`, `cs_required` — 둘 다 `PurchaseOrder` 연결 없음).
 - **When**: `GET /api/orders/`.
 - **Then**: `purchase_display == "ordered"`.
 
@@ -272,8 +292,8 @@ Traces: REQ-OLIST-021, REQ-OLIST-022, REQ-OLIST-022a
 
 - **Given**: 확정 매입가·유효 환율·**고객이 연결된**(`customer` not null — 그렇지 않으면 `orders_customer` 프리페치 쿼리 자체가 생략되어 절대값이 6이 아니라 5가 되는 엣지 케이스와 섞인다) trackable 라인아이템을 각각 가진 주문들.
 - **When**: (워밍업 요청 후) 주문 1건을 반환하는 요청과 5건을 반환하는 요청 각각을 `CaptureQueriesContext`로 캡처한다.
-- **Then**: 두 요청의 총 쿼리 수가 서로 같고, **그 값이 정확히 7이다**(`spec.md` REQ-OLIST-022a가 유도한 값 — 이 세션에서 실측한 베이스라인 6: JWT 인증 사용자 조회 1 + 페이지네이션 `COUNT(*)` 1 + 본문 `SELECT` 1 + `prefetch_related` 3개(`refunds`/`line_items`/`customer`) + 배치 `ExchangeRate` 쿼리 1).
-- **판별력**: `logistics_display`/`purchase_display` 계산이 `obj.line_items.all()` 재사용 대신 `LineItem.objects.filter(order=obj)`류의 신규 쿼리를 발급하면 주문 수에 비례해 쿼리 수가 늘어 1건 vs 5건의 값이 달라지고, 절대값도 7을 초과한다. `_get_exchange_rate`를 무수정 재사용하는 mutation은 주문마다 캐시가 새로 채워지므로 1건 요청은 7(6+1), 5건 요청은 11(6+5)이 되어 **페이지 크기 불변성 자체가 깨지고**, 절대값도 어긋난다 — 이 mutation은 상대 비교(1건==5건)만으로도 걸리지만, 절대값 7 고정이 "우연히 둘 다 늘어나 같아지는" 다른 mutation(예: 항상 +1 상수 쿼리를 추가하는 버그)까지 추가로 잡는다.
+- **Then**: 두 요청의 총 쿼리 수가 서로 같고, **그 값이 정확히 8이다**(v1.4.0에서 7→8; `spec.md` REQ-OLIST-022a가 유도한 값 — 이 세션에서 실측한 베이스라인 6: JWT 인증 사용자 조회 1 + 페이지네이션 `COUNT(*)` 1 + 본문 `SELECT` 1 + `prefetch_related` 3개(`refunds`/`line_items`/`customer`) + 배치 `ExchangeRate` 쿼리 1 + `line_items__purchase_orders` M2M prefetch 1).
+- **판별력**: `logistics_display`/`purchase_display` 계산이 `obj.line_items.all()` 재사용 대신 `LineItem.objects.filter(order=obj)`류의 신규 쿼리를 발급하면 주문 수에 비례해 쿼리 수가 늘어 1건 vs 5건의 값이 달라지고, 절대값도 8을 초과한다. `_get_exchange_rate`를 무수정 재사용하는 mutation은 주문마다 캐시가 새로 채워지므로 1건 요청은 8(7+1), 5건 요청은 12(7+5)이 되어 **페이지 크기 불변성 자체가 깨지고**, 절대값도 어긋난다 — 이 mutation은 상대 비교(1건==5건)만으로도 걸리지만, 절대값 8 고정이 "우연히 둘 다 늘어나 같아지는" 다른 mutation(예: 항상 +1 상수 쿼리를 추가하는 버그)까지 추가로 잡는다.
 
 ## 물류상태 필터 (`LineItem`에서만 파생 — `Order.status`는 필터 조건에 쓰지 않는다)
 
@@ -432,7 +452,7 @@ Traces: REQ-OLIST-030, REQ-OLIST-031, REQ-OLIST-032
 | AC-OLIST-006~011 `[BE]` | `test_spec_023.py` | 007~010, 013(AC-011의 `purchase_display` 단정분) |
 | AC-OLIST-012 `[BE]` | `test_spec_023.py` | 012 |
 | AC-OLIST-013, 013a `[BE]` | `test_spec_023.py` | 011, 011a |
-| AC-OLIST-014~016 `[BE]` | `test_spec_023.py` | 013~015 |
+| AC-OLIST-014, 014a, 014b, 015, 016 `[BE]` | `test_spec_023.py` | 013~015 (014a/014b는 v1.4.0 신규) |
 | AC-OLIST-017, 017a `[BE]` | `test_spec_023.py` | 016 |
 | AC-OLIST-018, 018a, 018b `[BE]` | `test_spec_023.py` | 017 |
 | AC-OLIST-019~021 `[BE]` | `test_spec_023.py` | 019~022a |

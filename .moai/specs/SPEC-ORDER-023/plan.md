@@ -1,7 +1,7 @@
 ---
 id: SPEC-ORDER-023
 document: plan
-version: 1.3.0
+version: 1.4.0
 status: completed
 updated: 2026-08-16
 ---
@@ -36,7 +36,7 @@ updated: 2026-08-16
   - `backend/order/tests/test_spec_023.py` 신규 작성. AC-OLIST-006~025(백엔드 대상, 하위 013a/017a/018a/018b/020a/022a~f 포함)에 1:1 대응하는 테스트를 담는다.
   - **표준 물류상태 데이터셋(Order A~H, spec.md 참조)을 이 파일의 공용 fixture/헬퍼로 1회 정의하고, AC-OLIST-022~022f 전량이 이를 재사용한다** — 각 AC가 개별적으로 부분집합을 고르면 판별력이 테스트 작성자의 선택에 좌우된다는 것이 v1.1.0 감사(H1-new)의 핵심 지적이었다(v1.2.1: Order H 추가, 감사 N1 — `outbound_scheduled` uniform 검사의 any/all mutation 판별용).
   - AC-OLIST-017/017a/018/018a/018b(마진율 값·필드 범위·null 게이트 3원인), AC-OLIST-006~013a(물류상태 파생, 우선순위 역전·trackable 제외·혼재 상태 포함), AC-OLIST-014~016(발주상태 파생)은 신규 필드가 없는 현재 코드에서 반드시 실패해야 한다(`KeyError` 또는 값 불일치) — 단, AC-OLIST-012/016/018/018a/018b는 **키 존재 단정을 반드시 포함**해야 RED가 성립한다(`"logistics_display" in item`류, H1 — `.get(...)`만 쓰면 미구현 코드에서도 통과해버린다).
-  - AC-OLIST-019(배치 로드 정확성+쿼리 수), AC-OLIST-021(전체 쿼리 수 = 정확히 7), AC-OLIST-023(필터 쿼리 수 불변식)은 `test_spec_021.py:281-283`/`test_spec_018.py:483-551`(워밍업 `:502-504`)의 `CaptureQueriesContext` + 워밍업 관례를 따른다. **AC-OLIST-021의 절대값 `7`은 spec.md REQ-OLIST-022a가 이미 유도했으므로 추측하거나 구현 후 되채우지 않는다** — M0에서 재실측해 일치를 확인하는 것이 유일한 목적이다.
+  - AC-OLIST-019(배치 로드 정확성+쿼리 수), AC-OLIST-021(전체 쿼리 수 = 정확히 8, v1.4.0에서 7→8), AC-OLIST-023(필터 쿼리 수 불변식)은 `test_spec_021.py:281-283`/`test_spec_018.py:483-551`(워밍업 `:502-504`)의 `CaptureQueriesContext` + 워밍업 관례를 따른다. **AC-OLIST-021의 절대값 `8`(v1.4.0 이전 `7`)은 spec.md REQ-OLIST-022a가 이미 유도했으므로 추측하거나 구현 후 되채우지 않는다** — M0에서 재실측해 일치를 확인하는 것이 유일한 목적이다.
   - AC-OLIST-020(폴백 보존)은 D-3에만 레코드가 있는 픽스처를 쓴다. AC-OLIST-020a(신규, 시간대 경계)는 `django.test.utils.override_settings(TIME_ZONE="Asia/Seoul")`로 배포 설정(`"UTC"`)과 다른 시간대를 강제해 `.date()` 시간대 일치 요건을 판별한다.
   - AC-OLIST-022~022e(6개 필터 값 전량, 표준 데이터셋 공유), AC-OLIST-022f(신규, `?logistics_display=bogus_value` fail-open), AC-OLIST-024(구체적 기대값), AC-OLIST-025(`OrderDetailSerializer` 응답 키 집합 회귀 — `test_spec_021.py`의 T1~T10, T12~T22 무수정 재통과 확인 포함)도 포함한다.
   - AC-OLIST-001~005(취소 배지, 열 구성), AC-OLIST-026(6개 옵션 전량 존재 단정 포함), AC-OLIST-027(6개 라벨 파라미터화)은 `frontend/src/pages/OrdersPage.test.tsx`에서 다룬다(M6).
@@ -44,7 +44,7 @@ updated: 2026-08-16
 - **M2 (High) — 물류상태/발주상태 파생 구현 (GREEN) — `Order.status`를 읽지 않는다**:
   - `OrderListSerializer`에 `get_logistics_display`/`get_purchase_display` 추가. 공용 헬퍼(예: `_derive_line_item_states(obj)`)가 `obj.line_items.all()`을 **1회** 순회하며 trackable(`sku is not None`) 필터를 적용해 두 파생값을 함께 계산 — REQ-OLIST-021(추가 쿼리 없음)을 만족하려면 반드시 이미 prefetch된 `obj.line_items.all()`을 재사용해야 하며, `LineItem.objects.filter(order=obj)`류의 신규 쿼리를 발급하면 안 되고, **`obj.status`를 참조해서도 안 된다**(REQ-OLIST-007, C3 재설계).
   - 우선순위 구현 순서 준수: (1) 전부 `shipped` 체크 → (2) 하나라도 `shipped_quantity > 0` 체크 → (3) 전부 `received` 체크 → (4) 남은 trackable의 `logistics_status`가 uniform하면 그 값 → (4a) uniform하지 않으면(2개 이상의 distinct 값) `"partial"`. **순서를 바꾸면 AC-OLIST-006(규칙 1↔2)/AC-OLIST-009(규칙 2↔3)가 실패한다.** uniform 판정은 `{li.logistics_status for li in trackable}`의 길이가 1인지로 구현(집합 크기 비교) — `_recompute_order_aggregates`(`purchase_order_views.py:176-177`)의 `len(statuses) == 1` 패턴과 동일한 방식.
-  - 발주상태: trackable 라인아이템에 대해 `any(li.purchase_status == "unordered" for li in trackable)` — `all()`로 잘못 구현하면 AC-OLIST-014가 실패한다. `order_cancelled` 항목은 배제하지 않는다(명시적 가정 4).
+  - 발주상태 [REWRITTEN v1.4.0]: trackable 라인아이템에 대해 `any(_awaiting_purchase(li) for li in trackable)`이며, `_awaiting_purchase`는 미발주 목록 탭의 `_reorder_candidate_filter`(`purchase_order_views.py:107-110`)와 동일하게 (a) `purchase_status == "unordered"`이면서 연결된 `PurchaseOrder`가 없거나 (b) `purchase_status == "damaged_exchange"`인 경우 참이다. `all()`로 잘못 구현하면 AC-OLIST-014가, `purchase_status`만 검사하면 AC-OLIST-014/014a가, `damaged_exchange`에도 링크 예외를 적용하면 AC-OLIST-014b가 실패한다. `order_cancelled` 항목은 배제하지 않는다(명시적 가정 4 — 새 기준에서도 `unordered`가 아니므로 미발주를 유발하지 않는다). 링크 조회는 반드시 `li.purchase_orders.all()`(prefetch 캐시)로 해야 하며 `.exists()`는 캐시를 우회해 라인아이템당 1쿼리를 발급하므로 AC-OLIST-021이 실패한다.
 
 - **M3 (High) — 마진율 노출 + 배치 환율 로드 구현 (GREEN)**:
   - `OrderDetailSerializer._compute_cost_breakdown_uncached`(`serializers.py:298-360`)가 이미 구현한 마진 계산 로직(confirmed_cost_usd/shipping_cost_usd/korea_warehouse_usd → margin_usd → margin_rate 양자화)을 **재사용 가능한 형태로 추출**한다 — 정확한 방법(모듈 함수로 분리해 두 시리얼라이저가 호출, 또는 mixin)은 구현자 재량이나, 추출 후 `OrderDetailSerializer`가 호출하는 코드 경로가 리팩터링 전후 동일한 값을 반환하는지 `test_spec_021.py`의 T1~T10, T12~T22(21개, T11 결번) 무수정 재통과로 확인한다(REQ-OLIST-033, AC-OLIST-025의 전제 조건). **금지: 목록 전용 코드가 이미 양자화된 `confirmed_cost`/`shipping_cost`/`korea_warehouse_cost` 문자열을 재파싱해 `margin_rate`를 재계산 — AC-OLIST-017a가 이 mutation을 판별한다.**
@@ -140,7 +140,15 @@ def _derive_line_item_states(obj):
         statuses = {li.logistics_status for li in trackable}
         logistics = next(iter(statuses)) if len(statuses) == 1 else "partial"
 
-    purchase = "unordered" if any(li.purchase_status == "unordered" for li in trackable) else "ordered"
+    # v1.4.0: 미발주 목록 탭(_reorder_candidate_filter)과 동일 기준.
+    # li.purchase_orders.all()은 prefetch_related("line_items__purchase_orders")
+    # 캐시를 읽는다 — .exists()는 캐시를 우회해 라인아이템마다 쿼리를 발급하므로 금지.
+    def _awaiting_purchase(li):
+        if li.purchase_status == "damaged_exchange":
+            return True
+        return li.purchase_status == "unordered" and not li.purchase_orders.all()
+
+    purchase = "unordered" if any(_awaiting_purchase(li) for li in trackable) else "ordered"
     return logistics, purchase
 ```
 
@@ -172,8 +180,9 @@ def _derive_line_item_states(obj):
 | 5 | `SELECT ... FROM orders_line_item WHERE order_id IN (...)` | `prefetch_related("line_items")` |
 | 6 | `SELECT ... FROM orders_customer WHERE id IN (...)` | `prefetch_related("customer")` |
 | **7** | `SELECT effective_date, rate FROM orders_exchangerate WHERE effective_date <= ... ORDER BY effective_date` | **이 SPEC이 추가하는 배치 쿼리(REQ-OLIST-019)** |
+| **8** | `SELECT ... FROM orders_purchaseorder INNER JOIN orders_purchaseorder_line_items WHERE lineitem_id IN (...)` | **v1.4.0이 추가하는 `prefetch_related("line_items__purchase_orders")`(REQ-OLIST-013의 링크 조건, REQ-OLIST-021)** |
 
-1~6은 페이지 크기(주문 수)와 무관하게 항상 정확히 1개씩만 발급된다(`prefetch_related`는 `id IN (...)` 단일 쿼리, `COUNT(*)`/본문 SELECT도 페이지당 1개) — 이것이 REQ-OLIST-022의 O(1) 근거다. 7도 페이지의 날짜 범위와 무관하게 항상 1개다(REQ-OLIST-019). 합계 **7**이 AC-OLIST-021의 절대상수다.
+1~6은 페이지 크기(주문 수)와 무관하게 항상 정확히 1개씩만 발급된다(`prefetch_related`는 `id IN (...)` 단일 쿼리, `COUNT(*)`/본문 SELECT도 페이지당 1개) — 이것이 REQ-OLIST-022의 O(1) 근거다. 7도 페이지의 날짜 범위와 무관하게 항상 1개다(REQ-OLIST-019). 8도 중첩 prefetch이지만 페이지 전체의 라인아이템 ID를 한 번에 `IN (...)`으로 묶으므로 라인아이템 수와 무관하게 1개다. 합계 **8**이 AC-OLIST-021의 절대상수다(v1.4.0에서 7→8).
 
 **주의(엣지 케이스, 테스트 설계 시 회피)**: 페이지의 모든 주문이 `customer=None`이면 Django가 6번 쿼리 자체를 생략해 합계가 6이 된다(빈 ID 목록에 대한 프리페치는 쿼리를 발급하지 않음, 이 세션에서 직접 확인). AC-OLIST-021의 픽스처는 고객이 연결된 주문만 사용해 이 엣지 케이스를 피한다.
 
