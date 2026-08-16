@@ -2,7 +2,7 @@ import urllib.error
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Exists, OuterRef, Q
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from rest_framework import status
@@ -152,6 +152,78 @@ class OrderPagination(PageNumberPagination):
     page_size = 50
 
 
+# SPEC-ORDER-023 REQ-OLIST-024: the only 6 accepted `logistics_display`
+# filter values -- anything else is ignored (fail-open, REQ-OLIST-024a,
+# AC-OLIST-022f), never mapped to a "no rows match" condition.
+LOGISTICS_DISPLAY_FILTER_VALUES = {
+    "not_shipped",
+    "shipment_confirmed",
+    "outbound_scheduled",
+    "partial_shipped",
+    "shipped",
+    "partial",
+}
+
+
+# @MX:WARN: [AUTO] SPEC-ORDER-023 REQ-OLIST-023~025: this Exists-based SQL
+# filter MUST implement the exact same priority order as
+# OrderListSerializer._derive_line_item_states (the Python display path) --
+# shipped > partial_shipped > outbound_scheduled > uniform-passthrough >
+# partial. Editing one path without the other breaks AC-OLIST-022~022e
+# (each asserts filter results AND the returned orders' displayed value
+# together). `trackable_qs` mirrors the same sku__isnull=False definition
+# used by the display path and by purchase_order_views._recompute_order_
+# aggregates (design decision D) -- never Order.status.
+# @MX:REASON: silent SQL/Python priority drift is undetectable by type
+# checkers or linters and only surfaces as wrong search results in
+# production; this pairing is the single riskiest edit surface in the SPEC.
+def _apply_logistics_display_filter(qs, value):
+    trackable_qs = LineItem.objects.filter(order=OuterRef("pk"), sku__isnull=False)
+    qs = qs.annotate(
+        li_has_trackable=Exists(trackable_qs),
+        li_not_all_shipped=Exists(trackable_qs.exclude(logistics_status="shipped")),
+        li_any_partial=Exists(trackable_qs.filter(shipped_quantity__gt=0)),
+        li_not_all_received=Exists(trackable_qs.exclude(logistics_status="received")),
+        li_not_all_not_shipped=Exists(trackable_qs.exclude(logistics_status="not_shipped")),
+        li_not_all_shipment_confirmed=Exists(
+            trackable_qs.exclude(logistics_status="shipment_confirmed")
+        ),
+        li_not_all_outbound_scheduled=Exists(
+            trackable_qs.exclude(logistics_status="outbound_scheduled")
+        ),
+    )
+
+    all_shipped = Q(li_has_trackable=True) & Q(li_not_all_shipped=False)
+    any_partial = Q(li_any_partial=True)
+    all_received = Q(li_has_trackable=True) & Q(li_not_all_received=False)
+    all_not_shipped = Q(li_has_trackable=True) & Q(li_not_all_not_shipped=False)
+    all_shipment_confirmed = Q(li_has_trackable=True) & Q(li_not_all_shipment_confirmed=False)
+    all_outbound_scheduled = Q(li_has_trackable=True) & Q(li_not_all_outbound_scheduled=False)
+
+    if value == "shipped":
+        q = all_shipped
+    elif value == "partial_shipped":
+        q = ~all_shipped & any_partial
+    elif value == "outbound_scheduled":
+        q = ~all_shipped & ~any_partial & (all_received | all_outbound_scheduled)
+    elif value == "not_shipped":
+        q = ~all_shipped & ~any_partial & ~all_received & all_not_shipped
+    elif value == "shipment_confirmed":
+        q = ~all_shipped & ~any_partial & ~all_received & all_shipment_confirmed
+    else:  # "partial" (REQ-OLIST-011a): none of the 6 uniform buckets match
+        q = (
+            Q(li_has_trackable=True)
+            & ~all_shipped
+            & ~any_partial
+            & ~all_received
+            & ~all_not_shipped
+            & ~all_shipment_confirmed
+            & ~all_outbound_scheduled
+        )
+
+    return qs.filter(q)
+
+
 class OrderListView(ListAPIView):
     authentication_classes = [JWTAuthentication]
     permission_classes = [IsAuthenticated]
@@ -215,7 +287,54 @@ class OrderListView(ListAPIView):
                 q |= Q(line_items__sku=numeric)
             qs = qs.filter(q).distinct()
 
+        # SPEC-ORDER-023 REQ-OLIST-023/024a: unrecognized values are ignored
+        # entirely (fail-open) -- never mapped to a zero-result filter.
+        logistics_display = params.get("logistics_display")
+        if logistics_display in LOGISTICS_DISPLAY_FILTER_VALUES:
+            qs = _apply_logistics_display_filter(qs, logistics_display)
+
         return qs
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context["exchange_rate_history"] = getattr(self, "_exchange_rate_history", [])
+        return context
+
+    # @MX:NOTE: [AUTO] SPEC-ORDER-023 REQ-OLIST-019/020/021/022a: single
+    # page-level batch load, replacing what would otherwise be up to 50
+    # per-order ExchangeRate queries (~130ms each against this remote RDS
+    # instance, ~6.5s worst case) if OrderDetailSerializer's per-instance
+    # memoized _get_exchange_rate were reused unmodified in a list context.
+    # No lower bound on effective_date (slim `values_list` projection of the
+    # full history instead of a lookback window, design decision A) --
+    # shopify_created_at can be arbitrarily old, and a lower bound risks
+    # missing the same fallback record _get_exchange_rate would have found
+    # (REQ-OLIST-020). `.date()` is called directly on shopify_created_at
+    # (never via timezone.localtime()) so the resolved calendar date is
+    # identical to _get_exchange_rate's regardless of the deployment's
+    # TIME_ZONE setting (AC-OLIST-020a).
+    def _load_exchange_rate_history(self, orders):
+        dates = [o.shopify_created_at.date() for o in orders if o.shopify_created_at]
+        if not dates:
+            return []
+        max_date = max(dates)
+        return list(
+            ExchangeRate.objects.filter(effective_date__lte=max_date)
+            .order_by("effective_date")
+            .values_list("effective_date", "rate")
+        )
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        iterable = page if page is not None else queryset
+        self._exchange_rate_history = self._load_exchange_rate_history(iterable)
+
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
 
 
 class OrderNoteListView(ListAPIView):

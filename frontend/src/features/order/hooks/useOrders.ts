@@ -19,6 +19,7 @@ export function useOrders(params: OrderListParams = {}, options: { enabled?: boo
       if (params.date_from) searchParams.date_from = params.date_from
       if (params.date_to) searchParams.date_to = params.date_to
       if (params.search) searchParams.search = params.search
+      if (params.logistics_display) searchParams.logistics_display = params.logistics_display
 
       const res = await api.get('/api/orders/', { params: searchParams })
       return res.data

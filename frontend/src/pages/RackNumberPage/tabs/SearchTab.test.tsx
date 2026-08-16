@@ -40,6 +40,9 @@ function buildOrder(overrides: Partial<Order> = {}): Order {
     customer: null,
     has_refund: false,
     line_items_count: 2,
+    margin_rate: null,
+    logistics_display: null,
+    purchase_display: null,
     ...overrides,
   }
 }
