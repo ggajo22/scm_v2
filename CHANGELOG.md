@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+#### SPEC-ORDER-023: 주문목록 표시 컬럼 개편
+
+- 주문목록 테이블 열 구성 변경: 8개 → 9개
+  - 제거: 결제상태(financial_status) 열 및 필터 드롭다운
+  - 제거: 출고상태(fulfillment_status) 열 및 필터 드롭다운
+  - 추가: 물류상태(한국창고 기준, `LineItem`에서 직접 파생) 열 및 필터 드롭다운
+  - 추가: 발주상태(미발주/발주완료) 열
+  - 추가: 마진율(표시 전용) 열
+- 취소/부분취소 배지: 전용 열에서 → 주문번호 옆으로 축소
+- `OrderListSerializer` 신규 3개 SerializerMethodField 추가: `margin_rate`, `logistics_display`, `purchase_display`
+- `OrderListView` 배치 환율 로드 최적화: 페이지당 `ExchangeRate` 조회 1회로 제한(O(1))
+- 물류상태 필터 쿼리 파라미터 지원: `logistics_display` 6개 값(미입고/입고예정/출고예정/부분출고/출고/부분입고) 화이트리스트
+- Backend 스위트 1204개 테스트 통과, Frontend 304개 테스트 통과
+- 독립 평가: evaluator-active PASS (Functionality 93, Security 96, Craft 88, Consistency 88)
+- plan-auditor 3라운드 검증 완료 (FAIL 0.61 → FAIL 0.76 → **PASS 0.87**)
+
 ### Added
 
 #### SPEC-AUTO-DIST-001: 발주처 자동 선택 로직 고도화
