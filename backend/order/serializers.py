@@ -1,3 +1,4 @@
+from bisect import bisect_right
 from decimal import Decimal, ROUND_HALF_UP
 
 from rest_framework import serializers
@@ -16,6 +17,79 @@ KOREA_WAREHOUSE_BASE_KRW = Decimal("1250")
 KOREA_WAREHOUSE_PER_BOOK_KRW = Decimal("500")
 
 
+# @MX:NOTE: [AUTO] SPEC-ORDER-023 REQ-OLIST-016/033: cost-breakdown formula
+# extracted from OrderDetailSerializer._compute_cost_breakdown_uncached
+# (design decision C) so OrderListSerializer.get_margin_rate can reuse the
+# identical calculation. Takes `rate` (a Decimal, e.g. ExchangeRate.rate) as
+# a parameter instead of looking it up itself -- this lets the detail
+# serializer keep its per-instance memoized _get_exchange_rate() lookup
+# while the list serializer resolves its rate from OrderListView's
+# page-level batch load (REQ-OLIST-019). OrderDetailSerializer's own
+# observable output is unchanged by this extraction (REQ-OLIST-033) --
+# _compute_cost_breakdown_uncached below now just resolves `er` and
+# delegates here.
+def _compute_cost_breakdown_for_rate(obj: "Order", rate: Decimal):
+    confirmed_cost_krw = Decimal("0")
+    has_any_confirmed = False
+    total_weight_grams = 0
+    total_book_count = 0
+    for item in obj.line_items.all():
+        quantity = item.quantity or 0
+        grams = item.grams or 0
+        total_weight_grams += grams * quantity
+        total_book_count += quantity
+        if item.confirmed_price is not None:
+            has_any_confirmed = True
+            confirmed_cost_krw += item.confirmed_price * quantity
+
+    if not has_any_confirmed:
+        return None
+
+    total_price_usd = Decimal(str(obj.total_price or "0"))
+    confirmed_cost_usd = confirmed_cost_krw / rate
+    shipping_cost_usd = (
+        SHIPPING_COST_USD_PER_KG * Decimal(total_weight_grams) / Decimal("1000")
+    )
+
+    if total_book_count == 0:
+        korea_warehouse_krw = Decimal("0")
+    else:
+        korea_warehouse_krw = KOREA_WAREHOUSE_BASE_KRW + KOREA_WAREHOUSE_PER_BOOK_KRW * max(
+            total_book_count - 1, 0
+        )
+    korea_warehouse_usd = korea_warehouse_krw / rate
+
+    margin_usd = total_price_usd - confirmed_cost_usd - shipping_cost_usd - korea_warehouse_usd
+    total_cost_usd = confirmed_cost_usd + shipping_cost_usd + korea_warehouse_usd
+
+    return {
+        "margin_usd": margin_usd,
+        "total_price_usd": total_price_usd,
+        "confirmed_cost_usd": confirmed_cost_usd,
+        "shipping_cost_usd": shipping_cost_usd,
+        "korea_warehouse_usd": korea_warehouse_usd,
+        "total_cost_usd": total_cost_usd,
+        "total_weight_grams": total_weight_grams,
+    }
+
+
+def _resolve_exchange_rate(history, order_date):
+    """SPEC-ORDER-023 REQ-OLIST-020: binary search `history` (a list of
+    (effective_date, rate) tuples sorted ascending by effective_date, as
+    loaded by OrderListView._load_exchange_rate_history) for the most
+    recent rate whose effective_date <= order_date -- the same fallback
+    semantics as OrderDetailSerializer._get_exchange_rate. Returns None
+    (never raises) when history is empty or no entry qualifies
+    (AC-OLIST-018a)."""
+    if not history:
+        return None
+    dates = [effective_date for effective_date, _ in history]
+    idx = bisect_right(dates, order_date) - 1
+    if idx < 0:
+        return None
+    return history[idx][1]
+
+
 class CustomerSummarySerializer(serializers.ModelSerializer):
     class Meta:
         model = Customer
@@ -26,6 +100,14 @@ class OrderListSerializer(serializers.ModelSerializer):
     customer = CustomerSummarySerializer(read_only=True)
     has_refund = serializers.SerializerMethodField()
     line_items_count = serializers.SerializerMethodField()
+    # SPEC-ORDER-023 REQ-OLIST-016/007/013: margin_rate reuses the
+    # OrderDetailSerializer formula (via _compute_cost_breakdown_for_rate);
+    # logistics_display/purchase_display derive from `LineItem` rows only —
+    # neither reads the stored `Order.status` aggregate column (design
+    # decision B, C3 in spec.md).
+    margin_rate = serializers.SerializerMethodField()
+    logistics_display = serializers.SerializerMethodField()
+    purchase_display = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
@@ -44,6 +126,9 @@ class OrderListSerializer(serializers.ModelSerializer):
             "has_refund",
             "line_items_count",
             "location",
+            "margin_rate",
+            "logistics_display",
+            "purchase_display",
         ]
 
     def get_has_refund(self, obj):
@@ -52,6 +137,86 @@ class OrderListSerializer(serializers.ModelSerializer):
 
     def get_line_items_count(self, obj):
         return obj.line_items.count()
+
+    # @MX:NOTE: [AUTO] SPEC-ORDER-023 REQ-OLIST-007~011a: priority order is
+    # (1) all trackable shipped -> "shipped", (2) any trackable
+    # shipped_quantity>0 -> "partial_shipped", (3) all trackable received ->
+    # "outbound_scheduled", (4) remaining trackable logistics_status uniform
+    # -> that value, (4a) not uniform -> "partial". This exact order matters:
+    # in production every fully-shipped line item also satisfies
+    # shipped_quantity >= quantity > 0 (purchase_order_views.py:3411/3456/
+    # 3972), so rules (1) and (2) co-occur on every completed order —
+    # swapping them mislabels every completed order as partial_shipped
+    # (SPEC-ORDER-023 problem definition, AC-OLIST-006). Deliberately never
+    # reads obj.status: that stored aggregate is NULL for orders that have
+    # never gone through a logistics write path even though their trackable
+    # line items already carry a real (default "not_shipped") status
+    # (spec.md C3). Iterates obj.line_items.all() exactly once, relying on
+    # OrderListView's prefetch_related("line_items") cache — REQ-OLIST-021
+    # forbids any additional query here.
+    def _derive_line_item_states(self, obj):
+        cache = getattr(self, "_line_item_states_cache", None)
+        if cache is None:
+            cache = {}
+            self._line_item_states_cache = cache
+        if obj.pk in cache:
+            return cache[obj.pk]
+
+        trackable = [li for li in obj.line_items.all() if li.sku is not None]
+        if not trackable:
+            result = (None, None)
+        else:
+            if all(li.logistics_status == "shipped" for li in trackable):
+                logistics = "shipped"
+            elif any(li.shipped_quantity > 0 for li in trackable):
+                logistics = "partial_shipped"
+            elif all(li.logistics_status == "received" for li in trackable):
+                logistics = "outbound_scheduled"
+            else:
+                statuses = {li.logistics_status for li in trackable}
+                logistics = next(iter(statuses)) if len(statuses) == 1 else "partial"
+
+            purchase = (
+                "unordered"
+                if any(li.purchase_status == "unordered" for li in trackable)
+                else "ordered"
+            )
+            result = (logistics, purchase)
+
+        cache[obj.pk] = result
+        return result
+
+    def get_logistics_display(self, obj):
+        logistics, _purchase = self._derive_line_item_states(obj)
+        return logistics
+
+    def get_purchase_display(self, obj):
+        _logistics, purchase = self._derive_line_item_states(obj)
+        return purchase
+
+    def get_margin_rate(self, obj):
+        """REQ-OLIST-016: identical formula to
+        OrderDetailSerializer.get_margin_rate, but resolves its ExchangeRate
+        from the page-level batch history OrderListView.list() loads into
+        `self.context['exchange_rate_history']` (REQ-OLIST-019) instead of
+        the per-instance memoized _get_exchange_rate lookup that would issue
+        up to 50 queries per page if reused here unmodified."""
+        if not obj.shopify_created_at:
+            return None
+        history = self.context.get("exchange_rate_history") or []
+        rate = _resolve_exchange_rate(history, obj.shopify_created_at.date())
+        if rate is None:
+            return None
+        breakdown = _compute_cost_breakdown_for_rate(obj, rate)
+        if breakdown is None:
+            return None
+        total_price_usd = breakdown["total_price_usd"]
+        if total_price_usd == Decimal("0"):
+            return None
+        result = (breakdown["margin_usd"] / total_price_usd * Decimal("100")).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+        return str(result)
 
 
 # ---------------------------------------------------------------------------
@@ -296,68 +461,17 @@ class OrderDetailSerializer(serializers.ModelSerializer):
         return result
 
     def _compute_cost_breakdown_uncached(self, obj: Order):
+        """SPEC-ORDER-023 REQ-OLIST-033: the calculation itself now lives in
+        module-level `_compute_cost_breakdown_for_rate` (design decision C),
+        shared with OrderListSerializer.get_margin_rate. This method's own
+        job is unchanged -- resolve `obj`'s memoized ExchangeRate and hand
+        its `.rate` to the shared function. Observable output is identical
+        to the pre-extraction implementation (verified by
+        test_spec_021.py's T1-T10, T12-T22 passing unmodified)."""
         er = self._get_exchange_rate(obj)
         if er is None:
             return None
-
-        confirmed_cost_krw = Decimal("0")
-        has_any_confirmed = False
-        total_weight_grams = 0
-        total_book_count = 0
-        for item in obj.line_items.all():
-            quantity = item.quantity or 0
-            grams = item.grams or 0
-            # REQ-COST-002/004: weight/book-count aggregation is unconditional —
-            # it must NOT be nested inside the `confirmed_price is not None`
-            # branch below (AC-COST-005 is the discriminating test).
-            total_weight_grams += grams * quantity
-            total_book_count += quantity
-            if item.confirmed_price is not None:
-                has_any_confirmed = True
-                confirmed_cost_krw += item.confirmed_price * quantity
-
-        if not has_any_confirmed:
-            return None
-
-        total_price_usd = Decimal(str(obj.total_price or "0"))
-        confirmed_cost_usd = confirmed_cost_krw / er.rate
-        shipping_cost_usd = (
-            SHIPPING_COST_USD_PER_KG * Decimal(total_weight_grams) / Decimal("1000")
-        )
-
-        # REQ-COST-006: the zero-branch must be checked FIRST — folding it
-        # into `max(total_book_count - 1, 0)` alone would still charge the
-        # base fee for a 0-book order (AC-COST-008 catches this).
-        if total_book_count == 0:
-            korea_warehouse_krw = Decimal("0")
-        else:
-            korea_warehouse_krw = KOREA_WAREHOUSE_BASE_KRW + KOREA_WAREHOUSE_PER_BOOK_KRW * max(
-                total_book_count - 1, 0
-            )
-        # REQ-COST-007: reuses the SAME order-date exchange rate as
-        # confirmed_cost_usd above — never hardcode a divisor here
-        # (AC-COST-012 catches that mutation).
-        korea_warehouse_usd = korea_warehouse_krw / er.rate
-
-        margin_usd = total_price_usd - confirmed_cost_usd - shipping_cost_usd - korea_warehouse_usd
-
-        # SPEC-ORDER-021 extension: total_cost_usd is summed from the three
-        # UNROUNDED Decimals above (confirmed_cost_usd, shipping_cost_usd,
-        # korea_warehouse_usd) and quantized exactly once by get_total_cost.
-        # Do NOT derive this by summing the already-quantized confirmed_cost/
-        # shipping_cost/korea_warehouse_cost strings -- that would double-round
-        # and can be off by a cent from this value (design decision B).
-        total_cost_usd = confirmed_cost_usd + shipping_cost_usd + korea_warehouse_usd
-
-        return {
-            "margin_usd": margin_usd,
-            "total_price_usd": total_price_usd,
-            "confirmed_cost_usd": confirmed_cost_usd,
-            "shipping_cost_usd": shipping_cost_usd,
-            "korea_warehouse_usd": korea_warehouse_usd,
-            "total_cost_usd": total_cost_usd,
-            "total_weight_grams": total_weight_grams,
-        }
+        return _compute_cost_breakdown_for_rate(obj, er.rate)
 
     def get_margin_amount(self, obj: Order):
         """USD 단위 마진: total_price_usd - confirmed_cost_usd - shipping_cost_usd

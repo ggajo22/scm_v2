@@ -20,6 +20,19 @@ export interface Order {
   has_refund: boolean
   line_items_count: number
   location?: string
+  // SPEC-ORDER-023 REQ-OLIST-016~018: list-endpoint margin rate, derived
+  // server-side from the same cost breakdown as OrderDetail.margin_rate.
+  // Null when exchange rate is unavailable, no confirmed purchase cost
+  // exists, or total_price is zero (REQ-OLIST-017).
+  margin_rate: string | null
+  // SPEC-ORDER-023 REQ-OLIST-007~011a: one of 'shipped' | 'partial_shipped'
+  // | 'outbound_scheduled' | 'not_shipped' | 'shipment_confirmed' |
+  // 'partial', or null when the order has no trackable line items. Note:
+  // 'received' is never emitted as a display value.
+  logistics_display: string | null
+  // SPEC-ORDER-023 REQ-OLIST-013~015: 'unordered' | 'ordered', or null when
+  // the order has no trackable line items.
+  purchase_display: string | null
 }
 
 export interface OrderListResponse {
@@ -70,6 +83,10 @@ export interface OrderListParams {
   date_from?: string
   date_to?: string
   search?: string
+  // SPEC-ORDER-023 REQ-OLIST-023~025: one of the 6 accepted
+  // logistics_display values (see Order.logistics_display). Unrecognized
+  // values are ignored server-side (fail-open, REQ-OLIST-024a).
+  logistics_display?: string
 }
 
 // SPEC-ORDER-003: Order Detail types

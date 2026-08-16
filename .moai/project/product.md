@@ -77,11 +77,11 @@ Shopify 연동 도서 재고 및 주문 관리 관리자 애플리케이션
   - per-store `transaction.atomic()` 격리 — 한 스토어 실패가 타 스토어 롤백 없음
   - `update_or_create` upsert — 중복 동기화 안전, 신규/업데이트 건수 분리 응답
 - **주문 목록 조회** — 50건/페이지, `shopify_created_at` 최신순 (`GET /api/orders/`)
-  - 필터: `store_type`, `financial_status`, `fulfillment_status`, `date_from`/`date_to`
+  - **필터(레거시)**: `store_type`, ~~`financial_status`~~, ~~`fulfillment_status`~~ (SPEC-ORDER-023에서 UI 드롭다운 제거, API 파라미터 유지), `date_from`/`date_to`
   - `has_refund` 실시간 계산 — `prefetch_related("refunds")` N+1 없이 환불 여부 판별
-- **환불 "취소" 표기** — `has_refund=true` OR `financial_status="refunded"` → 빨간색 "취소" 표시
+- **환불 표기** — **SPEC-ORDER-023에서 UI 변경**: `has_refund=true` OR `financial_status="refunded"` 판별은 유지되지만, 전용 테이블 열이 아닌 주문번호 옆 배지로 축소 표시 (취소/부분취소 구분 유지)
 - **7개 신규 DB 모델** — Order, Customer, LineItem, ShippingLine, Refund, ShippingAddress, BillingAddress
-- **React 주문관리 페이지** (`/orders`) — 필터 UI + 테이블 + 페이지네이션 + 동기화 버튼
+- **React 주문관리 페이지** (`/orders`) — **SPEC-ORDER-023**: 필터 UI(결제상태/출고상태 제거, 물류상태 추가) + **테이블 9열**(주문번호/스토어/위치/고객/**물류상태**/**발주상태**/**마진율**/금액/주문일) + 페이지네이션 + 동기화 버튼
 - **사이드바** — "주문관리" 내비게이션 항목 추가 (ShoppingCart 아이콘)
 - 29개 pytest 테스트 (모델 4 + Shopify 클라이언트 10 + 동기화 뷰 4 + 목록 뷰 11)
 
@@ -179,6 +179,27 @@ Shopify 연동 도서 재고 및 주문 관리 관리자 애플리케이션
 - **무효화 양방향** — 상태 변경 시 "미발주" / "보류/제외" 쿼리 모두 무효화해 두 뷰의 동기성 유지
 - **신규 컬럼·마이그레이션·감사 로그 없음**
 - 테스트 커버리지: 백엔드 12개 pytest, 프론트엔드 7개 vitest(훅 통합 3 + 컴포넌트 4), 회귀 테스트 979개 통과
+
+### 13. 주문목록 표시 컬럼 개편 (마진율 / 물류상태 / 발주상태) (SPEC-ORDER-023 — 완료)
+- **9열 구성**: 주문번호(취소 배지 포함) / 스토어 / 위치 / 고객 / **물류상태** / **발주상태** / **마진율** / 금액 / 주문일
+- **열 제거**: 결제상태(`financial_status` 원시 필드), 출고상태(`fulfillment_status` 원시 필드) → API 쿼리 파라미터는 유지(하위호환)
+- **취소 배지**: 별도 열에서 → 주문번호 옆으로 축소(같은 판별 로직 `financial_status=refunded` OR `financial_status=partially_refunded` OR `has_refund=true`, 결제상태 라벨 재사용 안 함)
+- **물류상태**(한국창고 기준, 파생값 표시 전용): 
+  - **규칙**: trackable 라인아이템(`sku` not null)에서만 파생 — `Order.status` 컬럼 읽지 않음
+  - 우선순위: (1) 모두 출고 → `shipped`(출고) (2) 하나라도 부분출고 → `partial_shipped`(부분출고) (3) 모두 입고완료 → `outbound_scheduled`(출고예정) (4) uniform 상태 → 그 값(`not_shipped`/`shipment_confirmed`) (5) 혼합 → `partial`(부분입고) (6) trackable 없음 → null(`-`)
+  - 필터 옵션 6개: 미입고 / 입고예정 / 출고예정 / 부분출고 / 출고 / 부분입고
+- **발주상태**(파생값): trackable 라인아이템 중 `purchase_status='unordered'` 있음 → `unordered`(미발주) / 그 외 → `ordered`(발주완료) / trackable 없음 → null(`-`)
+- **마진율**(표시 전용, DB 컬럼 아님): `OrderDetailSerializer`와 동일 공식, 페이지 단위 배치 환율 로드로 쿼리 O(1) 보증
+  - 배치 로드: 페이지의 서로 다른 주문일에 대해 `ExchangeRate` 테이블 1회 조회로 모두 처리
+  - 폴백: 폴백은 `_get_exchange_rate`와 동일(`effective_date <= order_date` 중 최신)
+- `OrderListSerializer` 신규 3개 필드(SerializerMethodField): `margin_rate`, `logistics_display`, `purchase_display`
+- `OrderListView.get_queryset` `logistics_display` 파라미터 지원: `LineItem` 술어 기반 `Exists` 필터, `Order.status` 미사용
+- 프론트엔드 물류상태 필터 드롭다운 추가 (발주상태 필터는 미구현)
+- 마진율 계산 로직 추출: `_compute_cost_breakdown_for_rate()` 공용 헬퍼로 리팩터 (detail 응답 불변성 확보, AC-OLIST-025에서 검증)
+- 테스트: 백엔드 `test_spec_023.py` 31개 전량 통과 / `test_spec_021.py` T1~T10, T12~T22(21개, T11 결번) 무수정 재통과 / 프론트엔드 304개 테스트 통과, `tsc -b` 클린
+- 6가지 mutation 라이브 검증: 규칙 우선순위 역전, trackable 가드 제거, `any`↔`all`, 반올림 순서, 주문별 환율 조회, 페이지네이션 후 Python 사후 필터링 — 전부 실패 확인
+- 독립 평가(evaluator-active): **PASS** (Functionality 93, Security 96, Craft 88, Consistency 88)
+- plan-auditor 3라운드: FAIL 0.61(v1.0.0) → FAIL 0.76(v1.1.0) → **PASS 0.87**(v1.2.1)
 
 ---
 

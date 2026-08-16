@@ -6,7 +6,31 @@ import { useOrders } from '@/features/order/hooks/useOrders'
 import { useOrderSync } from '@/features/order/hooks/useOrderSync'
 import { useOrderSyncStatus } from '@/features/order/hooks/useOrderSyncStatus'
 import { useAuthStore } from '@/store/authStore'
+import { LOGISTICS_STATUS_LABELS } from '@/pages/OutboundPage/logisticsStatusLabels'
 import type { Order, OrderListParams } from '@/types/order'
+
+// SPEC-ORDER-023 REQ-OLIST-030~032: extends the SPEC-ORDER-016-owned
+// LOGISTICS_STATUS_LABELS (imported, not modified — that file belongs to a
+// different SPEC) with the 2 additional display values this SPEC introduces.
+// `received` from the shared map is intentionally unused here — it is never
+// emitted as a logistics_display value (see Order.logistics_display).
+const ORDER_LOGISTICS_DISPLAY_LABELS: Record<string, string> = {
+  ...LOGISTICS_STATUS_LABELS,
+  partial_shipped: '부분출고',
+  partial: '부분입고',
+}
+
+// SPEC-ORDER-023 REQ-OLIST-024: the 6 accepted logistics_display values, in
+// display order, mirrored from backend/order/views.py's
+// LOGISTICS_DISPLAY_FILTER_VALUES whitelist.
+const LOGISTICS_DISPLAY_FILTER_OPTIONS: readonly string[] = [
+  'not_shipped',
+  'shipment_confirmed',
+  'outbound_scheduled',
+  'partial_shipped',
+  'shipped',
+  'partial',
+]
 
 // SPEC-ORDER-SYNC-HEALTH: thresholds for the sync-health indicator below.
 // The point is not decoration — a stopped 5-minute scheduled sync has cost
@@ -78,29 +102,16 @@ function SyncStatusIndicator() {
   )
 }
 
-function getDisplayStatus(order: Order): string {
+// SPEC-ORDER-023 REQ-OLIST-004~006 (H6): copies only the 3 refund branches
+// from the removed getDisplayStatus — never the trailing financial_status
+// label map, since a normal 'paid' order must render no badge at all, not a
+// "결제완료" badge (AC-OLIST-004).
+function getCancelBadge(order: Order): '취소' | '부분취소' | null {
   if (order.financial_status === 'refunded') return '취소'
   if (order.financial_status === 'partially_refunded') return '부분취소'
   // paid + has_refund: $0 cancellation — Shopify keeps status 'paid' but refund record exists
   if (order.has_refund) return '부분취소'
-  const map: Record<string, string> = {
-    paid: '결제완료',
-    pending: '결제대기',
-    partially_paid: '부분결제',
-    voided: '무효',
-    authorized: '승인대기',
-  }
-  return map[order.financial_status ?? ''] ?? order.financial_status ?? '-'
-}
-
-function getFulfillmentLabel(status: string | null): string {
-  if (!status) return '미출고'
-  const map: Record<string, string> = {
-    fulfilled: '출고완료',
-    partial: '부분출고',
-    restocked: '재입고',
-  }
-  return map[status] ?? status
+  return null
 }
 
 function StoreLabel({ store }: { store: 'gimssine' | 'etoile' }) {
@@ -202,19 +213,6 @@ export function OrdersPage() {
 
         <select
           className="border rounded px-2 py-1 text-sm"
-          value={params.financial_status ?? ''}
-          onChange={(e) => setFilter('financial_status', e.target.value)}
-          aria-label="결제 상태 필터"
-        >
-          <option value="">전체 결제상태</option>
-          <option value="paid">결제완료</option>
-          <option value="pending">결제대기</option>
-          <option value="refunded">환불</option>
-          <option value="partially_refunded">부분환불</option>
-        </select>
-
-        <select
-          className="border rounded px-2 py-1 text-sm"
           value={params.location ?? ''}
           onChange={(e) => setFilter('location', e.target.value)}
           aria-label="위치 필터"
@@ -228,14 +226,16 @@ export function OrdersPage() {
 
         <select
           className="border rounded px-2 py-1 text-sm"
-          value={params.fulfillment_status ?? ''}
-          onChange={(e) => setFilter('fulfillment_status', e.target.value)}
-          aria-label="출고 상태 필터"
+          value={params.logistics_display ?? ''}
+          onChange={(e) => setFilter('logistics_display', e.target.value)}
+          aria-label="물류상태 필터"
         >
-          <option value="">전체 출고상태</option>
-          <option value="unfulfilled">미출고</option>
-          <option value="fulfilled">출고완료</option>
-          <option value="partial">부분출고</option>
+          <option value="">전체</option>
+          {LOGISTICS_DISPLAY_FILTER_OPTIONS.map((value) => (
+            <option key={value} value={value}>
+              {ORDER_LOGISTICS_DISPLAY_LABELS[value] ?? value}
+            </option>
+          ))}
         </select>
 
         <div className="flex items-center gap-1">
@@ -281,8 +281,9 @@ export function OrdersPage() {
                   <th className="py-2 px-3 text-left font-medium">스토어</th>
                   <th className="py-2 px-3 text-left font-medium">위치</th>
                   <th className="py-2 px-3 text-left font-medium">고객</th>
-                  <th className="py-2 px-3 text-left font-medium">결제상태</th>
-                  <th className="py-2 px-3 text-left font-medium">출고상태</th>
+                  <th className="py-2 px-3 text-left font-medium">물류상태</th>
+                  <th className="py-2 px-3 text-left font-medium">발주상태</th>
+                  <th className="py-2 px-3 text-left font-medium">마진율</th>
                   <th className="py-2 px-3 text-right font-medium">금액</th>
                   <th className="py-2 px-3 text-left font-medium">주문일</th>
                 </tr>
@@ -290,7 +291,7 @@ export function OrdersPage() {
               <tbody>
                 {data.results.length === 0 && (
                   <tr>
-                    <td colSpan={8} className="py-8 text-center text-muted-foreground">
+                    <td colSpan={9} className="py-8 text-center text-muted-foreground">
                       {params.search
                         ? `"${params.search}"에 해당하는 주문이 없습니다.`
                         : '주문이 없습니다.'}
@@ -305,6 +306,14 @@ export function OrdersPage() {
                   >
                     <td className="py-2 px-3 font-mono text-xs">
                       {order.name ?? `#${order.order_number}`}
+                      {getCancelBadge(order) && (
+                        <span
+                          data-testid="cancel-badge"
+                          className="ml-1.5 text-[10px] font-sans font-medium text-red-600 bg-red-100 px-1.5 py-0.5 rounded"
+                        >
+                          {getCancelBadge(order)}
+                        </span>
+                      )}
                     </td>
                     <td className="py-2 px-3">
                       <StoreLabel store={order.store_type} />
@@ -323,17 +332,20 @@ export function OrdersPage() {
                         : '-'}
                     </td>
                     <td className="py-2 px-3">
-                      <span
-                        className={
-                          order.has_refund || order.financial_status === 'refunded'
-                            ? 'text-red-600 font-medium'
-                            : ''
-                        }
-                      >
-                        {getDisplayStatus(order)}
-                      </span>
+                      {order.logistics_display
+                        ? ORDER_LOGISTICS_DISPLAY_LABELS[order.logistics_display] ?? order.logistics_display
+                        : '-'}
                     </td>
-                    <td className="py-2 px-3">{getFulfillmentLabel(order.fulfillment_status)}</td>
+                    <td className="py-2 px-3">
+                      {order.purchase_display === 'unordered'
+                        ? '미발주'
+                        : order.purchase_display === 'ordered'
+                          ? '발주완료'
+                          : '-'}
+                    </td>
+                    <td className="py-2 px-3">
+                      {order.margin_rate !== null ? `${order.margin_rate}%` : '-'}
+                    </td>
                     <td className="py-2 px-3 text-right">
                       {order.total_price
                         ? `${Number(order.total_price).toLocaleString()} ${order.currency ?? ''}`
