@@ -90,6 +90,33 @@ def _resolve_exchange_rate(history, order_date):
     return history[idx][1]
 
 
+# @MX:ANCHOR: [AUTO] SPEC-ORDER-023 v1.4.0 REQ-OLIST-013/014a: "발주 대기"
+# predicate for the order list's 발주상태 column. Must stay byte-for-byte
+# equivalent to `_reorder_candidate_filter`
+# (purchase_order_views.py:107-110), the ORM-side definition the 미발주 목록
+# 탭 already uses — the two surfaces disagreeing tells an operator nothing.
+# @MX:REASON: `LineItem.PURCHASE_STATUS_CHOICES` (models.py:156-167) has no
+# "ordered" member: creating a purchase order only adds the M2M link
+# (purchase_order_views.py:1131), leaving purchase_status at "unordered"
+# forever. Testing purchase_status alone — which SPEC-ORDER-023 v1.0.0~v1.3.0
+# did — mislabelled 3,524 of 3,613 trackable production orders as 미발주.
+def _is_awaiting_purchase(line_item):
+    """REQ-OLIST-013: True when this line item is still in the reorder queue.
+
+    `damaged_exchange` re-enters the queue regardless of existing linkage
+    (SPEC-PURCHASE-ORDER-010 REQ-DMG-001), which is why the linkage check
+    applies to "unordered" only.
+
+    Reads linkage via `.all()` so the `line_items__purchase_orders` prefetch
+    cache (views.py `OrderListView.get_queryset`) answers it — `.exists()`
+    would bypass the cache and issue one query per line item, breaking
+    REQ-OLIST-021.
+    """
+    if line_item.purchase_status == "damaged_exchange":
+        return True
+    return line_item.purchase_status == "unordered" and not line_item.purchase_orders.all()
+
+
 class CustomerSummarySerializer(serializers.ModelSerializer):
     class Meta:
         model = Customer
@@ -152,8 +179,10 @@ class OrderListSerializer(serializers.ModelSerializer):
     # never gone through a logistics write path even though their trackable
     # line items already carry a real (default "not_shipped") status
     # (spec.md C3). Iterates obj.line_items.all() exactly once, relying on
-    # OrderListView's prefetch_related("line_items") cache — REQ-OLIST-021
-    # forbids any additional query here.
+    # OrderListView's prefetch_related("line_items") cache — plus, for the
+    # purchase half (v1.4.0), the nested "line_items__purchase_orders" cache
+    # read by _is_awaiting_purchase. REQ-OLIST-021 forbids any per-order or
+    # per-line-item query here.
     def _derive_line_item_states(self, obj):
         cache = getattr(self, "_line_item_states_cache", None)
         if cache is None:
@@ -178,7 +207,7 @@ class OrderListSerializer(serializers.ModelSerializer):
 
             purchase = (
                 "unordered"
-                if any(li.purchase_status == "unordered" for li in trackable)
+                if any(_is_awaiting_purchase(li) for li in trackable)
                 else "ordered"
             )
             result = (logistics, purchase)

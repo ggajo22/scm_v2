@@ -493,6 +493,53 @@ def _no_stock_logic(
     return selected, basis
 
 
+# SPEC-ORDER-024 REQ-OP-001: candidate_basis label per secondary distributor,
+# kept next to resolve_publisher_distributor() so the two stay in sync.
+_VENDOR_RULE_BASIS: dict[str, str] = {
+    "agape": "아가페규칙",
+    "choeumgoyuk": "처음교육규칙",
+    "sungseoyunion": "성서유니온규칙",
+}
+
+
+def resolve_publisher_distributor(
+    publisher: str | None,
+    vendor_rules: list[tuple[str, str]] | None,
+) -> str | None:
+    """
+    Resolve a 교보 출판사 name to its secondary distributor code.
+
+    Extracted from auto_select_distributor()'s Step 0 (SPEC-ORDER-024
+    REQ-OP-001) so the Daily Review UPLOAD side can reach the same verdict
+    the DOWNLOAD side reached: the '선택' cell collapses both 아가페 and
+    성서유니온 into the single label '타출판사'
+    (_DISTRIBUTOR_CODE_TO_LABEL), so the concrete distributor has to be
+    re-derived from the publisher rather than read back off the file.
+
+    Matching semantics are byte-for-byte the original Step 0 loop:
+    아가페 matches on substring (any publisher name containing "아가페"),
+    처음교육/성서유니온 match on exact publisher_name equality. First rule
+    row that matches wins.
+
+    Args:
+        publisher: KyoboData.publisher / '교보 출판사' cell value.
+        vendor_rules: Pre-fetched list of (publisher_name, distributor_code).
+
+    Returns:
+        "agape" | "choeumgoyuk" | "sungseoyunion", or None when no rule matches.
+    """
+    if not vendor_rules or not publisher:
+        return None
+    for pub_name, dist_code in vendor_rules:
+        if dist_code == "agape" and "아가페" in publisher:
+            return "agape"
+        if dist_code == "choeumgoyuk" and publisher == pub_name:
+            return "choeumgoyuk"
+        if dist_code == "sungseoyunion" and publisher == pub_name:
+            return "sungseoyunion"
+    return None
+
+
 def auto_select_distributor(
     vc: "VendorComparison",
     total_qty: int,
@@ -538,14 +585,9 @@ def auto_select_distributor(
     # ------------------------------------------------------------------
     # Step 0: DistributorVendorRule override
     # ------------------------------------------------------------------
-    if vendor_rules and vc.kyobo_publisher:
-        for pub_name, dist_code in vendor_rules:
-            if dist_code == "agape" and "아가페" in vc.kyobo_publisher:
-                return _result("agape", "아가페규칙", price_diff, False)
-            if dist_code == "choeumgoyuk" and vc.kyobo_publisher == pub_name:
-                return _result("choeumgoyuk", "처음교육규칙", price_diff, False)
-            if dist_code == "sungseoyunion" and vc.kyobo_publisher == pub_name:
-                return _result("sungseoyunion", "성서유니온규칙", price_diff, False)
+    rule_code = resolve_publisher_distributor(vc.kyobo_publisher, vendor_rules)
+    if rule_code is not None:
+        return _result(rule_code, _VENDOR_RULE_BASIS[rule_code], price_diff, False)
 
     # ------------------------------------------------------------------
     # Step 1: Warehouse stock priority

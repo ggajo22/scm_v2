@@ -18,7 +18,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from order.models import Customer, ExchangeRate, LineItem, Order
+from order.models import Customer, ExchangeRate, LineItem, Order, PurchaseOrder
 
 User = get_user_model()
 LIST_URL = "/api/orders/"
@@ -29,8 +29,9 @@ EXCHANGE_RATE_TABLE = "orders_exchangerate"
 # AC-OLIST-021: baseline (JWT user lookup 1 + pagination COUNT 1 + main
 # SELECT 1 + prefetch_related x3: refunds/line_items/customer) re-measured
 # in this session (M0) as 6, matching spec.md REQ-OLIST-022a. +1 batched
-# ExchangeRate query (REQ-OLIST-019) = 7.
-TOTAL_QUERY_COUNT = 7
+# ExchangeRate query (REQ-OLIST-019) +1 line_items__purchase_orders M2M
+# prefetch (REQ-OLIST-021, v1.4.0) = 8.
+TOTAL_QUERY_COUNT = 8
 
 # AC-OLIST-025: the full OrderDetailSerializer field set (serializers.py
 # Meta.fields, `:190-217`) must be byte-identical after the margin-formula
@@ -90,6 +91,23 @@ def _make_line_item(order, **kwargs):
     kwargs.setdefault("shopify_line_item_id", next(_next_line_item_id))
     kwargs.setdefault("title", "테스트 상품")
     return LineItem.objects.create(order=order, **kwargs)
+
+
+def _link_purchase_order(line_item, distributor="kyobo", status="confirmed"):
+    """AC-OLIST-014/014a/014b: reproduce the production "발주 완료" shape —
+    a PurchaseOrder linked via the M2M while the line item's own
+    purchase_status stays "unordered" (PURCHASE_STATUS_CHOICES has no
+    "ordered" value; purchase_order_views.py:1131 only adds the link).
+    """
+    po = PurchaseOrder.objects.create(
+        sku=line_item.sku or "ISBN000",
+        title=line_item.title,
+        distributor=distributor,
+        quantity=line_item.quantity or 1,
+        status=status,
+    )
+    po.line_items.add(line_item)
+    return po
 
 
 def _get_item(res, shopify_order_id):
@@ -350,20 +368,71 @@ def test_ac013a_rule4a_mixed_states_to_partial(auth_client):
 
 
 @pytest.mark.django_db
-def test_ac014_any_unordered_triggers_unordered(auth_client):
+def test_ac014_any_awaiting_purchase_triggers_unordered(auth_client):
+    """AC-OLIST-014 [HARD] (강화 v1.4.0): `any` vs `all` AND the PurchaseOrder
+    linkage condition. B is `unordered` but already linked to a confirmed
+    PurchaseOrder, so it is NOT awaiting purchase — only A is."""
     order = _make_order()
-    _make_line_item(order, sku="ISBN-A", purchase_status="unordered", quantity=1)
+    item_a = _make_line_item(order, sku="ISBN-A", purchase_status="unordered", quantity=1)
+    item_b = _make_line_item(order, sku="ISBN-B", purchase_status="unordered", quantity=1)
+    _link_purchase_order(item_b)
+
+    res = auth_client.get(LIST_URL)
+
+    assert res.status_code == 200
+    assert _get_item(res, order.shopify_order_id)["purchase_display"] == "unordered"
+
+    # Remove the only genuinely-awaiting item: B alone must NOT be 미발주.
+    # A `purchase_status`-only derivation returns "unordered" here and fails.
+    item_a.delete()
+
+    res = auth_client.get(LIST_URL)
+
+    assert res.status_code == 200
+    assert _get_item(res, order.shopify_order_id)["purchase_display"] == "ordered"
+
+
+@pytest.mark.django_db
+def test_ac014a_purchase_order_linked_items_are_ordered(auth_client):
+    """AC-OLIST-014a [HARD] (신규 v1.4.0): direct reproduction of production
+    order #38360 — 8 trackable line items, all `purchase_status="unordered"`,
+    each linked to its own confirmed PurchaseOrder. This is the shape 97.5%
+    of production orders have."""
+    order = _make_order()
+    for i in range(8):
+        li = _make_line_item(
+            order, sku=f"ISBN-38360-{i}", purchase_status="unordered", quantity=1
+        )
+        _link_purchase_order(li, distributor="kyobo" if i < 4 else "booxen")
+
+    res = auth_client.get(LIST_URL)
+
+    assert res.status_code == 200
+    assert _get_item(res, order.shopify_order_id)["purchase_display"] == "ordered"
+
+
+@pytest.mark.django_db
+def test_ac014b_damaged_exchange_is_unordered_despite_linkage(auth_client):
+    """AC-OLIST-014b [HARD] (신규 v1.4.0): `damaged_exchange` re-enters the
+    reorder queue regardless of PurchaseOrder linkage — matching
+    `_reorder_candidate_filter` (purchase_order_views.py:107-110). Applying
+    the linkage exception uniformly across every purchase_status yields
+    "ordered" here and diverges from the 미발주 목록 탭."""
+    order = _make_order()
+    item_a = _make_line_item(
+        order, sku="ISBN-A", purchase_status="damaged_exchange", quantity=1
+    )
+    _link_purchase_order(item_a)
     _make_line_item(order, sku="ISBN-B", purchase_status="in_stock", quantity=1)
 
     res = auth_client.get(LIST_URL)
 
     assert res.status_code == 200
-    item = _get_item(res, order.shopify_order_id)
-    assert item["purchase_display"] == "unordered"
+    assert _get_item(res, order.shopify_order_id)["purchase_display"] == "unordered"
 
 
 @pytest.mark.django_db
-def test_ac015_none_unordered_yields_ordered(auth_client):
+def test_ac015_none_awaiting_purchase_yields_ordered(auth_client):
     order = _make_order()
     _make_line_item(order, sku="ISBN-A", purchase_status="in_stock", quantity=1)
     _make_line_item(order, sku="ISBN-B", purchase_status="cs_required", quantity=1)
@@ -563,9 +632,10 @@ def test_ac020a_batch_load_date_uses_utc_not_localtime(auth_client):
 
 
 @pytest.mark.django_db
-def test_ac021_total_query_count_exact_seven_and_page_size_invariant(auth_client):
-    """AC-OLIST-021 [HARD]: absolute constant 7, identical for a 1-order page
-    and a 5-order page (customer-connected trackable orders, per M0/REQ-022a)."""
+def test_ac021_total_query_count_exact_eight_and_page_size_invariant(auth_client):
+    """AC-OLIST-021 [HARD]: absolute constant 8 (7 before v1.4.0 added the
+    line_items__purchase_orders prefetch), identical for a 1-order page and a
+    5-order page (customer-connected trackable orders, per M0/REQ-022a)."""
     customer_solo = Customer.objects.create(shopify_customer_id=970001)
     order_solo = _make_order(
         store_type="gimssine",

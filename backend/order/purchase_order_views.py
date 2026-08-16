@@ -57,6 +57,7 @@ from .excel_utils import (
     parse_vendor_excel,
     parse_vendor_shipment_excel,
     parse_warehouse_receipt_excel,
+    resolve_publisher_distributor,
 )
 from .models import (
     LOGISTICS_STATUS_CHOICES,
@@ -1391,6 +1392,31 @@ def _batch_upsert_vendor_data(model, sku_to_fields: dict) -> None:
             )
 
 
+def _min_nonzero_vendor_price(*prices) -> Decimal | None:
+    """
+    확정 단가 for 타출판사 계열 rows (SPEC-ORDER-024 REQ-OP-002).
+
+    아가페 / 성서유니온 / 처음교육 have no supply-price column of their own in
+    the Daily Review file, so their confirmed_price stayed NULL and the order's
+    margin lost its cost basis (`OrderSerializer.confirmed_cost_krw`). The
+    agreed substitute is the cheapest real quote among BOOXEN 공급가 /
+    YES24 공급가 / 교보 공급가.
+
+    A 0 in any of those columns means "no quote", not "free", so zeros (and
+    blanks, which arrive as None) are excluded from the minimum. When every
+    value is zero/blank there is no usable cost basis and None is returned —
+    confirmed_price is then left as it was.
+    """
+    candidates = []
+    for raw in prices:
+        if raw is None:
+            continue
+        value = Decimal(str(raw))
+        if value > 0:
+            candidates.append(value)
+    return min(candidates) if candidates else None
+
+
 class UploadDailyReviewView(APIView):
     """
     POST /api/purchase-orders/upload-daily-review/
@@ -1583,6 +1609,52 @@ class UploadDailyReviewView(APIView):
                     else {}
                 )
 
+                # SPEC-ORDER-024 REQ-OP-001: the '선택' cell collapses both
+                # 아가페 and 성서유니온 into the single label '타출판사'
+                # (_DISTRIBUTOR_CODE_TO_LABEL on the download side), so the
+                # concrete distributor cannot be read back off the file — it
+                # is re-derived here from the same DistributorVendorRule table
+                # auto_select_distributor() consulted when the file was
+                # generated. Publisher source: the row's own '교보 출판사'
+                # cell when the column exists (new template), else the
+                # KyoboData row — read AFTER the batch upsert above, so this
+                # upload's own publisher values are already visible.
+                vendor_rules = list(
+                    DistributorVendorRule.objects.values_list("publisher_name", "distributor")
+                )
+                other_publisher_skus = {
+                    row_sku
+                    for (_, row_sku), row_item in pair_map.items()
+                    if row_item.get("note_type") == "타출판사" and not row_item.get("ky_publisher")
+                }
+                kyobo_publisher_by_sku: dict[str, str | None] = (
+                    {
+                        k.sku: k.publisher
+                        for k in KyoboData.objects.filter(sku__in=other_publisher_skus)
+                    }
+                    if vendor_rules and other_publisher_skus
+                    else {}
+                )
+
+                def _other_publisher_unit_price(row_sku: str, row_item: dict) -> Decimal | None:
+                    """REQ-OP-002: cheapest non-zero of the three 공급가 columns.
+
+                    Each vendor falls back to its own vendor-table price when
+                    the row's cell is blank — the same per-vendor fallback the
+                    non-warehouse branch below already performs, just applied
+                    to all three vendors at once.
+                    """
+                    bs = row_item.get("bs_price")
+                    if bs is None:
+                        bs = booxen_price_by_sku.get(row_sku)
+                    ky = row_item.get("ky_price")
+                    if ky is None:
+                        ky = kyobo_price_by_sku.get(row_sku)
+                    yes24 = row_item.get("yes24_price")
+                    if yes24 is None:
+                        yes24 = yes24_price_by_sku.get(row_sku)
+                    return _min_nonzero_vendor_price(bs, ky, yes24)
+
                 # REQ-PO8-018: Order.name resolution for the (order_name,
                 # sku)-scoped main loop below. Mirrors
                 # _apply_logistics_transition / _process_outbound_rows'
@@ -1685,8 +1757,27 @@ class UploadDailyReviewView(APIView):
                     if note_type and not distributor_code:
                         # CS case: update purchase_status and create note
                         new_status = _NOTE_TYPE_STATUS_MAP[note_type]
+                        # SPEC-ORDER-024 REQ-OP-001/002: a '타출판사' row is the
+                        # only CS-type row that also carries purchasing facts —
+                        # which publisher it goes to, and what it costs. Both
+                        # are filled in here; 주문취소/주문보류/CS필요 rows leave
+                        # confirmed_distributor/confirmed_price untouched (they
+                        # are written back unchanged by the shared bulk_update
+                        # field list below).
+                        publisher_distributor: str | None = None
+                        publisher_price: Decimal | None = None
+                        if note_type == "타출판사":
+                            publisher_distributor = resolve_publisher_distributor(
+                                item.get("ky_publisher") or kyobo_publisher_by_sku.get(sku),
+                                vendor_rules,
+                            )
+                            publisher_price = _other_publisher_unit_price(sku, item)
                         for li in unordered_lis:
                             li.purchase_status = new_status
+                            if publisher_distributor is not None:
+                                li.confirmed_distributor = publisher_distributor
+                            if publisher_price is not None:
+                                li.confirmed_price = publisher_price
                         cs_status_updates.extend(unordered_lis)
                         if note is not None:
                             for li in unordered_lis:
@@ -1779,6 +1870,11 @@ class UploadDailyReviewView(APIView):
                             unit_price = item.get("yes24_price")
                             if unit_price is None:
                                 unit_price = yes24_price_by_sku.get(sku)
+                        elif distributor_code in VENDOR_RULE_DISTRIBUTORS:
+                            # SPEC-ORDER-024 REQ-OP-002: 처음교육/아가페/성서유니온
+                            # have no supply-price column of their own, so the
+                            # cheapest non-zero vendor quote is the cost basis.
+                            unit_price = _other_publisher_unit_price(sku, item)
 
                         for li in unordered_lis:
                             li.confirmed_distributor = distributor_code
@@ -1850,7 +1946,15 @@ class UploadDailyReviewView(APIView):
                 # One bulk_update() per distinct field set touched, instead
                 # of one per SKU.
                 if cs_status_updates:
-                    LineItem.objects.bulk_update(cs_status_updates, ["purchase_status"])
+                    # SPEC-ORDER-024 REQ-OP-001/002: the confirmed_* fields are
+                    # only mutated for '타출판사' rows, but bulk_update takes one
+                    # shared field list per call — for every other CS row these
+                    # two columns are rewritten with the values they were loaded
+                    # with (select_for_update above), i.e. a no-op.
+                    LineItem.objects.bulk_update(
+                        cs_status_updates,
+                        ["purchase_status", "confirmed_distributor", "confirmed_price"],
+                    )
                 if warehouse_li_updates:
                     LineItem.objects.bulk_update(
                         warehouse_li_updates, ["purchase_status", "confirmed_distributor"]
