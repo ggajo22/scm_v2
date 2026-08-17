@@ -324,7 +324,6 @@ class UnorderedItemsView(APIView):
     GET /api/purchase-orders/unordered/
 
     Returns LineItems (aggregated by SKU) that are NOT yet linked to any PurchaseOrder.
-    Each result includes auto_distributor derived from DistributorVendorRule.
     """
 
     authentication_classes = [JWTAuthentication]
@@ -354,10 +353,6 @@ class UnorderedItemsView(APIView):
             .order_by("-order__shopify_created_at")
         )
 
-        rule_map: dict[str, str] = dict(
-            DistributorVendorRule.objects.values_list("publisher_name", "distributor")
-        )
-
         results = []
         for li in line_items:
             # @MX:NOTE: [AUTO] SPEC-PURCHASE-ORDER-011 REQ-DEX-012/012a (결정 A):
@@ -384,7 +379,6 @@ class UnorderedItemsView(APIView):
                     "vendor": li.vendor or "",
                     "quantity": net_qty,
                     "purchase_status": li.purchase_status,
-                    "auto_distributor": rule_map.get(li.vendor or ""),
                 }
             )
 
@@ -400,13 +394,15 @@ class UnorderedItemsView(APIView):
 # other_publisher) line items — read-only restore-candidate list
 # ---------------------------------------------------------------------------
 
-# The four purchase_status codes that _reorder_candidate_filter above drops,
+# The purchase_status codes that _reorder_candidate_filter above drops,
 # leaving them invisible on every purchase screen (SPEC-ORDER-018 문제 정의).
+# SPEC-ORDER-025 REQ-LCONF-301: "other_publisher" was removed from this
+# tuple — 타출판사 건은 품목 노트 타출판사 탭에서 조회하며, 이 뷰에까지
+# 중복 노출하지 않는다.
 EXCLUDED_PURCHASE_STATUSES = (
     "on_hold",
     "order_cancelled",
     "cs_required",
-    "other_publisher",
 )
 
 
@@ -415,7 +411,7 @@ class ExcludedItemsView(APIView):
     GET /api/purchase-orders/excluded-items/
 
     REQ-RESTORE-001~008: read-only cross-order list of LineItems whose
-    purchase_status is one of the four excluded states, so an operator can
+    purchase_status is one of the three excluded states, so an operator can
     see them and restore them to "unordered" through the pre-existing
     LineItemStatusUpdateView / LineItemBulkStatusUpdateView endpoints
     (REQ-RESTORE-012 — this SPEC adds no write endpoint).
@@ -1605,6 +1601,10 @@ class UploadDailyReviewView(APIView):
     SPEC-ORDER-012 REQ-RTS-003a/004: recomputes every Order status/
     ready_to_ship aggregate touched by any of the three branches, once per
     upload request.
+
+    SPEC-ORDER-025 REQ-LCONF-309: a '타출판사' CS row always gets a
+    LineItemNote, even when the 메모/Status cell is blank (falls back to
+    _OTHER_PUBLISHER_DEFAULT_NOTE) — the other three CS types are unaffected.
     """
 
     authentication_classes = [JWTAuthentication]
@@ -1934,12 +1934,22 @@ class UploadDailyReviewView(APIView):
                         # field list below).
                         publisher_distributor: str | None = None
                         publisher_price: Decimal | None = None
+                        effective_note = note
                         if note_type == "타출판사":
                             publisher_distributor = resolve_publisher_distributor(
                                 item.get("ky_publisher") or kyobo_publisher_by_sku.get(sku),
                                 vendor_rules,
                             )
                             publisher_price = _other_publisher_unit_price(sku, item)
+                            # SPEC-ORDER-025 REQ-LCONF-309: a '타출판사' row must
+                            # always carry a note, even when the 메모/Status cell
+                            # is blank — otherwise it becomes invisible on both
+                            # the excluded-items view (REQ-LCONF-302) and the
+                            # 품목 노트 타출판사 탭. The other three CS types
+                            # (주문취소/주문보류/CS필요) keep the pre-existing
+                            # conditional behaviour untouched below.
+                            if effective_note is None:
+                                effective_note = _OTHER_PUBLISHER_DEFAULT_NOTE
                         for li in unordered_lis:
                             li.purchase_status = new_status
                             if publisher_distributor is not None:
@@ -1947,12 +1957,12 @@ class UploadDailyReviewView(APIView):
                             if publisher_price is not None:
                                 li.confirmed_price = publisher_price
                         cs_status_updates.extend(unordered_lis)
-                        if note is not None:
+                        if effective_note is not None:
                             for li in unordered_lis:
                                 pending_notes.append(
                                     LineItemNote(
                                         line_item=li,
-                                        content=note,
+                                        content=effective_note,
                                         author=None,
                                         note_type=note_type,
                                         assignee="CS",
@@ -2623,6 +2633,21 @@ _DAMAGED_EXCHANGE_BLOCKED_MESSAGE = (
     "(damage quantity is required and cannot be provided through this endpoint)."
 )
 
+# SPEC-ORDER-025 REQ-LCONF-306/307: other_publisher can only be produced by
+# the Daily Review upload flow (UploadDailyReviewView), which always attaches
+# a LineItemNote (REQ-LCONF-309). Blocking it here prevents a manually
+# assigned other_publisher row from silently losing its note trail.
+_OTHER_PUBLISHER_BLOCKED_MESSAGE = (
+    "other_publisher can only be set via the Daily Review upload "
+    "(POST /api/purchase-orders/upload-daily-review/)."
+)
+
+# SPEC-ORDER-025 REQ-LCONF-309: default LineItemNote content for a '타출판사'
+# Daily Review upload row whose 메모/Status cell is blank — without this, the
+# row would get purchase_status="other_publisher" but no note, making it
+# invisible on both the excluded-items view and the 품목 노트 타출판사 탭.
+_OTHER_PUBLISHER_DEFAULT_NOTE = "타출판사 확정 처리 (Daily Review 업로드, 메모 없음)"
+
 
 # ---------------------------------------------------------------------------
 # SPEC-PURCHASE-ORDER-004: Single line item status update
@@ -2640,6 +2665,9 @@ class LineItemStatusUpdateView(APIView):
 
     SPEC-PURCHASE-ORDER-011: rejects purchase_status="damaged_exchange" —
     see _DAMAGED_EXCHANGE_BLOCKED_MESSAGE. Every other choice is unaffected.
+
+    SPEC-ORDER-025: rejects purchase_status="other_publisher" — see
+    _OTHER_PUBLISHER_BLOCKED_MESSAGE.
     """
 
     authentication_classes = [JWTAuthentication]
@@ -2661,6 +2689,11 @@ class LineItemStatusUpdateView(APIView):
         if purchase_status_value == "damaged_exchange":
             return Response(
                 {"error": _DAMAGED_EXCHANGE_BLOCKED_MESSAGE},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if purchase_status_value == "other_publisher":
+            return Response(
+                {"error": _OTHER_PUBLISHER_BLOCKED_MESSAGE},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -2694,6 +2727,9 @@ class LineItemBulkStatusUpdateView(APIView):
 
     SPEC-PURCHASE-ORDER-011: rejects purchase_status="damaged_exchange" —
     see _DAMAGED_EXCHANGE_BLOCKED_MESSAGE. Every other choice is unaffected.
+
+    SPEC-ORDER-025: rejects purchase_status="other_publisher" — see
+    _OTHER_PUBLISHER_BLOCKED_MESSAGE.
     """
 
     authentication_classes = [JWTAuthentication]
@@ -2718,6 +2754,11 @@ class LineItemBulkStatusUpdateView(APIView):
         if purchase_status_value == "damaged_exchange":
             return Response(
                 {"error": _DAMAGED_EXCHANGE_BLOCKED_MESSAGE},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if purchase_status_value == "other_publisher":
+            return Response(
+                {"error": _OTHER_PUBLISHER_BLOCKED_MESSAGE},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
