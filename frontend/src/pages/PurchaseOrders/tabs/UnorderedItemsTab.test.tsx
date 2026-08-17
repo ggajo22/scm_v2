@@ -8,6 +8,7 @@ import {
   useGenerateOrderFile,
   useUpdateLineItemStatus,
   useBulkUpdateLineItemStatus,
+  useConfirmLineItem,
 } from '@/hooks/usePurchaseOrderQueries'
 import { usePurchaseOrderStore } from '@/stores/usePurchaseOrderStore'
 
@@ -20,6 +21,7 @@ vi.mock('@/hooks/usePurchaseOrderQueries', () => ({
   useGenerateOrderFile: vi.fn(),
   useUpdateLineItemStatus: vi.fn(),
   useBulkUpdateLineItemStatus: vi.fn(),
+  useConfirmLineItem: vi.fn(),
 }))
 
 vi.mock('@/stores/usePurchaseOrderStore', () => ({
@@ -32,6 +34,7 @@ describe('UnorderedItemsTab', () => {
   const toggleSku = vi.fn()
   const selectAllSkus = vi.fn()
   const clearSelections = vi.fn()
+  const confirmMutate = vi.fn()
 
   beforeEach(() => {
     mutateAsync.mockClear()
@@ -39,6 +42,7 @@ describe('UnorderedItemsTab', () => {
     toggleSku.mockClear()
     selectAllSkus.mockClear()
     clearSelections.mockClear()
+    confirmMutate.mockClear()
     mutateAsync.mockResolvedValue({ unknown_skus: [] })
 
     vi.mocked(useUnorderedItems).mockReturnValue({
@@ -67,6 +71,13 @@ describe('UnorderedItemsTab', () => {
       mutate: bulkMutate,
       isPending: false,
     } as unknown as ReturnType<typeof useBulkUpdateLineItemStatus>)
+
+    vi.mocked(useConfirmLineItem).mockReturnValue({
+      mutate: confirmMutate,
+      isPending: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof useConfirmLineItem>)
 
     vi.mocked(usePurchaseOrderStore).mockReturnValue({
       selectedSkus: ['8809226729403'],
@@ -167,7 +178,6 @@ describe('UnorderedItemsTab', () => {
             title: '미발주 도서',
             vendor: '처음교육',
             quantity: 1,
-            auto_distributor: null,
             purchase_status: 'unordered',
           },
         ],
@@ -325,7 +335,6 @@ describe('UnorderedItemsTab', () => {
             title: '미발주 도서',
             vendor: '처음교육',
             quantity: 1,
-            auto_distributor: null,
             purchase_status: 'unordered',
           },
         ],
@@ -353,7 +362,6 @@ describe('UnorderedItemsTab', () => {
             title: '파손 도서',
             vendor: '처음교육',
             quantity: 5,
-            auto_distributor: null,
             purchase_status: 'damaged_exchange',
           },
         ],
@@ -408,5 +416,293 @@ describe('UnorderedItemsTab', () => {
     expect(
       optionValues(screen.getByLabelText('일괄 변경할 발주 상태 선택'))
     ).not.toContain('damaged_exchange')
+  })
+
+  it('none of the four PURCHASE_STATUS_OPTIONS render sites offer other_publisher (REQ-LCONF-304)', async () => {
+    const user = userEvent.setup()
+    vi.mocked(useUnorderedItems).mockReturnValue({
+      data: {
+        count: 1,
+        results: [
+          {
+            id: 1,
+            order_name: '#1001',
+            sku: '8809226729403',
+            title: '미발주 도서',
+            vendor: '처음교육',
+            quantity: 1,
+            purchase_status: 'unordered',
+          },
+        ],
+      },
+      isPending: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useUnorderedItems>)
+    vi.mocked(useExcludedItems).mockReturnValue({
+      data: {
+        count: 1,
+        results: [
+          {
+            id: 101,
+            order_name: '#2001',
+            sku: 'SKU-HOLD',
+            title: '보류 도서',
+            vendor: '처음교육',
+            quantity: 1,
+            purchase_status: 'on_hold',
+          },
+        ],
+      },
+      isPending: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useExcludedItems>)
+
+    render(<UnorderedItemsTab />)
+
+    expect(
+      optionValues(screen.getByLabelText('미발주 도서 발주 상태 변경'))
+    ).not.toContain('other_publisher')
+
+    await switchToExcludedView(user)
+    expect(
+      optionValues(screen.getByLabelText('보류 도서 발주 상태 변경'))
+    ).not.toContain('other_publisher')
+    expect(
+      optionValues(screen.getByLabelText('일괄 변경할 발주 상태 선택'))
+    ).not.toContain('other_publisher')
+  })
+})
+
+// -----------------------------------------------------------------------
+// SPEC-ORDER-025 R2/M4 — 발주처리 모달 통합
+// -----------------------------------------------------------------------
+
+describe('UnorderedItemsTab — 발주처리 모달 (SPEC-ORDER-025)', () => {
+  const confirmMutate = vi.fn()
+
+  function mockOneUnorderedRow() {
+    vi.mocked(useUnorderedItems).mockReturnValue({
+      data: {
+        count: 1,
+        results: [
+          {
+            id: 42,
+            order_name: '#4001',
+            sku: 'ISBN-A',
+            title: '테스트도서',
+            vendor: '처음교육',
+            quantity: 5,
+            purchase_status: 'unordered',
+          },
+        ],
+      },
+      isPending: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useUnorderedItems>)
+  }
+
+  beforeEach(() => {
+    confirmMutate.mockClear()
+    mockOneUnorderedRow()
+    vi.mocked(useExcludedItems).mockReturnValue({
+      data: { count: 0, results: [] },
+      isPending: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useExcludedItems>)
+    vi.mocked(useGenerateOrderFile).mockReturnValue({
+      mutateAsync: vi.fn(),
+      isPending: false,
+    } as unknown as ReturnType<typeof useGenerateOrderFile>)
+    vi.mocked(useUpdateLineItemStatus).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+    } as unknown as ReturnType<typeof useUpdateLineItemStatus>)
+    vi.mocked(useBulkUpdateLineItemStatus).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+    } as unknown as ReturnType<typeof useBulkUpdateLineItemStatus>)
+    vi.mocked(useConfirmLineItem).mockReturnValue({
+      mutate: confirmMutate,
+      isPending: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof useConfirmLineItem>)
+    vi.mocked(usePurchaseOrderStore).mockReturnValue({
+      selectedSkus: [],
+      toggleSku: vi.fn(),
+      selectAllSkus: vi.fn(),
+      clearSelections: vi.fn(),
+    } as unknown as ReturnType<typeof usePurchaseOrderStore>)
+  })
+
+  // AC-LCONF-206: 8 columns before AND after this SPEC's column swap
+  // ("자동 추천 발주처" removed, "발주처리" added).
+  it('AC-LCONF-206: table has exactly 8 header columns and empty-state colSpan matches', () => {
+    vi.mocked(useUnorderedItems).mockReturnValue({
+      data: { count: 0, results: [] },
+      isPending: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useUnorderedItems>)
+
+    render(<UnorderedItemsTab />)
+
+    const headers = screen.getAllByRole('columnheader')
+    expect(headers).toHaveLength(8)
+    expect(screen.queryByText('자동 추천 발주처')).not.toBeInTheDocument()
+    expect(screen.getByText('발주처리')).toBeInTheDocument()
+
+    const emptyCell = screen.getByText('미발주 항목이 없습니다.')
+    expect(emptyCell.closest('td')).toHaveAttribute('colspan', '8')
+  })
+
+  // AC-LCONF-101: clicking 발주처리 opens the modal with the row's info.
+  it('AC-LCONF-101: opens the modal and shows title/SKU/quantity', async () => {
+    const user = userEvent.setup()
+    render(<UnorderedItemsTab />)
+
+    await user.click(screen.getByRole('button', { name: '발주처리' }))
+
+    const dialog = screen.getByRole('dialog')
+    expect(dialog).toBeInTheDocument()
+    expect(within(dialog).getByText('테스트도서')).toBeInTheDocument()
+    expect(within(dialog).getByText('ISBN-A')).toBeInTheDocument()
+    expect(within(dialog).getByText('5')).toBeInTheDocument()
+  })
+
+  // AC-LCONF-108: a damaged_exchange row's modal must show the same net
+  // quantity the unordered list row displayed (backend already nets it to
+  // damaged_quantity-based, so the frontend just passes item.quantity
+  // through unchanged — see UnorderedItemsView.get() base_qty selection).
+  it('AC-LCONF-108: damaged_exchange row modal shows the net (damaged_quantity-based) quantity, not the raw order quantity', async () => {
+    vi.mocked(useUnorderedItems).mockReturnValue({
+      data: {
+        count: 1,
+        results: [
+          {
+            id: 7,
+            order_name: '#7001',
+            sku: 'SKU-DEX',
+            title: '파손 도서',
+            vendor: '처음교육',
+            // The backend already reports the damaged_quantity-based net
+            // quantity (3) here, not the original order quantity (10).
+            quantity: 3,
+            purchase_status: 'damaged_exchange',
+          },
+        ],
+      },
+      isPending: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useUnorderedItems>)
+
+    const user = userEvent.setup()
+    render(<UnorderedItemsTab />)
+    await user.click(screen.getByRole('button', { name: '발주처리' }))
+
+    const dialog = within(screen.getByRole('dialog'))
+    expect(dialog.getByText('3')).toBeInTheDocument()
+    expect(dialog.queryByText('10')).not.toBeInTheDocument()
+  })
+
+  // AC-LCONF-107: the row's own onClick (SKU selection toggle) must not fire.
+  it('AC-LCONF-107: clicking 발주처리 does not toggle the row SKU selection', async () => {
+    const toggleSku = vi.fn()
+    vi.mocked(usePurchaseOrderStore).mockReturnValue({
+      selectedSkus: [],
+      toggleSku,
+      selectAllSkus: vi.fn(),
+      clearSelections: vi.fn(),
+    } as unknown as ReturnType<typeof usePurchaseOrderStore>)
+
+    const user = userEvent.setup()
+    render(<UnorderedItemsTab />)
+
+    await user.click(screen.getByRole('button', { name: '발주처리' }))
+
+    expect(toggleSku).not.toHaveBeenCalled()
+  })
+
+  // AC-LCONF-102/103: whichever control (dropdown vs free text) was touched
+  // last wins — both write into the same shared `distributor` value.
+  it('AC-LCONF-102: submits the dropdown-selected value when nothing else is touched', async () => {
+    const user = userEvent.setup()
+    render(<UnorderedItemsTab />)
+    await user.click(screen.getByRole('button', { name: '발주처리' }))
+    const dialog = within(screen.getByRole('dialog'))
+
+    await user.selectOptions(dialog.getByLabelText('확정 발주처'), '교보')
+    await user.click(dialog.getByRole('button', { name: '발주처리' }))
+
+    expect(confirmMutate).toHaveBeenCalledTimes(1)
+    const [payload] = confirmMutate.mock.calls[0] as [{ id: number; distributor: string; unitPrice: string | null }]
+    expect(payload.distributor).toBe('kyobo')
+  })
+
+  it('AC-LCONF-103: free-text edits after a dropdown pick win over the dropdown value', async () => {
+    const user = userEvent.setup()
+    render(<UnorderedItemsTab />)
+    await user.click(screen.getByRole('button', { name: '발주처리' }))
+    const dialog = within(screen.getByRole('dialog'))
+
+    await user.selectOptions(dialog.getByLabelText('확정 발주처'), '교보')
+    const freeText = dialog.getByLabelText('확정 발주처 직접 입력')
+    await user.clear(freeText)
+    await user.type(freeText, '특수출판사')
+    await user.click(dialog.getByRole('button', { name: '발주처리' }))
+
+    expect(confirmMutate).toHaveBeenCalledTimes(1)
+    const [payload] = confirmMutate.mock.calls[0] as [{ id: number; distributor: string; unitPrice: string | null }]
+    expect(payload.distributor).toBe('특수출판사')
+  })
+
+  // AC-LCONF-106: blank distributor keeps submit disabled.
+  it('AC-LCONF-106: submit button is disabled while distributor is blank', async () => {
+    const user = userEvent.setup()
+    render(<UnorderedItemsTab />)
+    await user.click(screen.getByRole('button', { name: '발주처리' }))
+
+    const submitButton = within(screen.getByRole('dialog')).getByRole('button', { name: '발주처리' })
+    expect(submitButton).toBeDisabled()
+  })
+
+  // AC-LCONF-105 (component-level): a failed mutation keeps the modal open
+  // and renders the server's own error message. The invalidateQueries
+  // call-count assertion for this AC lives in
+  // usePurchaseOrderQueries.test.tsx, which owns the real hook.
+  it('AC-LCONF-105: on failure the modal stays open and shows the server error message', async () => {
+    vi.mocked(useConfirmLineItem).mockReturnValue({
+      mutate: confirmMutate,
+      isPending: false,
+      isError: true,
+      error: {
+        response: { status: 409, data: { error: '이미 발주서에 연결되어 있습니다.' } },
+      },
+    } as unknown as ReturnType<typeof useConfirmLineItem>)
+
+    const user = userEvent.setup()
+    render(<UnorderedItemsTab />)
+    await user.click(screen.getByRole('button', { name: '발주처리' }))
+
+    const dialog = screen.getByRole('dialog')
+    expect(dialog).toBeInTheDocument()
+    expect(within(dialog).getByText('이미 발주서에 연결되어 있습니다.')).toBeInTheDocument()
+  })
+
+  // AC-LCONF-104 (component-level): a successful submission closes the
+  // modal. The three-key invalidation assertion for this AC lives in
+  // usePurchaseOrderQueries.test.tsx (acceptance.md's specified technique).
+  it('AC-LCONF-104: on success the modal closes', async () => {
+    confirmMutate.mockImplementation((_payload, opts?: { onSuccess?: () => void }) => {
+      opts?.onSuccess?.()
+    })
+
+    const user = userEvent.setup()
+    render(<UnorderedItemsTab />)
+    await user.click(screen.getByRole('button', { name: '발주처리' }))
+    const dialog = within(screen.getByRole('dialog'))
+    await user.selectOptions(dialog.getByLabelText('확정 발주처'), '교보')
+    await user.click(dialog.getByRole('button', { name: '발주처리' }))
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 })

@@ -9,6 +9,7 @@ import {
   createVendorRule,
   deleteVendorRule,
   getPurchaseOrders,
+  confirmLineItem,
   updateLineItemStatus,
   bulkUpdateLineItemStatus,
   downloadDailyReview,
@@ -109,6 +110,38 @@ export function useDeleteVendorRule() {
     },
     onError: () => {
       toast.error('규칙 삭제에 실패했습니다.')
+    },
+  })
+}
+
+// SPEC-ORDER-025 REQ-LCONF-104/105: single-LineItem 발주처리. Invalidates all
+// three lists a confirmed row can affect — 미발주 (row leaves it), 보류/제외
+// (unaffected today, but a future eligible status could route through here)
+// and the 발주서 내역 list (the new PurchaseOrder must appear there). On
+// error, nothing is invalidated and the caller (LineItemConfirmModal) reads
+// this hook's own `error`/`isError` to keep the modal open and render the
+// server's message inline — REQ-LCONF-105 requires the modal to stay open,
+// which a hook-level side effect cannot control on its own.
+export function useConfirmLineItem() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({
+      id,
+      distributor,
+      unitPrice,
+    }: {
+      id: number
+      distributor: string
+      unitPrice: string | null
+    }) => confirmLineItem(id, { distributor, unit_price: unitPrice }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: QUERY_KEYS.unordered })
+      void queryClient.invalidateQueries({ queryKey: QUERY_KEYS.excludedItems })
+      void queryClient.invalidateQueries({ queryKey: ['purchase-orders', 'list'] })
+      toast.success('발주처리가 완료되었습니다.')
+    },
+    onError: () => {
+      toast.error('발주처리에 실패했습니다.')
     },
   })
 }
