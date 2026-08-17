@@ -50,6 +50,13 @@ interface LineItemConfirmModalProps {
 export function LineItemConfirmModal({ lineItem, open, onOpenChange }: LineItemConfirmModalProps) {
   const [distributor, setDistributor] = useState('')
   const [unitPrice, setUnitPrice] = useState('')
+  // SPEC-ORDER-025 M2: prefilled with the row's current SKU so the operator
+  // can correct it here (Shopify frequently still reports the old edition's
+  // SKU when a book gets a new edition, but the operator is actually
+  // purchasing the new one). Initialized directly from `lineItem.sku` — no
+  // effect needed, since the parent remounts this component with
+  // `key={lineItem.id}` for every row (see module docstring above).
+  const [sku, setSku] = useState(lineItem?.sku ?? '')
   const confirmMutation = useConfirmLineItem()
 
   if (!lineItem) return null
@@ -58,19 +65,30 @@ export function LineItemConfirmModal({ lineItem, open, onOpenChange }: LineItemC
     onOpenChange(false)
   }
 
+  const trimmedSku = sku.trim()
+  // REQ-LCONF-SKU-002 precedent: a reverted-back-to-original value must also
+  // count as "unchanged" so the payload stays byte-for-byte identical to the
+  // pre-M2 shape, not just when the field was never touched at all.
+  const skuChanged = trimmedSku !== '' && trimmedSku !== lineItem.sku
+
   const handleSubmit = () => {
     const trimmedDistributor = distributor.trim()
-    if (!trimmedDistributor) return
+    if (!trimmedDistributor || trimmedSku === '') return
     confirmMutation.mutate(
       {
         id: lineItem.id,
         distributor: trimmedDistributor,
         unitPrice: unitPrice.trim() === '' ? null : unitPrice.trim(),
+        // Send `sku` only when it actually differs from the row's current
+        // value — an untouched (or reverted) field must produce a payload
+        // with no `sku` key at all, reproducing today's behaviour exactly.
+        ...(skuChanged ? { sku: trimmedSku } : {}),
       },
       {
         onSuccess: () => {
           setDistributor('')
           setUnitPrice('')
+          setSku('')
           onOpenChange(false)
         },
       }
@@ -134,6 +152,31 @@ export function LineItemConfirmModal({ lineItem, open, onOpenChange }: LineItemC
           </div>
 
           <div className="space-y-2">
+            <Label htmlFor="lineitem-confirm-sku">SKU 정정 (선택)</Label>
+            <Input
+              id="lineitem-confirm-sku"
+              type="text"
+              value={sku}
+              onChange={(e) => setSku(e.target.value)}
+              maxLength={255}
+              placeholder="실제로 발주할 SKU가 다르면 여기서 정정"
+            />
+            {/* SPEC-ORDER-025 M2: this is a data-correcting action, not a
+                display tweak — the SKU actually being purchased changes as
+                soon as this differs from the row's original value. Reuses
+                the codebase's existing amber warning-box vocabulary (see
+                OutboundPage/UnmatchedForceSection.tsx and
+                OrdersPage.tsx's `warn` badge) rather than inventing a new
+                one. */}
+            {skuChanged && (
+              <p className="text-xs text-amber-700 bg-amber-50 border border-amber-300 rounded px-2 py-1">
+                SKU를 변경하면 실제로 발주하는 도서가 바뀝니다. 정정된 SKU(&quot;{trimmedSku}&quot;)로
+                발주처리됩니다.
+              </p>
+            )}
+          </div>
+
+          <div className="space-y-2">
             <Label htmlFor="lineitem-confirm-unit-price">확정 단가 (선택)</Label>
             <Input
               id="lineitem-confirm-unit-price"
@@ -159,7 +202,7 @@ export function LineItemConfirmModal({ lineItem, open, onOpenChange }: LineItemC
           <Button
             type="button"
             onClick={handleSubmit}
-            disabled={distributor.trim() === '' || confirmMutation.isPending}
+            disabled={distributor.trim() === '' || trimmedSku === '' || confirmMutation.isPending}
           >
             {confirmMutation.isPending ? '처리 중...' : '발주처리'}
           </Button>

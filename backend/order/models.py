@@ -236,6 +236,15 @@ class LineItem(models.Model):
     # convention (결정 A) applies on top of this value the same way it
     # already applies to `quantity` elsewhere (UnorderedItemsView).
     damaged_quantity = models.IntegerField(default=0)
+    # SPEC-ORDER-025 M2: manual SKU correction at 발주처리(confirm) time — the
+    # Shopify-reported SKU is sometimes stale (new book edition not reflected
+    # in the Shopify listing), so the operator corrects it when confirming
+    # the purchase order. Non-null means `sku` above was manually corrected;
+    # this field holds the ORIGINAL Shopify-reported value, set once (a
+    # second correction must not overwrite the true original — see
+    # LineItemConfirmView.post()). A single nullable field, not a separate
+    # boolean flag, since non-null already encodes "was corrected".
+    original_sku = models.CharField(max_length=255, null=True, blank=True)
 
     class Meta:
         db_table = "orders_line_item"

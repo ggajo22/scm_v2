@@ -167,4 +167,132 @@ describe('LineItemConfirmModal (SPEC-ORDER-025 R2)', () => {
     expect(onOpenChange).toHaveBeenCalledWith(false)
     expect(mutate).not.toHaveBeenCalled()
   })
+
+  // -------------------------------------------------------------------------
+  // SPEC-ORDER-025 M2 — SKU correction at confirm time
+  // -------------------------------------------------------------------------
+
+  it('AC-LCONF-SKU: the SKU field is prefilled with the row current SKU', () => {
+    render(
+      <LineItemConfirmModal lineItem={SAMPLE_LINE_ITEM} open={true} onOpenChange={onOpenChange} />
+    )
+    const dialog = within(screen.getByRole('dialog'))
+    expect(dialog.getByLabelText('SKU 정정 (선택)')).toHaveValue(SAMPLE_LINE_ITEM.sku)
+  })
+
+  it('AC-LCONF-SKU: an untouched SKU field submits a payload with no `sku` key', async () => {
+    const user = userEvent.setup()
+    render(
+      <LineItemConfirmModal lineItem={SAMPLE_LINE_ITEM} open={true} onOpenChange={onOpenChange} />
+    )
+    const dialog = within(screen.getByRole('dialog'))
+
+    await user.selectOptions(dialog.getByLabelText('확정 발주처'), '북센')
+    await user.click(dialog.getByRole('button', { name: '발주처리' }))
+
+    expect(mutate).toHaveBeenCalledTimes(1)
+    const [payload] = mutate.mock.calls[0] as [Record<string, unknown>]
+    expect('sku' in payload).toBe(false)
+  })
+
+  it('AC-LCONF-SKU: an edited SKU field submits the new value', async () => {
+    const user = userEvent.setup()
+    render(
+      <LineItemConfirmModal lineItem={SAMPLE_LINE_ITEM} open={true} onOpenChange={onOpenChange} />
+    )
+    const dialog = within(screen.getByRole('dialog'))
+
+    await user.selectOptions(dialog.getByLabelText('확정 발주처'), '북센')
+    const skuInput = dialog.getByLabelText('SKU 정정 (선택)')
+    await user.clear(skuInput)
+    await user.type(skuInput, 'ISBN-NEW-EDITION')
+    await user.click(dialog.getByRole('button', { name: '발주처리' }))
+
+    expect(mutate).toHaveBeenCalledTimes(1)
+    const [payload] = mutate.mock.calls[0] as [{ sku?: string }]
+    expect(payload.sku).toBe('ISBN-NEW-EDITION')
+  })
+
+  it('AC-LCONF-SKU: shows a warning once the SKU field is edited to a different value', async () => {
+    const user = userEvent.setup()
+    render(
+      <LineItemConfirmModal lineItem={SAMPLE_LINE_ITEM} open={true} onOpenChange={onOpenChange} />
+    )
+    const dialog = within(screen.getByRole('dialog'))
+    const skuInput = dialog.getByLabelText('SKU 정정 (선택)')
+
+    expect(dialog.queryByText(/실제로 발주하는 도서가 바뀝니다/)).not.toBeInTheDocument()
+
+    await user.clear(skuInput)
+    await user.type(skuInput, 'ISBN-NEW-EDITION')
+
+    expect(dialog.getByText(/실제로 발주하는 도서가 바뀝니다/)).toBeInTheDocument()
+  })
+
+  it('AC-LCONF-SKU: reverting the SKU back to its original value clears the warning and omits `sku` from the payload', async () => {
+    const user = userEvent.setup()
+    render(
+      <LineItemConfirmModal lineItem={SAMPLE_LINE_ITEM} open={true} onOpenChange={onOpenChange} />
+    )
+    const dialog = within(screen.getByRole('dialog'))
+    const skuInput = dialog.getByLabelText('SKU 정정 (선택)')
+
+    await user.clear(skuInput)
+    await user.type(skuInput, 'ISBN-NEW-EDITION')
+    await user.clear(skuInput)
+    await user.type(skuInput, SAMPLE_LINE_ITEM.sku)
+
+    expect(dialog.queryByText(/실제로 발주하는 도서가 바뀝니다/)).not.toBeInTheDocument()
+
+    await user.selectOptions(dialog.getByLabelText('확정 발주처'), '북센')
+    await user.click(dialog.getByRole('button', { name: '발주처리' }))
+
+    const [payload] = mutate.mock.calls[0] as [Record<string, unknown>]
+    expect('sku' in payload).toBe(false)
+  })
+
+  it('AC-LCONF-SKU: submit is disabled while the SKU field is blank', async () => {
+    const user = userEvent.setup()
+    render(
+      <LineItemConfirmModal lineItem={SAMPLE_LINE_ITEM} open={true} onOpenChange={onOpenChange} />
+    )
+    const dialog = within(screen.getByRole('dialog'))
+
+    await user.selectOptions(dialog.getByLabelText('확정 발주처'), '북센')
+    const skuInput = dialog.getByLabelText('SKU 정정 (선택)')
+    await user.clear(skuInput)
+
+    expect(dialog.getByRole('button', { name: '발주처리' })).toBeDisabled()
+  })
+
+  // AC-LCONF-SKU-007 (frontend surfacing): 409 collision response renders
+  // the server's specific message — not the generic fallback — and the
+  // modal stays open (same REQ-LCONF-105 mechanism as the pre-existing 409
+  // test above, exercised here with the SKU-collision error text).
+  it('AC-LCONF-SKU-007: renders the SKU collision message on 409 and keeps the modal open', () => {
+    vi.mocked(useConfirmLineItem).mockReturnValue({
+      mutate,
+      isPending: false,
+      isError: true,
+      error: {
+        response: {
+          status: 409,
+          data: {
+            error:
+              "sku 'ISBN-MEMBER-B' is already used by another item in this order — pick a different sku or correct the other item first.",
+          },
+        },
+      },
+    } as unknown as ReturnType<typeof useConfirmLineItem>)
+
+    render(
+      <LineItemConfirmModal lineItem={SAMPLE_LINE_ITEM} open={true} onOpenChange={onOpenChange} />
+    )
+
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      "sku 'ISBN-MEMBER-B' is already used by another item in this order"
+    )
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect(onOpenChange).not.toHaveBeenCalled()
+  })
 })

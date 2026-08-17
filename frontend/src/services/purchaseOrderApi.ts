@@ -195,9 +195,14 @@ export interface ConfirmLineItemResponse {
   unit_price: string | null
 }
 
+// SPEC-ORDER-025 M2: `sku` is an optional operator-supplied correction —
+// omitting it, or sending the row's current value, reproduces the pre-M2
+// payload/behaviour exactly (see LineItemConfirmView's class docstring in
+// backend/order/purchase_order_views.py). Only a genuinely different value
+// should ever be included by callers.
 export async function confirmLineItem(
   id: number,
-  data: { distributor: string; unit_price: string | null }
+  data: { distributor: string; unit_price: string | null; sku?: string }
 ): Promise<ConfirmLineItemResponse> {
   const res = await api.post(`/api/purchase-orders/line-items/${id}/confirm/`, data)
   return res.data

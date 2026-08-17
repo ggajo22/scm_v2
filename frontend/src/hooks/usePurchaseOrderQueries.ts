@@ -129,11 +129,24 @@ export function useConfirmLineItem() {
       id,
       distributor,
       unitPrice,
+      sku,
     }: {
       id: number
       distributor: string
       unitPrice: string | null
-    }) => confirmLineItem(id, { distributor, unit_price: unitPrice }),
+      // SPEC-ORDER-025 M2: optional SKU correction. Only spread onto the
+      // request body when the caller actually supplied one — an omitted key
+      // here must produce an omitted key on the wire, not `sku: undefined`,
+      // so an untouched modal submits byte-for-byte the same payload it did
+      // before M2 (LineItemConfirmModal owns the "did the operator actually
+      // change it" decision; this hook never re-derives that).
+      sku?: string
+    }) =>
+      confirmLineItem(id, {
+        distributor,
+        unit_price: unitPrice,
+        ...(sku !== undefined ? { sku } : {}),
+      }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: QUERY_KEYS.unordered })
       void queryClient.invalidateQueries({ queryKey: QUERY_KEYS.excludedItems })

@@ -1221,6 +1221,17 @@ class LineItemConfirmView(APIView):
     PurchaseOrder(status="confirmed"), links it to the target LineItem via
     M2M, and updates the LineItem's confirmed_distributor/confirmed_price.
 
+    SPEC-ORDER-025 M2: optional `sku` in the request body lets the operator
+    correct a stale Shopify-reported SKU (new book edition) at confirm time.
+    Absent, or equal to the current sku, is a no-op — identical to today's
+    behaviour. A different value replaces `sku`, stashes the PRE-correction
+    value into `original_sku` (only if still null — a second correction must
+    not clobber the true original), and the PurchaseOrder is created with the
+    NEW sku. `unique_together = ("order", "shopify_line_item_id", "sku")`
+    means the new value can collide with a sibling row from the same Shopify
+    line item (bundle expansion) — that surfaces as IntegrityError on save,
+    translated to 409 below rather than an unhandled 500.
+
     # @MX:NOTE: [AUTO] SPEC-ORDER-025 REQ-LCONF-001~015. Uses
     # select_for_update() + transaction.atomic(), the same lock-contention
     # shape as ConfirmOrderView's @MX:WARN above (:1045-1046) — not re-tagged
@@ -1243,6 +1254,8 @@ class LineItemConfirmView(APIView):
     def post(self, request, pk: int) -> Response:
         distributor = request.data.get("distributor")
         raw_price = request.data.get("unit_price")
+        # SPEC-ORDER-025 M2: optional SKU correction (see class docstring).
+        sku_override = request.data.get("sku")
 
         # REQ-LCONF-009: reject empty/whitespace-only distributor; allow any
         # non-empty free text (ConfirmOrderView precedent).
@@ -1257,6 +1270,21 @@ class LineItemConfirmView(APIView):
                 {"error": "distributor must be 20 characters or fewer."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+        # SPEC-ORDER-025 M2: sku is optional; when present it must be a
+        # real value — blank/whitespace-only is rejected the same way
+        # distributor is above, and LineItem.sku has max_length=255.
+        if sku_override is not None:
+            if not sku_override.strip():
+                return Response(
+                    {"error": "sku must not be blank."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if len(sku_override) > 255:
+                return Response(
+                    {"error": "sku must be 255 characters or fewer."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
         # REQ-LCONF-011/012: unit_price is optional; must parse as Decimal
         # when provided.
@@ -1316,9 +1344,26 @@ class LineItemConfirmView(APIView):
                 if net_qty <= 0:
                     raise ConflictError("Net quantity is zero after refunds.")
 
+                # SPEC-ORDER-025 M2: SKU correction, applied after the
+                # eligibility/net-qty checks above — both operate on the
+                # ORIGINAL sku, and a correction never changes which row was
+                # eligible or how much was owed. A no-op when sku_override is
+                # absent or equal to the current value (REQ-LCONF-SKU-001/002).
+                effective_sku = li.sku
+                update_fields = ["confirmed_distributor", "confirmed_price"]
+                if sku_override is not None and sku_override != li.sku:
+                    if li.original_sku is None:
+                        # Write-once: a second correction must not clobber
+                        # the true original with an intermediate value.
+                        li.original_sku = li.sku
+                        update_fields.append("original_sku")
+                    li.sku = sku_override
+                    update_fields.append("sku")
+                    effective_sku = sku_override
+
                 po = PurchaseOrder.objects.create(
-                    sku=li.sku,
-                    title=li.title or li.sku,
+                    sku=effective_sku,
+                    title=li.title or effective_sku,
                     distributor=distributor,
                     quantity=net_qty,
                     unit_price=unit_price,
@@ -1329,12 +1374,15 @@ class LineItemConfirmView(APIView):
                 # REQ-LCONF-002
                 li.confirmed_distributor = distributor
                 li.confirmed_price = unit_price
-                update_fields = ["confirmed_distributor", "confirmed_price"]
                 # REQ-LCONF-004: damaged_exchange -> unordered after a
                 # successful confirmation (REQ-DMG-006 precedent).
                 if is_damaged_exchange:
                     li.purchase_status = "unordered"
                     update_fields.append("purchase_status")
+                # SPEC-ORDER-025 M2: a corrected sku colliding with a sibling
+                # row's sku (unique_together = (order, shopify_line_item_id,
+                # sku), the bundle-expansion case) raises IntegrityError here
+                # — caught below and translated to 409, never a bare 500.
                 li.save(update_fields=update_fields)
 
                 # REQ-LCONF-015
@@ -1342,6 +1390,17 @@ class LineItemConfirmView(APIView):
 
         except ConflictError as exc:
             return Response({"error": str(exc)}, status=status.HTTP_409_CONFLICT)
+        except IntegrityError:
+            return Response(
+                {
+                    "error": (
+                        f"sku '{sku_override}' is already used by another item "
+                        "in this order — pick a different sku or correct the "
+                        "other item first."
+                    )
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
 
         return Response(
             {

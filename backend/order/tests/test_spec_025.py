@@ -1,4 +1,4 @@
-"""SPEC-ORDER-025 M1: LineItem 단건 발주처리 백엔드 엔드포인트 (TDD).
+"""SPEC-ORDER-025 M1/M2: LineItem 단건 발주처리 백엔드 엔드포인트 (TDD).
 
 Coverage targets (REQ-LCONF-001~015):
   AC-LCONF-001     정상 발주처리(일반 행)
@@ -18,6 +18,15 @@ Coverage targets (REQ-LCONF-001~015):
   AC-LCONF-014     미인증 요청 → 401
   AC-LCONF-014b    뷰 수준 인증 클래스 선언 정적 확인
   AC-LCONF-015     distributor 정확히 20자 → 성공(경계값)
+
+M2 — 발주처리 시 SKU 정정 (operator-corrected SKU at confirm time):
+  AC-LCONF-SKU-001  sku 키 생략 → 기존 동작 그대로 (회귀)
+  AC-LCONF-SKU-002  sku == 현재 sku → override 기록 안 됨
+  AC-LCONF-SKU-003  새 sku → sku 교체 + original_sku에 이전 값 보존 + PurchaseOrder.sku 신규값
+  AC-LCONF-SKU-004  2차 정정 → original_sku는 최초값 유지(중간값 아님)
+  AC-LCONF-SKU-005  공백 sku → 400
+  AC-LCONF-SKU-006  255자 초과 sku → 400
+  AC-LCONF-SKU-007  unique_together 충돌 → 409(500 아님)
 """
 
 import threading
@@ -424,3 +433,157 @@ class TestLineItemConfirmAuth:
 
         assert IsAuthenticated in LineItemConfirmView.permission_classes
         assert JWTAuthentication in LineItemConfirmView.authentication_classes
+
+
+# ---------------------------------------------------------------------------
+# M2 — SKU correction at confirm time (AC-LCONF-SKU-001~007)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestLineItemConfirmSkuCorrection:
+    def test_sku_key_absent_leaves_sku_and_original_sku_untouched(self, auth_client):
+        """AC-LCONF-SKU-001 — regression companion to AC-LCONF-001: omitting
+        `sku` entirely must reproduce today's behaviour exactly."""
+        order = _make_order(shopify_order_id=960080)
+        li = _make_line_item(order, sku="ISBN-SKU-1", quantity=4)
+        url = CONFIRM_URL.format(pk=li.pk)
+
+        res = auth_client.post(
+            url, data={"distributor": "booxen", "unit_price": "1000"}, format="json"
+        )
+
+        assert res.status_code == 201
+        li.refresh_from_db()
+        assert li.sku == "ISBN-SKU-1"
+        assert li.original_sku is None
+        po = PurchaseOrder.objects.get(line_items=li)
+        assert po.sku == "ISBN-SKU-1"
+
+    def test_sku_equal_to_current_records_no_override(self, auth_client):
+        """AC-LCONF-SKU-002 — a same-value `sku` must be treated identically
+        to an absent key: no original_sku write."""
+        order = _make_order(shopify_order_id=960081)
+        li = _make_line_item(order, sku="ISBN-SKU-2", quantity=4)
+        url = CONFIRM_URL.format(pk=li.pk)
+
+        res = auth_client.post(
+            url, data={"distributor": "booxen", "sku": "ISBN-SKU-2"}, format="json"
+        )
+
+        assert res.status_code == 201
+        li.refresh_from_db()
+        assert li.sku == "ISBN-SKU-2"
+        assert li.original_sku is None
+
+    def test_new_sku_replaces_sku_and_preserves_original(self, auth_client):
+        """AC-LCONF-SKU-003 — the core correction flow: sku is replaced,
+        original_sku holds the pre-correction value, and the created
+        PurchaseOrder.sku uses the NEW value."""
+        order = _make_order(shopify_order_id=960082)
+        li = _make_line_item(order, sku="ISBN-OLD-EDITION", quantity=3)
+        url = CONFIRM_URL.format(pk=li.pk)
+
+        res = auth_client.post(
+            url,
+            data={"distributor": "booxen", "unit_price": "5000", "sku": "ISBN-NEW-EDITION"},
+            format="json",
+        )
+
+        assert res.status_code == 201
+        li.refresh_from_db()
+        assert li.sku == "ISBN-NEW-EDITION"
+        assert li.original_sku == "ISBN-OLD-EDITION"
+        po = PurchaseOrder.objects.get(line_items=li)
+        assert po.sku == "ISBN-NEW-EDITION"
+        assert po.quantity == 3
+
+    def test_second_correction_keeps_first_original_sku(self, auth_client):
+        """AC-LCONF-SKU-004 — a second correction must not overwrite the
+        true original with the first correction's intermediate value.
+        Modelled as two separate eligible rows confirmed in sequence, since
+        a single row becomes ineligible (linked) after its first confirm —
+        the persistence rule under test is `original_sku` write-once, which
+        this reproduces via direct model manipulation between the two
+        confirm calls to simulate the row being made confirmable again."""
+        order = _make_order(shopify_order_id=960083)
+        li = _make_line_item(order, sku="ISBN-EDITION-1", quantity=2)
+        url = CONFIRM_URL.format(pk=li.pk)
+
+        res1 = auth_client.post(
+            url, data={"distributor": "booxen", "sku": "ISBN-EDITION-2"}, format="json"
+        )
+        assert res1.status_code == 201
+        li.refresh_from_db()
+        assert li.original_sku == "ISBN-EDITION-1"
+
+        # Simulate the row becoming eligible again (e.g. a damaged_exchange
+        # cycle) without touching original_sku, then confirm a second time
+        # with yet another SKU value.
+        po1 = PurchaseOrder.objects.get(line_items=li)
+        po1.line_items.remove(li)
+        li.purchase_status = "unordered"
+        li.save(update_fields=["purchase_status"])
+
+        res2 = auth_client.post(
+            url, data={"distributor": "kyobo", "sku": "ISBN-EDITION-3"}, format="json"
+        )
+
+        assert res2.status_code == 201
+        li.refresh_from_db()
+        assert li.sku == "ISBN-EDITION-3"
+        assert li.original_sku == "ISBN-EDITION-1"  # still the FIRST original
+
+    def test_blank_sku_returns_400(self, auth_client):
+        """AC-LCONF-SKU-005."""
+        order = _make_order(shopify_order_id=960084)
+        li = _make_line_item(order, sku="ISBN-SKU-5", quantity=1)
+        url = CONFIRM_URL.format(pk=li.pk)
+
+        res = auth_client.post(
+            url, data={"distributor": "booxen", "sku": "   "}, format="json"
+        )
+
+        assert res.status_code == 400
+        li.refresh_from_db()
+        assert li.sku == "ISBN-SKU-5"
+        assert PurchaseOrder.objects.filter(line_items=li).count() == 0
+
+    def test_sku_over_255_chars_returns_400(self, auth_client):
+        """AC-LCONF-SKU-006."""
+        order = _make_order(shopify_order_id=960085)
+        li = _make_line_item(order, sku="ISBN-SKU-6", quantity=1)
+        url = CONFIRM_URL.format(pk=li.pk)
+
+        res = auth_client.post(
+            url, data={"distributor": "booxen", "sku": "A" * 256}, format="json"
+        )
+
+        assert res.status_code == 400
+        assert PurchaseOrder.objects.filter(line_items=li).count() == 0
+
+    def test_sku_collision_with_sibling_returns_409_not_500(self, auth_client):
+        """AC-LCONF-SKU-007 — unique_together = (order, shopify_line_item_id,
+        sku) means correcting into a sibling row's sku (the bundle-expansion
+        case) must surface as a 409, never an unhandled 500, and must leave
+        no partial writes behind."""
+        order = _make_order(shopify_order_id=960086)
+        li = _make_line_item(
+            order, shopify_line_item_id=42, sku="ISBN-MEMBER-A", quantity=2
+        )
+        # Sibling row sharing the same shopify_line_item_id (bundle-expansion
+        # shape) whose sku is the correction target.
+        _make_line_item(
+            order, shopify_line_item_id=42, sku="ISBN-MEMBER-B", quantity=2
+        )
+        url = CONFIRM_URL.format(pk=li.pk)
+
+        res = auth_client.post(
+            url, data={"distributor": "booxen", "sku": "ISBN-MEMBER-B"}, format="json"
+        )
+
+        assert res.status_code == 409
+        li.refresh_from_db()
+        assert li.sku == "ISBN-MEMBER-A"
+        assert li.original_sku is None
+        assert PurchaseOrder.objects.filter(line_items=li).count() == 0

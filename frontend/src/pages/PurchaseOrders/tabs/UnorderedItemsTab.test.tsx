@@ -705,4 +705,78 @@ describe('UnorderedItemsTab — 발주처리 모달 (SPEC-ORDER-025)', () => {
 
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
+
+  // -------------------------------------------------------------------------
+  // SPEC-ORDER-025 M2 — SKU correction at confirm time
+  // -------------------------------------------------------------------------
+
+  it('AC-LCONF-SKU: the modal opens with the SKU field prefilled from the row', async () => {
+    const user = userEvent.setup()
+    render(<UnorderedItemsTab />)
+    await user.click(screen.getByRole('button', { name: '발주처리' }))
+
+    const dialog = within(screen.getByRole('dialog'))
+    expect(dialog.getByLabelText('SKU 정정 (선택)')).toHaveValue('ISBN-A')
+  })
+
+  it('AC-LCONF-SKU: an untouched modal submits a payload with no `sku` key', async () => {
+    const user = userEvent.setup()
+    render(<UnorderedItemsTab />)
+    await user.click(screen.getByRole('button', { name: '발주처리' }))
+    const dialog = within(screen.getByRole('dialog'))
+
+    await user.selectOptions(dialog.getByLabelText('확정 발주처'), '교보')
+    await user.click(dialog.getByRole('button', { name: '발주처리' }))
+
+    expect(confirmMutate).toHaveBeenCalledTimes(1)
+    const [payload] = confirmMutate.mock.calls[0] as [Record<string, unknown>]
+    expect('sku' in payload).toBe(false)
+  })
+
+  it('AC-LCONF-SKU: an edited SKU field submits the new value', async () => {
+    const user = userEvent.setup()
+    render(<UnorderedItemsTab />)
+    await user.click(screen.getByRole('button', { name: '발주처리' }))
+    const dialog = within(screen.getByRole('dialog'))
+
+    await user.selectOptions(dialog.getByLabelText('확정 발주처'), '교보')
+    const skuInput = dialog.getByLabelText('SKU 정정 (선택)')
+    await user.clear(skuInput)
+    await user.type(skuInput, 'ISBN-NEW-EDITION')
+    await user.click(dialog.getByRole('button', { name: '발주처리' }))
+
+    expect(confirmMutate).toHaveBeenCalledTimes(1)
+    const [payload] = confirmMutate.mock.calls[0] as [{ sku?: string }]
+    expect(payload.sku).toBe('ISBN-NEW-EDITION')
+  })
+
+  // 409 collision: the server's SKU-collision-specific message renders (not
+  // the generic fallback), and the modal stays open — same mechanism as
+  // AC-LCONF-105 above, exercised with the SKU-collision error text.
+  it('409 SKU collision: renders the collision-specific message and the modal stays open', async () => {
+    vi.mocked(useConfirmLineItem).mockReturnValue({
+      mutate: confirmMutate,
+      isPending: false,
+      isError: true,
+      error: {
+        response: {
+          status: 409,
+          data: {
+            error:
+              "sku 'ISBN-MEMBER-B' is already used by another item in this order — pick a different sku or correct the other item first.",
+          },
+        },
+      },
+    } as unknown as ReturnType<typeof useConfirmLineItem>)
+
+    const user = userEvent.setup()
+    render(<UnorderedItemsTab />)
+    await user.click(screen.getByRole('button', { name: '발주처리' }))
+
+    const dialog = screen.getByRole('dialog')
+    expect(dialog).toBeInTheDocument()
+    expect(within(dialog).getByRole('alert')).toHaveTextContent(
+      "sku 'ISBN-MEMBER-B' is already used by another item in this order"
+    )
+  })
 })
