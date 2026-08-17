@@ -28,24 +28,84 @@ KOREA_WAREHOUSE_PER_BOOK_KRW = Decimal("500")
 # observable output is unchanged by this extraction (REQ-OLIST-033) --
 # _compute_cost_breakdown_uncached below now just resolves `er` and
 # delegates here.
+# @MX:ANCHOR: [AUTO] SPEC-ORDER-026 REQ-NET-001/010/013: single source of
+# truth for all 7 cost fields (margin_amount, margin_rate, shipping_cost,
+# korea_warehouse_cost, total_weight_grams, confirmed_cost, total_cost) on
+# BOTH the order detail panel and the order list 마진율 column. fan_in=2
+# (OrderListSerializer.get_margin_rate, OrderDetailSerializer
+# ._compute_cost_breakdown_uncached) — below mx.yaml fan_in_anchor=3, so
+# this ANCHOR is justified by invariant contract, not caller count.
+# @MX:REASON: Refund netting is REQUIRED on BOTH sides and they are
+# inseparable. (1) Quantity side: every per-line-item aggregate must use
+# max((item.quantity or 0) - refunded_qty[item.shopify_line_item_id], 0) —
+# true net ARITHMETIC, proportional. Do NOT copy the boolean include/exclude
+# filter in LineItemStateDerivationMixin._derive_line_item_states (the
+# `trackable` comprehension): that one keeps a partially refunded item at FULL
+# quantity, which is correct for shipping/purchase derivation and WRONG here.
+# (2) Revenue side: total_price minus the sum of (subtotal + total_tax) over
+# EVERY refund row, matched or not, floored at 0 — the same formula the
+# frontend already uses for 최종 결제 금액 (OrderDetailPage.tsx:159-163).
+# Netting only one side is worse than netting neither: for order #37454,
+# quantity-only netting moves margin 37.22 -> 60.80, further from the truth
+# (23.52) than the original defect. Netting must stay in this shared function
+# — moving it into either caller silently desynchronizes the list column from
+# the detail panel (AC-NET-011). No ORM query here: read obj.refunds.all()
+# from the prefetch cache (views.py:59, :269); the Subquery/OuterRef pattern
+# at purchase_order_views.py:334-342 would cost one query per serialized
+# order, i.e. up to 50 per list page (AC-NET-009/010).
 def _compute_cost_breakdown_for_rate(obj: "Order", rate: Decimal):
+    # Refund netting. `Refund.line_item_id` joins to
+    # `LineItem.shopify_line_item_id`, NOT to `LineItem.pk`
+    # (purchase_order_views.py:337). Quantities accumulate with `+=` because a
+    # single line item can carry several Refund rows — `unique_together =
+    # ("order", "shopify_refund_id", "line_item_id")` (models.py:342) is what
+    # production split refunds look like, and assignment would under-count them
+    # and re-overstate margin in the same direction as the original defect.
+    refunded_qty: dict[int, int] = {}
+    refunded_amount = Decimal("0")
+    for refund in obj.refunds.all():
+        if refund.line_item_id is not None:
+            refunded_qty[refund.line_item_id] = (
+                refunded_qty.get(refund.line_item_id, 0) + (refund.quantity or 0)
+            )
+        # The revenue term sums EVERY refund row regardless of whether its
+        # line_item_id matches a LineItem (REQ-NET-011): an unmatched row still
+        # reduced what the customer paid, and the frontend counts it too.
+        refunded_amount += (refund.subtotal or Decimal("0")) + (
+            refund.total_tax or Decimal("0")
+        )
+
     confirmed_cost_krw = Decimal("0")
     has_any_confirmed = False
     total_weight_grams = 0
     total_book_count = 0
     for item in obj.line_items.all():
-        quantity = item.quantity or 0
+        quantity = max(
+            (item.quantity or 0)
+            - refunded_qty.get(item.shopify_line_item_id, 0),
+            0,
+        )
         grams = item.grams or 0
         total_weight_grams += grams * quantity
         total_book_count += quantity
         if item.confirmed_price is not None:
+            # REQ-NET-024: the has_any_confirmed gate is evaluated BEFORE
+            # netting — an order whose only confirmed line is fully refunded
+            # still reports "0.00" for the 7 fields rather than null, keeping
+            # the existing null-gate semantics and leaving the detail panel
+            # self-consistent at 0.00 - 0.00 = 0.00.
             has_any_confirmed = True
             confirmed_cost_krw += item.confirmed_price * quantity
 
     if not has_any_confirmed:
         return None
 
-    total_price_usd = Decimal(str(obj.total_price or "0"))
+    # REQ-NET-021: floored at 0. Without the floor an over-refunded order
+    # yields negative revenue and, with cost also 0 or negative, renders a
+    # +100% margin rate.
+    total_price_usd = max(
+        Decimal(str(obj.total_price or "0")) - refunded_amount, Decimal("0")
+    )
     confirmed_cost_usd = confirmed_cost_krw / rate
     shipping_cost_usd = (
         SHIPPING_COST_USD_PER_KG * Decimal(total_weight_grams) / Decimal("1000")
@@ -176,6 +236,13 @@ class LineItemStateDerivationMixin:
         # carried purchase_status="cs_required", NOT "order_cancelled" — the
         # cancellation signal lives in the Refund rows, which is why this
         # nets refunds instead of testing purchase_status.
+        #
+        # Do NOT copy this boolean include/exclude form into the cost path:
+        # _compute_cost_breakdown_for_rate needs true net ARITHMETIC (a line
+        # with quantity 3 and 1 refunded must weigh 2/3), whereas here a
+        # partially refunded line stays whole on purpose. The two paths read
+        # the same Refund rows for deliberately different meanings — see the
+        # anchor comment on _compute_cost_breakdown_for_rate (SPEC-ORDER-026).
         refunded_qty: dict[int, int] = {}
         for refund in obj.refunds.all():
             if refund.line_item_id is not None:
@@ -343,8 +410,12 @@ class LineItemNoteUnresolvedSerializer(serializers.ModelSerializer):
 
 
 class LineItemDetailSerializer(serializers.ModelSerializer):
-    # @MX:ANCHOR: [AUTO] LineItemDetailSerializer — serializes confirmed purchase fields
+    # @MX:NOTE: [AUTO] LineItemDetailSerializer — serializes confirmed purchase fields
     # @MX:REASON: Extended by SPEC-ORDER-008 and SPEC-ORDER-010; notes replaces note field
+    # Demoted ANCHOR -> NOTE by SPEC-ORDER-026 (plan.md §5.2): mx.yaml
+    # anchor_per_file=3 was already reached and this was the only one of the
+    # three whose REASON asserted no fan_in basis — it records an extension
+    # history, which is NOTE semantics. Content preserved verbatim above.
     confirmed_price = serializers.DecimalField(max_digits=12, decimal_places=2, allow_null=True, read_only=True)
     confirmed_distributor = serializers.CharField(allow_null=True, read_only=True)
     confirmed_at = serializers.DateTimeField(allow_null=True, read_only=True)
