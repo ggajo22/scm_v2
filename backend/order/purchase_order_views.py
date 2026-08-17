@@ -1213,6 +1213,151 @@ class ConfirmOrderView(APIView):
         )
 
 
+class LineItemConfirmView(APIView):
+    """
+    POST /api/purchase-orders/line-items/<int:pk>/confirm/
+
+    Body: {"distributor": str, "unit_price": str|null (optional)}
+
+    SPEC-ORDER-025 REQ-LCONF-001~015: confirms a single LineItem's purchase
+    order at LineItem grain — distinct from ConfirmOrderView above, which
+    batches an entire SKU across possibly-many LineItems. Creates a
+    PurchaseOrder(status="confirmed"), links it to the target LineItem via
+    M2M, and updates the LineItem's confirmed_distributor/confirmed_price.
+
+    # @MX:NOTE: [AUTO] SPEC-ORDER-025 REQ-LCONF-001~015. Uses
+    # select_for_update() + transaction.atomic(), the same lock-contention
+    # shape as ConfirmOrderView's @MX:WARN above (:1045-1046) — not re-tagged
+    # here because this file is already 2 tags over its warn_per_file budget
+    # (see .moai/config/sections/mx.yaml, research.md §1-8). Error response
+    # body uses the "error" key (not ConfirmOrderView's "detail") to match
+    # the <int:pk>/<segment>/ URL family convention shared with
+    # LineItemStatusUpdateView (research.md §1-7). PurchaseOrder.quantity
+    # recorded here (net of refunds, damaged_quantity-based for
+    # damaged_exchange rows) can diverge from the net_quantity
+    # PurchaseOrderListView displays via _attach_net_quantity, which always
+    # recomputes from the original LineItem.quantity — a pre-existing
+    # constraint already shared with ConfirmOrderView (see spec.md "알려진
+    # 제약"), not introduced by this view.
+    """
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk: int) -> Response:
+        distributor = request.data.get("distributor")
+        raw_price = request.data.get("unit_price")
+
+        # REQ-LCONF-009: reject empty/whitespace-only distributor; allow any
+        # non-empty free text (ConfirmOrderView precedent).
+        if not distributor or not distributor.strip():
+            return Response(
+                {"error": "distributor must not be empty."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        # REQ-LCONF-010: PurchaseOrder.distributor has max_length=20.
+        if len(distributor) > 20:
+            return Response(
+                {"error": "distributor must be 20 characters or fewer."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # REQ-LCONF-011/012: unit_price is optional; must parse as Decimal
+        # when provided.
+        unit_price = None
+        if raw_price is not None:
+            try:
+                unit_price = Decimal(str(raw_price))
+            except InvalidOperation:
+                return Response(
+                    {"error": f"Invalid unit_price: {raw_price}"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        try:
+            with transaction.atomic():
+                # REQ-LCONF-014: select_for_update() row lock, single atomic
+                # transaction covering the eligibility check through the
+                # aggregate recompute below.
+                try:
+                    li = LineItem.objects.select_for_update().get(pk=pk)
+                except LineItem.DoesNotExist:
+                    return Response(
+                        {"error": "Not found"}, status=status.HTTP_404_NOT_FOUND
+                    )
+
+                # REQ-LCONF-005/006: eligibility gate — damaged_exchange
+                # (any linkage state) or unordered-and-unlinked only.
+                is_damaged_exchange = li.purchase_status == "damaged_exchange"
+                unordered_and_unlinked = (
+                    li.purchase_status == "unordered" and not li.purchase_orders.exists()
+                )
+                if not (is_damaged_exchange or unordered_and_unlinked):
+                    raise ConflictError("LineItem is not eligible for confirmation.")
+
+                # REQ-LCONF-013: defensive — normal UI flow never surfaces a
+                # sku-less row here (unordered list only shows sku__isnull=False).
+                if not li.sku:
+                    return Response(
+                        {"error": "LineItem has no sku."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+                # REQ-LCONF-003: recompute net quantity at request time —
+                # same base_qty/refund-subtraction/floor-0 rule as
+                # UnorderedItemsView.get() (:371-375). Client-supplied
+                # quantity is never trusted.
+                refunded_qty = (
+                    Refund.objects.filter(
+                        order_id=li.order_id,
+                        line_item_id=li.shopify_line_item_id,
+                    ).aggregate(total=Sum("quantity"))["total"]
+                    or 0
+                )
+                base_qty = li.damaged_quantity if is_damaged_exchange else li.quantity
+                net_qty = max((base_qty or 0) - refunded_qty, 0)
+                # REQ-LCONF-007
+                if net_qty <= 0:
+                    raise ConflictError("Net quantity is zero after refunds.")
+
+                po = PurchaseOrder.objects.create(
+                    sku=li.sku,
+                    title=li.title or li.sku,
+                    distributor=distributor,
+                    quantity=net_qty,
+                    unit_price=unit_price,
+                    status="confirmed",
+                )
+                po.line_items.add(li)
+
+                # REQ-LCONF-002
+                li.confirmed_distributor = distributor
+                li.confirmed_price = unit_price
+                update_fields = ["confirmed_distributor", "confirmed_price"]
+                # REQ-LCONF-004: damaged_exchange -> unordered after a
+                # successful confirmation (REQ-DMG-006 precedent).
+                if is_damaged_exchange:
+                    li.purchase_status = "unordered"
+                    update_fields.append("purchase_status")
+                li.save(update_fields=update_fields)
+
+                # REQ-LCONF-015
+                _recompute_order_aggregates([li.order_id])
+
+        except ConflictError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_409_CONFLICT)
+
+        return Response(
+            {
+                "line_item_id": li.id,
+                "purchase_order_id": po.id,
+                "distributor": distributor,
+                "unit_price": str(unit_price) if unit_price is not None else None,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Daily Review: Download + Upload
 # ---------------------------------------------------------------------------

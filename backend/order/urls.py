@@ -11,6 +11,7 @@ from .purchase_order_views import (
     GenerateOrderFileView,
     LineItemBulkRackNumberUpdateView,
     LineItemBulkStatusUpdateView,
+    LineItemConfirmView,
     LineItemLogisticsStatusBulkUpdateView,
     LineItemLogisticsStatusUpdateView,
     LineItemRackNumberSummaryView,
@@ -86,6 +87,14 @@ urlpatterns = [
     # SPEC-PURCHASE-ORDER-004: bulk-status must precede <int:pk>/status/ to avoid URL conflict
     path("purchase-orders/line-items/bulk-status/", LineItemBulkStatusUpdateView.as_view(), name="po-line-item-bulk-status"),
     path("purchase-orders/line-items/<int:pk>/status/", LineItemStatusUpdateView.as_view(), name="po-line-item-status"),
+    # SPEC-ORDER-025 M1: LineItem-grain single-row purchase confirmation,
+    # same <int:pk>/<segment>/ group as status/ above ("confirm" is a
+    # distinct literal segment, so no shadowing risk).
+    path(
+        "purchase-orders/line-items/<int:pk>/confirm/",
+        LineItemConfirmView.as_view(),
+        name="po-line-item-confirm",
+    ),
     # SPEC-PURCHASE-ORDER-011: damaged-exchange row-level submission, same
     # <int:pk>/<segment>/ group as status/logistics-status/rack-number above
     # ("damaged-exchange" is a distinct literal segment, so no shadowing risk).
