@@ -26,7 +26,7 @@ from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from order.excel_utils import parse_vendor_shipment_excel, parse_warehouse_receipt_excel
-from order.models import LineItem, Order, PurchaseOrder
+from order.models import LineItem, Order, PurchaseOrder, Refund
 from order.purchase_order_views import _recompute_order_aggregates
 
 User = get_user_model()
@@ -1170,3 +1170,90 @@ class TestPurchaseOrderStatusIndependence:
 
         li.refresh_from_db()
         assert li.logistics_status == before
+
+
+# ---------------------------------------------------------------------------
+# 환불(취소) 수량 차감 — Order.status 집계 (사용자 보고: 주문 #37830)
+#
+# 전량 환불된 LineItem은 고객이 받을 물건이 아니므로 집계 대상이 아니다.
+# ready_to_ship 쪽이 이미 order_cancelled를 제외하는 것과 같은 취지지만,
+# 실제 취소 신호는 purchase_status가 아니라 Refund 레코드다 — #37830의 취소
+# 품목은 purchase_status="cs_required"였고 order_cancelled가 아니었다.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestRecomputeAggregatesRefundNetting:
+    def _refund(self, line_item, quantity, shopify_refund_id):
+        return Refund.objects.create(
+            order=line_item.order,
+            shopify_refund_id=shopify_refund_id,
+            line_item_id=line_item.shopify_line_item_id,
+            quantity=quantity,
+        )
+
+    def test_fully_refunded_item_does_not_force_partial_status(self):
+        """살아있는 품목이 모두 shipped면 status는 partial이 아니라 shipped."""
+        order = _make_order(shopify_order_id=80901)
+        _make_line_item(order, shopify_line_item_id=1, sku="SKU-LIVE", logistics_status="shipped")
+        cancelled = _make_line_item(
+            order,
+            shopify_line_item_id=2,
+            sku="SKU-CANCELLED",
+            logistics_status="not_shipped",
+            purchase_status="cs_required",
+        )
+        self._refund(cancelled, 1, 90901)
+
+        _recompute_order_aggregates([order.id])
+
+        order.refresh_from_db()
+        assert order.status == "shipped"
+
+    def test_partially_refunded_item_still_counted(self):
+        """부분 환불은 제외 사유가 아니다 — 잔여 수량이 남아 있다."""
+        order = _make_order(shopify_order_id=80902)
+        _make_line_item(order, shopify_line_item_id=1, sku="SKU-LIVE", logistics_status="shipped")
+        partial = _make_line_item(
+            order,
+            shopify_line_item_id=2,
+            sku="SKU-PARTIAL",
+            quantity=3,
+            logistics_status="not_shipped",
+        )
+        self._refund(partial, 1, 90902)
+
+        _recompute_order_aggregates([order.id])
+
+        order.refresh_from_db()
+        assert order.status == "partial"
+
+    def test_every_item_fully_refunded_yields_null_status(self):
+        """전량 취소된 주문은 집계할 대상이 없다."""
+        order = _make_order(shopify_order_id=80903)
+        a = _make_line_item(order, shopify_line_item_id=1, sku="SKU-A", logistics_status="shipped")
+        self._refund(a, 1, 90903)
+
+        _recompute_order_aggregates([order.id])
+
+        order.refresh_from_db()
+        assert order.status is None
+        assert order.ready_to_ship is None
+
+    def test_fully_refunded_item_does_not_block_ready_to_ship(self):
+        """취소된 cs_required 품목이 출고준비 판정을 막지 않는다."""
+        order = _make_order(shopify_order_id=80904)
+        _make_line_item(order, shopify_line_item_id=1, sku="SKU-LIVE", logistics_status="received")
+        cancelled = _make_line_item(
+            order,
+            shopify_line_item_id=2,
+            sku="SKU-CANCELLED",
+            logistics_status="not_shipped",
+            purchase_status="cs_required",
+        )
+        self._refund(cancelled, 1, 90904)
+
+        _recompute_order_aggregates([order.id])
+
+        order.refresh_from_db()
+        assert order.ready_to_ship is True

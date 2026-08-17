@@ -2,7 +2,8 @@ import urllib.error
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from django.db import transaction
-from django.db.models import Exists, OuterRef, Q
+from django.db.models import Exists, F, IntegerField, OuterRef, Q, Subquery, Sum, Value
+from django.db.models.functions import Coalesce
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from rest_framework import status
@@ -18,7 +19,7 @@ from rest_framework_simplejwt.authentication import JWTAuthentication
 from accounts.permissions import IsSuperAdmin
 
 from .excel_utils import generate_line_item_notes_excel
-from .models import ExchangeRate, LineItem, LineItemNote, Order, StoreSyncWatermark
+from .models import ExchangeRate, LineItem, LineItemNote, Order, Refund, StoreSyncWatermark
 from .serializers import (
     ExchangeRateSerializer,
     LineItemNoteSerializer,
@@ -45,10 +46,17 @@ class OrderDetailView(RetrieveAPIView):
     def get_queryset(self):
         # @MX:NOTE: [AUTO] select_related covers FK/O2O (single JOIN), prefetch_related covers
         # reverse FK collections (separate queries, avoids cartesian product)
+        # "line_items__purchase_orders" feeds the shared
+        # LineItemStateDerivationMixin's _is_awaiting_purchase the same M2M
+        # cache OrderListView loads — without it the derivation issues one
+        # query per line item.
         return Order.objects.select_related(
             "customer", "shipping_address"
         ).prefetch_related(
-            "line_items__notes__author", "shipping_lines", "refunds"
+            "line_items__notes__author",
+            "line_items__purchase_orders",
+            "shipping_lines",
+            "refunds",
         )
 
 
@@ -178,7 +186,28 @@ LOGISTICS_DISPLAY_FILTER_VALUES = {
 # checkers or linters and only surfaces as wrong search results in
 # production; this pairing is the single riskiest edit surface in the SPEC.
 def _apply_logistics_display_filter(qs, value):
-    trackable_qs = LineItem.objects.filter(order=OuterRef("pk"), sku__isnull=False)
+    # 환불(취소) 수량 차감 — the SQL half of the exclusion
+    # OrderListSerializer._derive_line_item_states applies in Python: a line
+    # item whose entire ordered quantity has been refunded takes no part in
+    # the derivation. Both halves must agree (see the @MX:WARN above), so
+    # this predicate and that comprehension have to be edited together.
+    refund_sum_sq = (
+        Refund.objects.filter(
+            order_id=OuterRef("order_id"),
+            line_item_id=OuterRef("shopify_line_item_id"),
+        )
+        .values("order_id", "line_item_id")
+        .annotate(total=Sum("quantity"))
+        .values("total")[:1]
+    )
+    trackable_qs = (
+        LineItem.objects.filter(order=OuterRef("pk"), sku__isnull=False)
+        .annotate(
+            refunded_qty=Coalesce(Subquery(refund_sum_sq, output_field=IntegerField()), 0),
+            net_qty=Coalesce(F("quantity"), Value(0)) - F("refunded_qty"),
+        )
+        .filter(net_qty__gt=0)
+    )
     qs = qs.annotate(
         li_has_trackable=Exists(trackable_qs),
         li_not_all_shipped=Exists(trackable_qs.exclude(logistics_status="shipped")),

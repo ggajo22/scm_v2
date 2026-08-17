@@ -1,9 +1,9 @@
 ---
 id: SPEC-ORDER-015
-version: 1.2.0
+version: 1.3.0
 status: completed
 created_at: 2026-08-10
-updated: 2026-08-11
+updated: 2026-08-17
 author: ggajo
 priority: High
 issue_number: 13
@@ -23,6 +23,7 @@ labels: [order, logistics, outbound, shipping]
 | 1.1.0 | 2026-08-11 | ggajo | 구현 완료(commit f122014) — Run 단계 완료 후 manager-docs 동기화 Phase. 백엔드 82개 pytest + 프론트엔드 79개 vitest + 회귀 754개(backend) + 15개(frontend) = 930개 전체 테스트 통과. LSP 게이트: 0 lint/type/test 에러. Exclusions 6개 항목 전수 검증 완료 (변경 없음). evaluator-active 단계 발견 defect 2건 수정(둘 다 `_process_outbound_rows`, `backend/order/purchase_order_views.py`): invalid_total(음수/0 total이 `shipped_quantity`를 감소시켜 Exclusions가 금지한 출고취소 기능을 우회할 수 있던 결함) + invalid_row(non-dict 행 입력 시 처리되지 않은 AttributeError/500, `OutboundProcessView.post`의 사전 검증으로 해결). 이상 모두 회귀 테스트로 검증. status: draft → completed, version 1.0.3 → 1.1.0 |
 | 1.1.1 | 2026-08-11 | ggajo | 성능 후속 조치 — 두 건의 성능 최적화 fix commit(f47d34b, bf9f5f7)을 spec.md에 문서화. (1) f47d34b: Order.name 인덱스 추가로 전체 테이블 스캔 제거(3094행 검사→1행 검사, EXPLAIN 확인). (2) bf9f5f7: _process_outbound_rows의 N+1 쿼리를 배치 쿼리로 교체(쿼리 수 3N→3 고정, 5배 입력에서도 동일 쿼리 수 증명). 테스트 커버리지 유지, 기존 기능 무변경(순수 내부 최적화). |
 | 1.2.0 | 2026-08-11 | ggajo | 기능 확장 — 미국창고 확정 품목의 출고 완료 신호 처리 (commit ca2cbfe). LineItem.confirmed_distributor가 warehouse_ca/warehouse_nj(미국 창고)인 품목에 대해서는, 출고 처리 시 total=0을 "이미 완료됨" 신호로 해석해 shipped_quantity를 quantity까지 채우고 logistics_status를 shipped로 전이. 미국창고가 아닌 품목의 total=0은 기존대로 invalid_total로 거부. 안전장치: (1) 음수 total 거부(기존 REQ-OUTBOUND-009 범위, 변경 없음)는 여전히 그룹화 이전에 적용됨. (2) shipped_quantity는 max()로만 갱신해 절대 감소하지 않음(신규 REQ-OUTBOUND-020b). (3) _parse_total 도입으로 "파싱 실패로 인한 0"과 "진짜 입력된 0"을 구분(신규 REQ-OUTBOUND-020c) — 파싱 실패는 invalid_total로 거부. 테스트 124/124 통과(기존 91 + 신규 33). 신규 REQ 4건 추가(REQ-OUTBOUND-020/020a/020b/020c, 순차 번호가 아닌 알파벳 접미사 계열). |
+| 1.3.0 | 2026-08-17 | ggajo | **환불 차감 도입 — 출고 가능 수량에서 환불 수량을 뺀다.** `_process_outbound_rows`의 `effective_quantity`가 `LineItem.quantity`를 그대로 쓰고 있어, 전량 환불된 품목도 출고 처리가 가능하고 부분 환불 품목은 잔여 수량을 다 출고해도 `logistics_status`가 `shipped`로 넘어가지 않았다. `max(quantity - Σrefunded, 0)`으로 정정 — 전량 환불 품목은 용량 0이라 양수 요청이 `quantity_exceeded`로 거부되고, 부분 환불 품목은 잔여 수량 출고 시 완료로 전이한다. 환불 합계는 매칭 SELECT에 서브쿼리로 주석 처리되어 왕복이 늘지 않는다. 강제 출고 경로도 동일하게 차감한다(SPEC-ORDER-016 v1.1.0) — 두 경로가 남은 출고 가능 수량을 다르게 계산하면 안 된다. **테스트**: `test_spec_015.py`에 `TestOutboundRefundNetting` 3건 추가(부분 환불 후 잔여 수량 출고 시 완료 / 전량 환불 품목은 용량 0 / 환불 없는 품목은 기존 동작 유지). |
 
 ---
 

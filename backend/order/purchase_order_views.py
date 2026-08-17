@@ -128,18 +128,18 @@ def _recompute_order_aggregates(order_ids) -> None:
     value when uniform, "partial" when 2+ distinct values are present, unset
     (None) when no trackable LineItems exist for that Order.
 
-    SPEC-ORDER-012 REQ-RTS-002/003/003a/004, extended by
-    SPEC-PURCHASE-ORDER-011 REQ-DEX-009c/009d: in the same pass, recompute
-    Order.ready_to_ship over the same trackable LineItem set: LineItems with
-    purchase_status="order_cancelled" are excluded entirely; if none remain,
-    `None`; else `False` if any remaining LineItem has purchase_status
-    "cs_required" OR "damaged_exchange" (REQ-DEX-009c short-circuit, same
-    precedence as the pre-existing cs_required short-circuit); else `True`
-    iff every remaining LineItem has logistics_status="received" OR
-    purchase_status="in_stock" (`False` otherwise). The `status` aggregate
-    above is unaffected by the damaged_exchange short-circuit — its rule is
-    unchanged (REQ-DEX-009d) even though both columns are written by the
-    same UPDATE below.
+    SPEC-ORDER-012 REQ-RTS-002/003/003a/004 (개정, 사용자 지시): in the same
+    pass, recompute Order.ready_to_ship over the same trackable LineItem set.
+    LineItems with purchase_status="order_cancelled" — and, since the refund
+    netting below, fully refunded ones — are excluded entirely; if none
+    remain, `None`; else `True` iff every remaining LineItem has
+    logistics_status="received" OR purchase_status="in_stock". That single
+    condition is the whole rule: the
+    cs_required short-circuit (REQ-RTS-002) and the damaged_exchange
+    short-circuit (REQ-DEX-009c) were REMOVED, so a CS필요/파손교환 row that
+    has already arrived no longer forces False.
+    The `status` aggregate above never depended on either short-circuit
+    (REQ-DEX-009d) and is unchanged.
 
     Two-query design so the number of queries issued depends on the number
     of distinct Orders in `order_ids`, never on the number of LineItems that
@@ -157,10 +157,37 @@ def _recompute_order_aggregates(order_ids) -> None:
     if not order_id_list:
         return
 
+    # 환불(취소) 수량 차감: a fully refunded LineItem is excluded from BOTH
+    # aggregates. `ready_to_ship` already drops purchase_status=
+    # "order_cancelled" below, but that column is not where a Shopify
+    # cancellation lands — order #37830 (사용자 보고) carried its cancelled
+    # copy as purchase_status="cs_required" with a Refund row, and the
+    # leftover "not_shipped" made `status` report "partial" for an order
+    # whose every live item had shipped. Same net-quantity rule as
+    # UnorderedItemsView / _fully_refunded_line_item_ids; a partial refund
+    # leaves stock still owed and is NOT an exclusion. Annotated into the
+    # existing SELECT, so the two-query design above is unchanged.
+    refund_sum_sq = (
+        Refund.objects.filter(
+            order_id=OuterRef("order_id"),
+            line_item_id=OuterRef("shopify_line_item_id"),
+        )
+        .values("order_id", "line_item_id")
+        .annotate(total=Sum("quantity"))
+        .values("total")[:1]
+    )
     items_by_order: dict[int, list[tuple[str, str]]] = defaultdict(list)
-    for order_id, logistics_status, purchase_status in LineItem.objects.filter(
-        order_id__in=order_id_list, sku__isnull=False
-    ).values_list("order_id", "logistics_status", "purchase_status"):
+    for order_id, logistics_status, purchase_status, quantity, refunded_qty in (
+        LineItem.objects.filter(order_id__in=order_id_list, sku__isnull=False)
+        .annotate(
+            refunded_qty=Coalesce(Subquery(refund_sum_sq, output_field=IntegerField()), 0)
+        )
+        .values_list(
+            "order_id", "logistics_status", "purchase_status", "quantity", "refunded_qty"
+        )
+    ):
+        if (quantity or 0) - refunded_qty <= 0:
+            continue
         items_by_order[order_id].append((logistics_status, purchase_status))
 
     status_field = CharField(max_length=50, null=True)
@@ -179,20 +206,16 @@ def _recompute_order_aggregates(order_ids) -> None:
         status_whens.append(When(id=order_id, then=Value(new_status, output_field=status_field)))
 
         # SPEC-ORDER-012 REQ-RTS-002: Order.ready_to_ship aggregate.
-        # SPEC-PURCHASE-ORDER-011 REQ-DEX-009c: damaged_exchange short-circuits
-        # to False at the same precedence as cs_required — evaluated BEFORE
-        # the all(received/in_stock) disjunct below, so a damaged_exchange
-        # LineItem with logistics_status="received" still forces False
-        # (REQ-DEX-009d: this changes only the ready_to_ship rule, not the
-        # status aggregate above).
+        # 사용자 지시(개정): the ONLY rule is "every live LineItem is
+        # logistics_status='received' OR purchase_status='in_stock'". The
+        # cs_required short-circuit (REQ-RTS-002) and the damaged_exchange
+        # short-circuit (REQ-DEX-009c) were both removed — a CS/파손 row that
+        # has physically arrived no longer blocks the badge. Scope is still
+        # the live set: purchase_status="order_cancelled" rows and fully
+        # refunded rows (netted out above) take no part.
         non_cancelled = [it for it in (items or []) if it[1] != "order_cancelled"]
         if not non_cancelled:
             ready_to_ship = None
-        elif any(
-            purchase_status in ("cs_required", "damaged_exchange")
-            for _, purchase_status in non_cancelled
-        ):
-            ready_to_ship = False
         else:
             ready_to_ship = all(
                 logistics_status == "received" or purchase_status == "in_stock"
@@ -3428,10 +3451,31 @@ def _process_outbound_rows(rows: list[dict]) -> dict:
         # LineItem in any pipeline state is eligible for outbound.
         line_items_by_key: dict[tuple[int, str], list[LineItem]] = {}
         if orders_by_name:
-            sku_matches = LineItem.objects.filter(
-                order_id__in=[o.id for o in orders_by_name.values()],
-                sku__in={sku for _, sku in grouped},
-            ).order_by("pk")
+            # 환불(취소) 수량 차감: refunded copies are not shippable, so the
+            # refunded quantity is annotated here (one subquery inside the
+            # SELECT this loop already issues — no extra round trip) and
+            # subtracted from the capacity judged below.
+            refund_sum_sq = (
+                Refund.objects.filter(
+                    order_id=OuterRef("order_id"),
+                    line_item_id=OuterRef("shopify_line_item_id"),
+                )
+                .values("order_id", "line_item_id")
+                .annotate(total=Sum("quantity"))
+                .values("total")[:1]
+            )
+            sku_matches = (
+                LineItem.objects.filter(
+                    order_id__in=[o.id for o in orders_by_name.values()],
+                    sku__in={sku for _, sku in grouped},
+                )
+                .annotate(
+                    refunded_qty=Coalesce(
+                        Subquery(refund_sum_sq, output_field=IntegerField()), 0
+                    )
+                )
+                .order_by("pk")
+            )
             for candidate_item in sku_matches:
                 line_items_by_key.setdefault(
                     (candidate_item.order_id, candidate_item.sku), []
@@ -3475,7 +3519,13 @@ def _process_outbound_rows(rows: list[dict]) -> dict:
 
             line_item = candidates[0]
             # REQ-OUTBOUND-009 (설계 결정 B): NULL quantity == 0 capacity.
-            effective_quantity = line_item.quantity or 0
+            # 환불(취소) 수량 차감: refunded copies are subtracted from that
+            # capacity — a fully refunded LineItem therefore has capacity 0
+            # and any positive request is reported quantity_exceeded, while a
+            # partially refunded one completes once its REMAINING quantity
+            # ships. `_process_force_outbound_rows` nets identically; the two
+            # paths must never disagree about how much is left to ship.
+            effective_quantity = max((line_item.quantity or 0) - line_item.refunded_qty, 0)
 
             # A group whose rows SUM to exactly 0 carries no shippable amount,
             # so it is normally invalid_total. The one exception is a LineItem
@@ -3849,10 +3899,11 @@ def _fully_refunded_line_item_ids(line_items) -> set[int]:
     is; if they diverge, the picker offers a target the gate then rejects,
     which fails the operator's whole batch (설계 결정 L).
 
-    Partial refunds deliberately do NOT reduce the reported capacity here: the
-    force path's quantity math is shared with `_process_outbound_rows`, and
-    netting only this side would make the two disagree about how much is left
-    to ship.
+    Partial refunds do not make an item a force-outbound *target* — it still
+    has stock owed — but they DO reduce its shippable capacity, which
+    `_refunded_quantity_by_line_item` below feeds into both this path's and
+    `_process_outbound_rows`' quantity math so the two never disagree about
+    how much is left to ship.
     """
     refund_sum_sq = (
         Refund.objects.filter(
@@ -3870,6 +3921,32 @@ def _fully_refunded_line_item_ids(line_items) -> set[int]:
         .values_list("pk", "quantity", "refunded_qty")
     )
     return {pk for pk, quantity, refunded in rows if (quantity or 0) - refunded <= 0}
+
+
+def _refunded_quantity_by_line_item(line_items) -> dict[int, int]:
+    """{LineItem pk: total refunded quantity} for the given LineItems.
+
+    Deliberately a separate SELECT rather than an annotation on the caller's
+    `select_for_update()` fetch: MySQL extends FOR UPDATE row locks to rows
+    read by subqueries, so annotating there would take write locks on
+    `orders_refund` rows this path never modifies.
+    """
+    refund_sum_sq = (
+        Refund.objects.filter(
+            order_id=OuterRef("order_id"),
+            line_item_id=OuterRef("shopify_line_item_id"),
+        )
+        .values("order_id", "line_item_id")
+        .annotate(total=Sum("quantity"))
+        .values("total")[:1]
+    )
+    rows = (
+        LineItem.objects.filter(pk__in=[li.pk for li in line_items])
+        .annotate(refunded_qty=Coalesce(Subquery(refund_sum_sq, output_field=IntegerField()), 0))
+        .filter(refunded_qty__gt=0)
+        .values_list("pk", "refunded_qty")
+    )
+    return dict(rows)
 
 
 def _force_outbound_gate_violated(
@@ -4050,12 +4127,17 @@ def _process_force_outbound_rows(rows: list[dict]) -> dict:
         matched: list[dict] = []
         quantity_exceeded: list[dict] = []
         to_update: list[LineItem] = []
+        refunded_by_target = _refunded_quantity_by_line_item(targets_by_id.values())
         for target_id in sorted(groups):
             total = groups[target_id]
             target = targets_by_id[target_id]
             # REQ-FORCE-009/010 (설계 결정 B carried over): NULL quantity ==
-            # 0 capacity.
-            effective_quantity = target.quantity or 0
+            # 0 capacity. 환불(취소) 수량 차감 mirrors `_process_outbound_rows`
+            # exactly — netting on only one of the two paths would make them
+            # disagree about the remaining shippable quantity.
+            effective_quantity = max(
+                (target.quantity or 0) - refunded_by_target.get(target_id, 0), 0
+            )
 
             if target.shipped_quantity + total > effective_quantity:
                 quantity_exceeded.append(

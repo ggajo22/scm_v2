@@ -187,8 +187,10 @@ class TestRecomputeOrderAggregatesReadyToShip:
         order.refresh_from_db()
         assert order.ready_to_ship is None
 
-    def test_cs_required_hard_blocks_to_false(self):
-        """시나리오2/AC-RTS-002b: cs_required forces False regardless of others."""
+    def test_cs_required_not_yet_received_is_false(self):
+        """시나리오2/AC-RTS-002b (개정): the cs_required short-circuit was
+        removed on user instruction. This order is still False, but now for
+        the only remaining reason — the cs_required row is not 입고/재고."""
         order = _make_order(shopify_order_id=200203)
         _make_line_item(
             order, shopify_line_item_id=1, sku="SKU-RTS-2a", purchase_status="cs_required"
@@ -199,6 +201,24 @@ class TestRecomputeOrderAggregatesReadyToShip:
         _recompute_order_aggregates([order.id])
         order.refresh_from_db()
         assert order.ready_to_ship is False
+
+    def test_cs_required_but_received_is_true(self):
+        """개정 규칙의 판별점: 입고까지 끝난 CS필요 품목은 더 이상 출고를
+        막지 않는다. 삭제된 short-circuit이 되살아나면 이 테스트가 깨진다."""
+        order = _make_order(shopify_order_id=200213)
+        _make_line_item(
+            order,
+            shopify_line_item_id=1,
+            sku="SKU-RTS-2a2",
+            purchase_status="cs_required",
+            logistics_status="received",
+        )
+        _make_line_item(
+            order, shopify_line_item_id=2, sku="SKU-RTS-2b2", logistics_status="received"
+        )
+        _recompute_order_aggregates([order.id])
+        order.refresh_from_db()
+        assert order.ready_to_ship is True
 
     def test_cancelled_items_excluded_from_cs_check(self):
         """시나리오2b/AC-RTS-002a/002c: cancelled items ignored entirely."""
@@ -508,9 +528,12 @@ class TestLineItemBulkStatusUpdateViewRecomputesReadyToShip:
 
         order_a.refresh_from_db()
         order_b.refresh_from_db()
-        # cs_required hard-blocks both, regardless of logistics_status.
-        assert order_a.ready_to_ship is False
-        assert order_b.ready_to_ship is False
+        # 개정 규칙: cs_required 자체는 더 이상 차단 사유가 아니다. 두 주문이
+        # 갈리는 것 자체가 이 테스트의 요지 — 한 번의 bulk PATCH가 두 주문을
+        # 각각 재계산했다는 증거다. 재계산이 누락되면 둘 다 초기값(None)으로
+        # 남아 두 단언이 함께 깨진다.
+        assert order_a.ready_to_ship is True  # 입고 완료
+        assert order_b.ready_to_ship is False  # 미입고
 
     def test_bulk_captures_order_ids_before_update(self, auth_client):
         """.update() does not return affected instances — order_ids must be

@@ -131,6 +131,8 @@ function buildOrderDetail(overrides: Partial<OrderDetail> = {}): OrderDetail {
     refunds: [],
     status: 'not_shipped',
     ready_to_ship: null,
+    logistics_display: 'not_shipped',
+    purchase_display: 'unordered',
     ...overrides,
   }
 }
