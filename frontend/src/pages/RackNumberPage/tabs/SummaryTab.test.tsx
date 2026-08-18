@@ -16,6 +16,7 @@ function buildResponse(overrides: Partial<RackNumberSummaryResponse> = {}): Rack
         rack_number: 'A-1',
         is_unassigned: false,
         total_quantity: 8,
+        received_quantity: 3,
         line_items: [
           {
             id: 42,
@@ -39,6 +40,7 @@ function buildResponse(overrides: Partial<RackNumberSummaryResponse> = {}): Rack
         rack_number: '',
         is_unassigned: true,
         total_quantity: 2,
+        received_quantity: 1,
         line_items: [
           {
             id: 44,
@@ -267,6 +269,135 @@ describe('SummaryTab — SPEC-ORDER-014', () => {
       expect(header).toHaveAttribute('aria-expanded', 'false')
       await user.click(header)
       expect(header).toHaveAttribute('aria-expanded', 'true')
+    })
+  })
+
+  describe('SPEC-ORDER-027: received_quantity in group header', () => {
+    it('AC-RACKRECV-007: renders the header using received_quantity/total_quantity straight from the API', () => {
+      vi.mocked(useRackNumberSummary).mockReturnValue({
+        data: buildResponse({
+          groups: [
+            {
+              rack_number: 'A-1',
+              is_unassigned: false,
+              total_quantity: 5,
+              received_quantity: 3,
+              line_items: [],
+            },
+          ],
+        }),
+        isPending: false,
+      } as unknown as ReturnType<typeof useRackNumberSummary>)
+
+      render(<SummaryTab />)
+
+      const header = screen.getByRole('button', { name: /A-1/ })
+      expect(header).toHaveTextContent('입고 3 / 총 5권')
+    })
+
+    it('AC-RACKRECV-008: renders "입고 0 / 총 N권" as-is when received_quantity is 0, not hidden', () => {
+      vi.mocked(useRackNumberSummary).mockReturnValue({
+        data: buildResponse({
+          groups: [
+            {
+              rack_number: 'C-3',
+              is_unassigned: false,
+              total_quantity: 6,
+              received_quantity: 0,
+              line_items: [],
+            },
+          ],
+        }),
+        isPending: false,
+      } as unknown as ReturnType<typeof useRackNumberSummary>)
+
+      render(<SummaryTab />)
+
+      const header = screen.getByRole('button', { name: /C-3/ })
+      expect(header).toHaveTextContent('입고 0 / 총 6권')
+    })
+
+    it('AC-RACKRECV-009: renders the unassigned group with the same 입고/총 header format', () => {
+      vi.mocked(useRackNumberSummary).mockReturnValue({
+        data: buildResponse({
+          groups: [
+            {
+              rack_number: '',
+              is_unassigned: true,
+              total_quantity: 4,
+              received_quantity: 1,
+              line_items: [],
+            },
+          ],
+        }),
+        isPending: false,
+      } as unknown as ReturnType<typeof useRackNumberSummary>)
+
+      render(<SummaryTab />)
+
+      const header = screen.getByRole('button', { name: /미지정/ })
+      expect(header).toHaveTextContent('입고 1 / 총 4권')
+    })
+
+    it('AC-RACKRECV-010: header keeps 입고/총 text across collapse/expand transitions', async () => {
+      const user = userEvent.setup()
+      vi.mocked(useRackNumberSummary).mockReturnValue({
+        data: buildResponse({
+          groups: [
+            {
+              rack_number: 'A-1',
+              is_unassigned: false,
+              total_quantity: 8,
+              received_quantity: 3,
+              line_items: [],
+            },
+          ],
+        }),
+        isPending: false,
+      } as unknown as ReturnType<typeof useRackNumberSummary>)
+
+      render(<SummaryTab />)
+      const header = screen.getByRole('button', { name: /A-1/ })
+
+      expect(header).toHaveAttribute('aria-expanded', 'false')
+      expect(header).toHaveTextContent('입고 3 / 총 8권')
+
+      await user.click(header)
+
+      expect(header).toHaveAttribute('aria-expanded', 'true')
+      expect(header).toHaveTextContent('입고 3 / 총 8권')
+    })
+
+    it('AC-RACKRECV-011: the header is a single text node — 입고 stays a single-match literal after expanding', async () => {
+      const user = userEvent.setup()
+      vi.mocked(useRackNumberSummary).mockReturnValue({
+        data: buildResponse({
+          groups: [
+            {
+              rack_number: 'A-1',
+              is_unassigned: false,
+              total_quantity: 8,
+              received_quantity: 3,
+              line_items: [
+                {
+                  id: 42,
+                  order_name: '#1001',
+                  sku: 'SKU-001',
+                  title: '테스트 상품 A',
+                  quantity: 3,
+                  logistics_status: 'received',
+                },
+              ],
+            },
+          ],
+        }),
+        isPending: false,
+      } as unknown as ReturnType<typeof useRackNumberSummary>)
+
+      render(<SummaryTab />)
+      await user.click(screen.getByRole('button', { name: /A-1/ }))
+
+      expect(screen.getAllByText('입고', { exact: true })).toHaveLength(1)
     })
   })
 })

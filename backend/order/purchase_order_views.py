@@ -3460,10 +3460,22 @@ class LineItemRackNumberSummaryView(APIView):
                     "rack_number": key,
                     "is_unassigned": key == "",
                     "total_quantity": 0,
+                    "received_quantity": 0,
                     "line_items": [],
                 },
             )
             group["total_quantity"] += net_qty
+            # @MX:NOTE: [AUTO] SPEC-ORDER-027 REQ-RACKRECV-002/003: received_quantity
+            # is clamped to net_qty because it is NEVER retroactively decremented
+            # when a refund is recorded afterward (_process_warehouse_receipt_rows,
+            # purchase_order_views.py:2392-2579, is the only writer). A LineItem
+            # fully received (received_quantity == quantity) and later partially
+            # refunded will have received_quantity > net_qty — without
+            # min(received_quantity, net_qty) the rack summary would show 입고
+            # exceeding 총. logistics_status is deliberately NOT checked here —
+            # partial receipts (status still "shipment_confirmed") must still
+            # contribute (REQ-RACKRECV-004).
+            group["received_quantity"] += min(li.received_quantity, net_qty)
             group["line_items"].append(
                 {
                     "id": li.id,
