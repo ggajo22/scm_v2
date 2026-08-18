@@ -8,6 +8,7 @@ import type { LineItemNote, LineItemNoteAssignee } from '@/types/order'
 import { ASSIGNEE_NOTE_TYPES } from '@/types/order'
 import { api } from '@/lib/axios'
 import { LOGISTICS_STATUS_OPTIONS } from '@/services/purchaseOrderApi'
+import { ORDER_LOGISTICS_DISPLAY_LABELS } from '@/features/order/logisticsDisplayLabels'
 
 const DISTRIBUTOR_LABELS: Record<string, string> = {
   booxen: '북센',
@@ -54,12 +55,6 @@ const LOGISTICS_STATUS_LABELS: Record<string, string> = LOGISTICS_STATUS_OPTIONS
   {} as Record<string, string>
 )
 
-// REQ-LOGI-008: Order.status aggregate reuses the five logistics_status
-// labels plus the "partial" (부분입고) mixed-status bucket (결정 D).
-const ORDER_STATUS_AGGREGATE_LABELS: Record<string, string> = {
-  ...LOGISTICS_STATUS_LABELS,
-  partial: '부분입고',
-}
 
 function formatDate(iso: string | null): string {
   if (!iso) return '-'
@@ -225,16 +220,23 @@ export function OrderDetailPage() {
                 {FULFILLMENT_STATUS_LABELS[data.fulfillment_status] ?? data.fulfillment_status}
               </span>
             )}
-            {/* SPEC-ORDER-011 REQ-LOGI-013: Order.status aggregate badge —
-                distinct header text ("입고출고 현황" shares no word with
-                "배송 상태") and distinct background color (purple vs blue). */}
-            {data.status && (
+            {/* SPEC-ORDER-011 REQ-LOGI-013: 입고출고 현황 badge — distinct
+                header text ("입고출고 현황" shares no word with "배송 상태")
+                and distinct background color (purple vs blue).
+                주문상세/주문목록 표시 일원화: reads `logistics_display`, the
+                value derived live from LineItem rows, NOT the stored
+                `Order.status` column this badge used to read — that column
+                is only refreshed by _recompute_order_aggregates(), which the
+                outbound paths never call, so it showed a stale value on 508
+                of 3,693 production orders. Same field and same label map the
+                주문목록 uses, so the two screens cannot disagree. */}
+            {data.logistics_display && (
               <span
                 data-badge-header="입고출고 현황"
                 title="입고출고 현황"
                 className="text-xs px-2 py-1 rounded border border-purple-300 text-purple-700 bg-purple-50 font-medium"
               >
-                {ORDER_STATUS_AGGREGATE_LABELS[data.status] ?? data.status}
+                {ORDER_LOGISTICS_DISPLAY_LABELS[data.logistics_display] ?? data.logistics_display}
               </span>
             )}
             {/* SPEC-ORDER-012 REQ-RTS-007/008 (결정 F): Order.ready_to_ship
@@ -244,7 +246,12 @@ export function OrderDetailPage() {
                 (AC-RTS-008 hides only the null case; false gets its own
                 visually distinct badge so a CS-blocked order is
                 distinguishable from an N/A order). */}
-            {data.ready_to_ship === true && (
+            {/* 이미 전량 출고된 주문에서는 출고가능/출고불가 자체가 물을 일이
+                아니므로 배지를 감춘다. 백엔드 ready_to_ship 규칙("모든 품목이
+                입고 또는 재고")은 '출고'를 '입고 아님'으로 읽어 완료 주문에
+                False를 주므로, 그 값을 그대로 노출하면 출고 완료 주문 2,203건이
+                출고불가로 보인다. 저장 값은 건드리지 않고 표시만 거른다. */}
+            {data.logistics_display !== 'shipped' && data.ready_to_ship === true && (
               <span
                 data-badge-header="출고가능"
                 title="출고가능"
@@ -253,7 +260,7 @@ export function OrderDetailPage() {
                 출고가능
               </span>
             )}
-            {data.ready_to_ship === false && (
+            {data.logistics_display !== 'shipped' && data.ready_to_ship === false && (
               <span
                 data-badge-header="출고불가"
                 title="출고불가"

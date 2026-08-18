@@ -37,11 +37,15 @@ EXCHANGE_RATE_TABLE = "orders_exchangerate"
 # measured against the correct (memoized) implementation — see
 # test_spec_018.py-style precedent (`UNORDERED_ENDPOINT_QUERY_COUNT`), not a
 # guess. Measured directly (CaptureQueriesContext) against the
-# SPEC-ORDER-021 implementation: 7 queries for both a 1-line-item and a
-# 5-line-item order — JWT auth user lookup, the select_related Order query,
-# 3 prefetch_related queries (line_items__notes__author, shipping_lines,
-# refunds), and exactly 1 memoized ExchangeRate query (AC-COST-009 c).
-ORDER_DETAIL_QUERY_COUNT = 7
+# SPEC-ORDER-021 implementation: JWT auth user lookup, the select_related
+# Order query, prefetch_related queries (line_items__notes__author,
+# line_items__purchase_orders, shipping_lines, refunds), and exactly 1
+# memoized ExchangeRate query (AC-COST-009 c). Was 7 before
+# 주문상세/주문목록 표시 일원화 added the line_items__purchase_orders prefetch
+# that feeds _is_awaiting_purchase — a single constant query that REPLACES
+# one-query-per-line-item, which is exactly what assertion (a) below guards:
+# the count must stay independent of line item count, not stay at 7 forever.
+ORDER_DETAIL_QUERY_COUNT = 8
 
 
 # ---------------------------------------------------------------------------

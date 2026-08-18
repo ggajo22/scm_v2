@@ -6,19 +6,8 @@ import { useOrders } from '@/features/order/hooks/useOrders'
 import { useOrderSync } from '@/features/order/hooks/useOrderSync'
 import { useOrderSyncStatus } from '@/features/order/hooks/useOrderSyncStatus'
 import { useAuthStore } from '@/store/authStore'
-import { LOGISTICS_STATUS_LABELS } from '@/pages/OutboundPage/logisticsStatusLabels'
+import { ORDER_LOGISTICS_DISPLAY_LABELS } from '@/features/order/logisticsDisplayLabels'
 import type { Order, OrderListParams } from '@/types/order'
-
-// SPEC-ORDER-023 REQ-OLIST-030~032: extends the SPEC-ORDER-016-owned
-// LOGISTICS_STATUS_LABELS (imported, not modified — that file belongs to a
-// different SPEC) with the 2 additional display values this SPEC introduces.
-// `received` from the shared map is intentionally unused here — it is never
-// emitted as a logistics_display value (see Order.logistics_display).
-const ORDER_LOGISTICS_DISPLAY_LABELS: Record<string, string> = {
-  ...LOGISTICS_STATUS_LABELS,
-  partial_shipped: '부분출고',
-  partial: '부분입고',
-}
 
 // SPEC-ORDER-023 REQ-OLIST-024: the 6 accepted logistics_display values, in
 // display order, mirrored from backend/order/views.py's

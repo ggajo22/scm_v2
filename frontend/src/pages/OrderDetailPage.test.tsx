@@ -96,6 +96,8 @@ function buildOrderDetail(overrides: Partial<OrderDetail> = {}): OrderDetail {
     refunds: [],
     status: 'shipment_confirmed',
     ready_to_ship: null,
+    logistics_display: 'shipment_confirmed',
+    purchase_display: 'ordered',
     ...overrides,
   }
 }
@@ -127,9 +129,9 @@ describe('OrderDetailPage — SPEC-ORDER-011 logistics status badges (AC-LOGI-01
     expect(screen.getAllByText('입고예정').length).toBeGreaterThanOrEqual(1)
   })
 
-  it('renders the Order.status aggregate badge near the fulfillment_status badge', () => {
+  it('renders the 입고출고 현황 badge from logistics_display near the fulfillment_status badge', () => {
     vi.mocked(useOrderDetail).mockReturnValue({
-      data: buildOrderDetail({ status: 'partial' }),
+      data: buildOrderDetail({ logistics_display: 'partial' }),
       isPending: false,
       isError: false,
       error: null,
@@ -142,9 +144,9 @@ describe('OrderDetailPage — SPEC-ORDER-011 logistics status badges (AC-LOGI-01
     expect(screen.getByText(/출고완료/)).toBeInTheDocument()
   })
 
-  it('does not render the Order.status badge when status is null', () => {
+  it('does not render the 입고출고 현황 badge when logistics_display is null', () => {
     vi.mocked(useOrderDetail).mockReturnValue({
-      data: buildOrderDetail({ status: null }),
+      data: buildOrderDetail({ logistics_display: null }),
       isPending: false,
       isError: false,
       error: null,
@@ -156,9 +158,9 @@ describe('OrderDetailPage — SPEC-ORDER-011 logistics status badges (AC-LOGI-01
     expect(screen.queryByText(/부분입고/)).not.toBeInTheDocument()
   })
 
-  it('AC-LOGI-013: fulfillment_status badge and Order.status badge share no header word and use different background colors', () => {
+  it('AC-LOGI-013: fulfillment_status badge and 입고출고 현황 badge share no header word and use different background colors', () => {
     vi.mocked(useOrderDetail).mockReturnValue({
-      data: buildOrderDetail({ status: 'partial', fulfillment_status: 'fulfilled' }),
+      data: buildOrderDetail({ logistics_display: 'partial', fulfillment_status: 'fulfilled' }),
       isPending: false,
       isError: false,
       error: null,
@@ -263,7 +265,7 @@ describe('OrderDetailPage — SPEC-ORDER-012 ready_to_ship badge (AC-RTS-007/008
     vi.mocked(useOrderDetail).mockReturnValue({
       data: buildOrderDetail({
         ready_to_ship: true,
-        status: 'partial',
+        logistics_display: 'partial',
         fulfillment_status: 'fulfilled',
       }),
       isPending: false,
@@ -302,7 +304,7 @@ describe('OrderDetailPage — SPEC-ORDER-012 ready_to_ship badge (AC-RTS-007/008
     vi.mocked(useOrderDetail).mockReturnValue({
       data: buildOrderDetail({
         ready_to_ship: false,
-        status: 'partial',
+        logistics_display: 'partial',
         fulfillment_status: 'fulfilled',
       }),
       isPending: false,
@@ -647,5 +649,108 @@ describe('OrderDetailPage — SPEC-ORDER-021 extension: applied exchange rate di
     const exchangeRateRow = screen.getByText('적용 환율').closest('div')
     expect(exchangeRateRow).not.toBeNull()
     expect(exchangeRateRow?.className).not.toMatch(/pl-\d/)
+  })
+})
+
+describe('OrderDetailPage — 주문상세/주문목록 표시 일원화', () => {
+  beforeEach(() => {
+    vi.mocked(useCreateLineItemNote).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+    } as unknown as ReturnType<typeof useCreateLineItemNote>)
+    vi.mocked(useResolveLineItemNote).mockReturnValue({
+      mutate: vi.fn(),
+    } as unknown as ReturnType<typeof useResolveLineItemNote>)
+  })
+
+  it('입고출고 현황 배지는 저장 컬럼 status가 아니라 logistics_display를 읽는다', () => {
+    // 저장 컬럼이 낡은 값(미입고)을 들고 있어도 파생값(출고)이 표시돼야 한다 —
+    // 출고 처리 경로가 Order.status를 갱신하지 않아 실제로 생기는 상황이다.
+    vi.mocked(useOrderDetail).mockReturnValue({
+      data: buildOrderDetail({ status: 'not_shipped', logistics_display: 'shipped' }),
+      isPending: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useOrderDetail>)
+
+    renderPage()
+
+    const badge = screen.getByTitle('입고출고 현황')
+    expect(badge).toHaveTextContent('출고')
+    expect(badge).not.toHaveTextContent('미입고')
+  })
+
+  it('주문목록에만 있던 partial_shipped 값도 상세에서 부분출고로 표시된다', () => {
+    vi.mocked(useOrderDetail).mockReturnValue({
+      data: buildOrderDetail({ logistics_display: 'partial_shipped' }),
+      isPending: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useOrderDetail>)
+
+    renderPage()
+
+    expect(screen.getByTitle('입고출고 현황')).toHaveTextContent('부분출고')
+  })
+})
+
+describe('OrderDetailPage — 출고 완료 주문의 출고가능/출고불가 배지 숨김', () => {
+  beforeEach(() => {
+    vi.mocked(useCreateLineItemNote).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+    } as unknown as ReturnType<typeof useCreateLineItemNote>)
+    vi.mocked(useResolveLineItemNote).mockReturnValue({
+      mutate: vi.fn(),
+    } as unknown as ReturnType<typeof useResolveLineItemNote>)
+  })
+
+  it('전량 출고된 주문에서는 출고불가 배지를 숨긴다', () => {
+    // 백엔드 규칙상 '출고'는 '입고'가 아니라서 ready_to_ship=false가 되지만,
+    // 이미 나간 주문에 출고불가를 붙이는 건 의미가 없다.
+    vi.mocked(useOrderDetail).mockReturnValue({
+      data: buildOrderDetail({ logistics_display: 'shipped', ready_to_ship: false }),
+      isPending: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useOrderDetail>)
+
+    renderPage()
+
+    expect(screen.queryByTitle('출고불가')).not.toBeInTheDocument()
+    expect(screen.queryByTitle('출고가능')).not.toBeInTheDocument()
+    // 입고출고 현황 배지는 그대로 남는다.
+    expect(screen.getByTitle('입고출고 현황')).toHaveTextContent('출고')
+  })
+
+  it('아직 출고가 남은 주문에서는 배지를 그대로 보여준다', () => {
+    vi.mocked(useOrderDetail).mockReturnValue({
+      data: buildOrderDetail({ logistics_display: 'partial_shipped', ready_to_ship: false }),
+      isPending: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useOrderDetail>)
+
+    renderPage()
+
+    expect(screen.getByTitle('출고불가')).toBeInTheDocument()
+  })
+
+  it('출고가능 배지도 출고 완료 주문에서는 숨긴다', () => {
+    vi.mocked(useOrderDetail).mockReturnValue({
+      data: buildOrderDetail({ logistics_display: 'shipped', ready_to_ship: true }),
+      isPending: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useOrderDetail>)
+
+    renderPage()
+
+    expect(screen.queryByTitle('출고가능')).not.toBeInTheDocument()
   })
 })

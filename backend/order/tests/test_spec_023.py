@@ -18,7 +18,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from order.models import Customer, ExchangeRate, LineItem, Order, PurchaseOrder
+from order.models import Customer, ExchangeRate, LineItem, Order, PurchaseOrder, Refund
 
 User = get_user_model()
 LIST_URL = "/api/orders/"
@@ -51,6 +51,9 @@ DETAIL_SERIALIZER_FIELDS = {
     "exchange_rate", "exchange_rate_date",
     "status",
     "ready_to_ship",
+    # 주문상세/주문목록 표시 일원화: 상세도 목록과 같은 파생 값을 노출한다.
+    "logistics_display",
+    "purchase_display",
 }
 
 
@@ -847,3 +850,178 @@ def test_ac025_detail_serializer_field_set_unchanged(auth_client):
     assert res.data["korea_warehouse_cost"] == "2.25"
     assert res.data["shipping_cost"] == "0.00"
     assert res.data["total_weight_grams"] == 0
+
+
+# ---------------------------------------------------------------------------
+# 환불(취소) 수량 차감 — 사용자 보고: 주문 #37830이 전체출고인데 부분출고로 표시
+#
+# 전량 환불된 LineItem은 고객이 더 이상 받을 물건이 아니므로 출고/발주 판정의
+# 대상이 아니다. UnorderedItemsView와 _fully_refunded_line_item_ids가 이미
+# 쓰는 규칙(잔여 수량 0 이하 -> 제외)을 표시 경로와 필터 경로에도 적용한다.
+# 표시 경로(serializers._derive_line_item_states)와 SQL 필터 경로
+# (views._apply_logistics_display_filter)는 항상 같은 판정을 내야 한다.
+# ---------------------------------------------------------------------------
+
+
+def _refund(line_item, quantity):
+    return Refund.objects.create(
+        order=line_item.order,
+        shopify_refund_id=next(_next_line_item_id),
+        line_item_id=line_item.shopify_line_item_id,
+        quantity=quantity,
+    )
+
+
+@pytest.mark.django_db
+def test_fully_refunded_item_excluded_from_logistics_display(auth_client):
+    """주문 #37830 재현: 살아있는 품목이 전부 출고면 전체출고."""
+    order = _make_order()
+    _make_line_item(
+        order, sku="ISBN-LIVE", logistics_status="shipped", quantity=1, shipped_quantity=1
+    )
+    cancelled = _make_line_item(
+        order, sku="ISBN-CANCELLED", logistics_status="not_shipped", quantity=1, shipped_quantity=0
+    )
+    _refund(cancelled, 1)
+
+    res = auth_client.get(LIST_URL)
+
+    assert _get_item(res, order.shopify_order_id)["logistics_display"] == "shipped"
+
+
+@pytest.mark.django_db
+def test_fully_refunded_item_excluded_from_logistics_filter(auth_client):
+    """표시 경로와 SQL 필터 경로가 같은 판정을 낸다."""
+    order = _make_order()
+    _make_line_item(
+        order, sku="ISBN-LIVE", logistics_status="shipped", quantity=1, shipped_quantity=1
+    )
+    cancelled = _make_line_item(
+        order, sku="ISBN-CANCELLED", logistics_status="not_shipped", quantity=1, shipped_quantity=0
+    )
+    _refund(cancelled, 1)
+
+    res_shipped = auth_client.get(LIST_URL, {"logistics_display": "shipped"})
+    res_partial = auth_client.get(LIST_URL, {"logistics_display": "partial_shipped"})
+
+    assert [o["shopify_order_id"] for o in res_shipped.data["results"]] == [
+        order.shopify_order_id
+    ]
+    assert order.shopify_order_id not in [
+        o["shopify_order_id"] for o in res_partial.data["results"]
+    ]
+
+
+@pytest.mark.django_db
+def test_partially_refunded_item_stays_in_scope(auth_client):
+    """부분 환불은 제외 사유가 아니다 — 잔여 수량이 남아 있으므로 계속 판정 대상."""
+    order = _make_order()
+    _make_line_item(
+        order, sku="ISBN-LIVE", logistics_status="shipped", quantity=1, shipped_quantity=1
+    )
+    partial = _make_line_item(
+        order, sku="ISBN-PARTIAL", logistics_status="not_shipped", quantity=3, shipped_quantity=0
+    )
+    _refund(partial, 1)
+
+    res = auth_client.get(LIST_URL)
+
+    assert _get_item(res, order.shopify_order_id)["logistics_display"] == "partial_shipped"
+
+
+@pytest.mark.django_db
+def test_every_item_fully_refunded_yields_null_display(auth_client):
+    """전량 취소된 주문은 출고/발주 상태가 없다 (표시값 없음)."""
+    order = _make_order()
+    a = _make_line_item(
+        order, sku="ISBN-A", logistics_status="shipped", quantity=1, shipped_quantity=1
+    )
+    b = _make_line_item(
+        order, sku="ISBN-B", logistics_status="not_shipped", quantity=2, shipped_quantity=0
+    )
+    _refund(a, 1)
+    _refund(b, 2)
+
+    item = _get_item(auth_client.get(LIST_URL), order.shopify_order_id)
+
+    assert item["logistics_display"] is None
+    assert item["purchase_display"] is None
+
+
+@pytest.mark.django_db
+def test_fully_refunded_item_excluded_from_purchase_display(auth_client):
+    """취소된 미발주 품목이 주문 전체를 미발주로 끌어내리지 않는다."""
+    order = _make_order()
+    ordered = _make_line_item(order, sku="ISBN-ORDERED", quantity=1, purchase_status="unordered")
+    _link_purchase_order(ordered)
+    cancelled = _make_line_item(
+        order, sku="ISBN-CANCELLED", quantity=1, purchase_status="unordered"
+    )
+    _refund(cancelled, 1)
+
+    res = auth_client.get(LIST_URL)
+
+    assert _get_item(res, order.shopify_order_id)["purchase_display"] == "ordered"
+
+
+# ---------------------------------------------------------------------------
+# 주문상세/주문목록 표시 일원화
+#
+# 주문상세는 저장 컬럼 Order.status를 그대로 보여줬고, 그 컬럼은
+# _recompute_order_aggregates가 호출될 때만 갱신된다. 출고 경로(일반/강제)는
+# 그 함수를 호출하지 않으므로 출고를 처리해도 상세 배지는 옛 값에 머문다 —
+# 프로덕션 3,693건 중 508건이 목록과 다른 값을 보여주고 있었다.
+# 두 화면이 같은 파생 함수를 공유하게 해 구조적으로 어긋날 수 없게 한다.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_detail_logistics_display_matches_list(auth_client):
+    order = _make_order()
+    _make_line_item(
+        order, sku="ISBN-D1", logistics_status="shipped", quantity=2, shipped_quantity=2
+    )
+    _make_line_item(
+        order, sku="ISBN-D2", logistics_status="not_shipped", quantity=2, shipped_quantity=1
+    )
+
+    list_value = _get_item(auth_client.get(LIST_URL), order.shopify_order_id)[
+        "logistics_display"
+    ]
+    detail = auth_client.get(DETAIL_URL.format(pk=order.pk))
+
+    assert detail.status_code == 200
+    assert detail.data["logistics_display"] == list_value == "partial_shipped"
+    assert detail.data["purchase_display"] == "unordered"
+
+
+@pytest.mark.django_db
+def test_detail_display_ignores_stale_stored_status(auth_client):
+    """저장 컬럼이 낡아 있어도 상세는 LineItem에서 즉석 파생한 값을 보여준다."""
+    order = _make_order()
+    _make_line_item(
+        order, sku="ISBN-STALE", logistics_status="shipped", quantity=1, shipped_quantity=1
+    )
+    Order.objects.filter(pk=order.pk).update(status="not_shipped")
+
+    detail = auth_client.get(DETAIL_URL.format(pk=order.pk))
+
+    assert detail.data["status"] == "not_shipped"  # 저장 컬럼은 그대로 노출
+    assert detail.data["logistics_display"] == "shipped"
+
+
+@pytest.mark.django_db
+def test_detail_display_nets_refunds_like_list(auth_client):
+    """상세도 전량 환불 품목을 제외한다 (주문 #37830 형태)."""
+    order = _make_order()
+    _make_line_item(
+        order, sku="ISBN-LIVE", logistics_status="shipped", quantity=1, shipped_quantity=1
+    )
+    cancelled = _make_line_item(
+        order, sku="ISBN-CANCELLED", logistics_status="not_shipped", quantity=1, shipped_quantity=0
+    )
+    _refund(cancelled, 1)
+
+    detail = auth_client.get(DETAIL_URL.format(pk=order.pk))
+
+    assert detail.data["logistics_display"] == "shipped"

@@ -333,9 +333,14 @@ class TestDamagedExchangeSubmit:
         assert li.purchase_status == "unordered"
         assert li.damaged_quantity == 0
 
-    def test_valid_submission_sets_status_and_quantity_and_flips_ready_to_ship(self, auth_client):
-        """AC-DEX-009: the flip to False is caused by the new short-circuit,
-        not by a logistics_status change (REQ-DEX-011 keeps it 'received')."""
+    def test_valid_submission_sets_status_and_quantity_without_touching_ready_to_ship(
+        self, auth_client
+    ):
+        """AC-DEX-009 (개정): the damaged_exchange short-circuit was removed —
+        ready_to_ship now asks only "is every live item 입고/재고?", so a
+        damaged_exchange row that REQ-DEX-011 leaves at logistics_status=
+        "received" keeps the order 출고가능. The submission still writes
+        purchase_status/damaged_quantity; it just no longer flips the badge."""
         order = _make_order(1100021)
         li = _make_line_item(
             order, 1, "SKU-DEX-009", quantity=8,
@@ -353,7 +358,7 @@ class TestDamagedExchangeSubmit:
         assert li.purchase_status == "damaged_exchange"
         assert li.damaged_quantity == 3
         assert li.logistics_status == "received"
-        assert order.ready_to_ship is False
+        assert order.ready_to_ship is True
 
     def test_out_of_range_rejected_state_unchanged(self, auth_client):
         """AC-DEX-009a."""
@@ -387,11 +392,11 @@ class TestDamagedExchangeSubmit:
         li.refresh_from_db()
         assert li.damaged_quantity == 2
 
-    def test_ready_to_ship_short_circuit_unit_level(self):
-        """AC-DEX-009c: direct unit-level check of _recompute_order_aggregates
-        (same style as test_spec_012.py::TestRecomputeOrderAggregatesReadyToShip).
-        Without the short-circuit, both rows individually satisfy
-        received/in_stock and the unmodified rule would compute True."""
+    def test_damaged_exchange_no_longer_short_circuits_ready_to_ship(self):
+        """AC-DEX-009c (개정): both rows satisfy 입고/재고, so the order is
+        출고가능. The short-circuit that used to force False here was removed
+        on user instruction — the only remaining rule is "every live item is
+        입고 or 재고"."""
         order = _make_order(1100024)
         _make_line_item(
             order, 1, "SKU-DEX-009C-A",
@@ -403,8 +408,8 @@ class TestDamagedExchangeSubmit:
         )
         _recompute_order_aggregates([order.id])
         order.refresh_from_db()
-        assert order.ready_to_ship is False
-        # REQ-DEX-009d: status rule is unaffected by the new short-circuit.
+        assert order.ready_to_ship is True
+        # REQ-DEX-009d: the status rule was never coupled to the short-circuit.
         assert order.status == "received"
 
     def test_note_auto_created_with_author_type_assignee_and_quantity(self, auth_client, user):

@@ -123,7 +123,105 @@ class CustomerSummarySerializer(serializers.ModelSerializer):
         fields = ["shopify_customer_id", "first_name", "last_name", "email"]
 
 
-class OrderListSerializer(serializers.ModelSerializer):
+class LineItemStateDerivationMixin:
+    """`logistics_display` / `purchase_display` derivation shared by the list
+    and the detail serializer.
+
+    주문상세/주문목록 표시 일원화: the detail screen used to render the stored
+    `Order.status` column, which only changes when
+    `purchase_order_views._recompute_order_aggregates()` runs — and neither
+    outbound path calls it (spec.md 후속 과제 1). 508 of 3,693 production
+    orders therefore showed the list one value and the detail another, most
+    of them fully-shipped orders still badged 미입고. Sharing one derivation
+    makes the two screens structurally incapable of disagreeing; the stored
+    column stays in the payload for the callers that still read it.
+    """
+
+    # @MX:NOTE: [AUTO] SPEC-ORDER-023 REQ-OLIST-007~011a: priority order is
+    # (1) all trackable shipped -> "shipped", (2) any trackable
+    # shipped_quantity>0 -> "partial_shipped", (3) all trackable received ->
+    # "outbound_scheduled", (4) remaining trackable logistics_status uniform
+    # -> that value, (4a) not uniform -> "partial". This exact order matters:
+    # in production every fully-shipped line item also satisfies
+    # shipped_quantity >= quantity > 0, so rules (1) and (2) co-occur on every
+    # completed order — swapping them mislabels every completed order as
+    # partial_shipped (SPEC-ORDER-023 problem definition, AC-OLIST-006).
+    # Deliberately never reads obj.status: that stored aggregate is NULL for
+    # orders that have never gone through a logistics write path even though
+    # their trackable line items already carry a real (default "not_shipped")
+    # status (spec.md C3). Iterates obj.line_items.all() exactly once, relying
+    # on the caller's prefetch_related("line_items") cache — plus the nested
+    # "line_items__purchase_orders" cache read by _is_awaiting_purchase, and
+    # "refunds" for the netting below. REQ-OLIST-021 forbids any per-order or
+    # per-line-item query here.
+    def _derive_line_item_states(self, obj):
+        cache = getattr(self, "_line_item_states_cache", None)
+        if cache is None:
+            cache = {}
+            self._line_item_states_cache = cache
+        if obj.pk in cache:
+            return cache[obj.pk]
+
+        # 환불(취소) 수량 차감: a line item whose whole ordered quantity has
+        # been refunded is as cancelled as purchase_status="order_cancelled"
+        # — the customer is not owed the goods — so it takes no part in
+        # either derivation. Same rule UnorderedItemsView and
+        # purchase_order_views._fully_refunded_line_item_ids already apply
+        # (net quantity <= 0 -> excluded); a PARTIAL refund leaves stock
+        # still owed and is deliberately not an exclusion.
+        #
+        # Order #37830 (사용자 보고) is the shape this fixes: 18 of 19 items
+        # shipped, the 19th fully refunded and left at "not_shipped", which
+        # broke rule 1 and reported 부분출고 instead of 전체출고. That item
+        # carried purchase_status="cs_required", NOT "order_cancelled" — the
+        # cancellation signal lives in the Refund rows, which is why this
+        # nets refunds instead of testing purchase_status.
+        refunded_qty: dict[int, int] = {}
+        for refund in obj.refunds.all():
+            if refund.line_item_id is not None:
+                refunded_qty[refund.line_item_id] = (
+                    refunded_qty.get(refund.line_item_id, 0) + (refund.quantity or 0)
+                )
+
+        trackable = [
+            li
+            for li in obj.line_items.all()
+            if li.sku is not None
+            and (li.quantity or 0) - refunded_qty.get(li.shopify_line_item_id, 0) > 0
+        ]
+        if not trackable:
+            result = (None, None)
+        else:
+            if all(li.logistics_status == "shipped" for li in trackable):
+                logistics = "shipped"
+            elif any(li.shipped_quantity > 0 for li in trackable):
+                logistics = "partial_shipped"
+            elif all(li.logistics_status == "received" for li in trackable):
+                logistics = "outbound_scheduled"
+            else:
+                statuses = {li.logistics_status for li in trackable}
+                logistics = next(iter(statuses)) if len(statuses) == 1 else "partial"
+
+            purchase = (
+                "unordered"
+                if any(_is_awaiting_purchase(li) for li in trackable)
+                else "ordered"
+            )
+            result = (logistics, purchase)
+
+        cache[obj.pk] = result
+        return result
+
+    def get_logistics_display(self, obj):
+        logistics, _purchase = self._derive_line_item_states(obj)
+        return logistics
+
+    def get_purchase_display(self, obj):
+        _logistics, purchase = self._derive_line_item_states(obj)
+        return purchase
+
+
+class OrderListSerializer(LineItemStateDerivationMixin, serializers.ModelSerializer):
     customer = CustomerSummarySerializer(read_only=True)
     has_refund = serializers.SerializerMethodField()
     line_items_count = serializers.SerializerMethodField()
@@ -164,64 +262,6 @@ class OrderListSerializer(serializers.ModelSerializer):
 
     def get_line_items_count(self, obj):
         return obj.line_items.count()
-
-    # @MX:NOTE: [AUTO] SPEC-ORDER-023 REQ-OLIST-007~011a: priority order is
-    # (1) all trackable shipped -> "shipped", (2) any trackable
-    # shipped_quantity>0 -> "partial_shipped", (3) all trackable received ->
-    # "outbound_scheduled", (4) remaining trackable logistics_status uniform
-    # -> that value, (4a) not uniform -> "partial". This exact order matters:
-    # in production every fully-shipped line item also satisfies
-    # shipped_quantity >= quantity > 0 (purchase_order_views.py:3411/3456/
-    # 3972), so rules (1) and (2) co-occur on every completed order —
-    # swapping them mislabels every completed order as partial_shipped
-    # (SPEC-ORDER-023 problem definition, AC-OLIST-006). Deliberately never
-    # reads obj.status: that stored aggregate is NULL for orders that have
-    # never gone through a logistics write path even though their trackable
-    # line items already carry a real (default "not_shipped") status
-    # (spec.md C3). Iterates obj.line_items.all() exactly once, relying on
-    # OrderListView's prefetch_related("line_items") cache — plus, for the
-    # purchase half (v1.4.0), the nested "line_items__purchase_orders" cache
-    # read by _is_awaiting_purchase. REQ-OLIST-021 forbids any per-order or
-    # per-line-item query here.
-    def _derive_line_item_states(self, obj):
-        cache = getattr(self, "_line_item_states_cache", None)
-        if cache is None:
-            cache = {}
-            self._line_item_states_cache = cache
-        if obj.pk in cache:
-            return cache[obj.pk]
-
-        trackable = [li for li in obj.line_items.all() if li.sku is not None]
-        if not trackable:
-            result = (None, None)
-        else:
-            if all(li.logistics_status == "shipped" for li in trackable):
-                logistics = "shipped"
-            elif any(li.shipped_quantity > 0 for li in trackable):
-                logistics = "partial_shipped"
-            elif all(li.logistics_status == "received" for li in trackable):
-                logistics = "outbound_scheduled"
-            else:
-                statuses = {li.logistics_status for li in trackable}
-                logistics = next(iter(statuses)) if len(statuses) == 1 else "partial"
-
-            purchase = (
-                "unordered"
-                if any(_is_awaiting_purchase(li) for li in trackable)
-                else "ordered"
-            )
-            result = (logistics, purchase)
-
-        cache[obj.pk] = result
-        return result
-
-    def get_logistics_display(self, obj):
-        logistics, _purchase = self._derive_line_item_states(obj)
-        return logistics
-
-    def get_purchase_display(self, obj):
-        _logistics, purchase = self._derive_line_item_states(obj)
-        return purchase
 
     def get_margin_rate(self, obj):
         """REQ-OLIST-016: identical formula to
@@ -343,7 +383,7 @@ class RefundSerializer(serializers.ModelSerializer):
         ]
 
 
-class OrderDetailSerializer(serializers.ModelSerializer):
+class OrderDetailSerializer(LineItemStateDerivationMixin, serializers.ModelSerializer):
     # @MX:ANCHOR: [AUTO] Fan-in >= 3: called by OrderDetailView, test suite, frontend client
     # @MX:REASON: Central serializer for order detail; all nested domain data flows through here
     customer = CustomerDetailSerializer(read_only=True)
@@ -378,6 +418,12 @@ class OrderDetailSerializer(serializers.ModelSerializer):
     # margin_amount is null because no line item has a confirmed_price yet.
     exchange_rate = serializers.SerializerMethodField()
     exchange_rate_date = serializers.SerializerMethodField()
+    # 주문상세/주문목록 표시 일원화: same derivation the list screen uses
+    # (LineItemStateDerivationMixin), so the two screens cannot drift. The
+    # stored `status` / `ready_to_ship` columns below stay in the payload —
+    # they are still written by the logistics write paths and read elsewhere.
+    logistics_display = serializers.SerializerMethodField()
+    purchase_display = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
@@ -408,6 +454,10 @@ class OrderDetailSerializer(serializers.ModelSerializer):
             # SPEC-ORDER-012 REQ-RTS-007: expose the ready_to_ship aggregate
             # for the Order detail screen's third badge.
             "ready_to_ship",
+            # 주문상세/주문목록 표시 일원화: live derivation shared with
+            # OrderListSerializer — the badge reads these, not `status`.
+            "logistics_display",
+            "purchase_display",
         ]
 
     def get_has_refund(self, obj: Order) -> bool:

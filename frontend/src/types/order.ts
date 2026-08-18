@@ -258,4 +258,9 @@ export interface OrderDetail {
   // SPEC-ORDER-012 REQ-RTS-001/002: computed "ready to ship" aggregate,
   // fully independent of `status` above. True/False/null.
   ready_to_ship: boolean | null
+  // 주문상세/주문목록 표시 일원화: derived live from LineItem rows by the
+  // backend (LineItemStateDerivationMixin), identical to the 주문목록 field
+  // of the same name. The 입고출고 현황 badge reads this, not `status`.
+  logistics_display: string | null
+  purchase_display: string | null
 }
