@@ -206,6 +206,23 @@ def _sync_single_order(order_data, store_type, location_code="", line_item_locat
             relevant_member_isbns.update(member_isbns)
     title_map = _build_title_map(list(relevant_member_isbns))
 
+    # SPEC-ORDER-025 M2: rows whose sku was manually corrected at
+    # 발주처리(confirm) time (LineItem.original_sku set) must never have that
+    # correction silently reverted by the next Shopify sync. One query for
+    # the whole order (never per line item — this project's remote DB costs
+    # ~130ms/query), keyed by (shopify_line_item_id, original_sku) so the
+    # bundle branch below can resolve a corrected member row by its ORIGINAL
+    # isbn, and the non-bundle branch by the row's own single sku value.
+    incoming_line_item_ids = [li["id"] for li in order_data.get("line_items", [])]
+    protected_sku_by_key: dict[tuple[int, str], str] = {
+        (row["shopify_line_item_id"], row["original_sku"]): row["sku"]
+        for row in LineItem.objects.filter(
+            order=order_obj,
+            shopify_line_item_id__in=incoming_line_item_ids,
+            original_sku__isnull=False,
+        ).values("shopify_line_item_id", "original_sku", "sku")
+    }
+
     incoming_shopify_ids = set()
     for li in order_data.get("line_items", []):
         incoming_shopify_ids.add(li["id"])
@@ -236,18 +253,35 @@ def _sync_single_order(order_data, store_type, location_code="", line_item_locat
                 # Shopify-reported title. LineItem.title is nullable and
                 # downstream code already has title-or-fallback handling.
                 member_defaults = {**common_defaults, "title": title_map.get(member_isbn)}
+                # SPEC-ORDER-025 M2: `sku=member_isbn` is part of the LOOKUP
+                # key here, not `defaults` — if this member row was
+                # corrected, its actual current sku no longer equals
+                # member_isbn, so looking it up by member_isbn would miss it
+                # and create a stray duplicate, orphaning the corrected row.
+                # Resolve to the corrected row's own sku when one exists for
+                # this (shopify_line_item_id, original_sku=member_isbn) pair;
+                # otherwise fall back to member_isbn exactly as before.
+                lookup_sku = protected_sku_by_key.get((li["id"], member_isbn), member_isbn)
                 LineItem.objects.update_or_create(
                     order=order_obj,
                     shopify_line_item_id=li["id"],
-                    sku=member_isbn,
+                    sku=lookup_sku,
                     defaults=member_defaults,
                 )
         else:
-            # No bundle mapping: single-row update_or_create, 100% unchanged.
+            # No bundle mapping: single-row update_or_create.
+            shopify_sku = li.get("sku")
+            defaults = {**common_defaults, "sku": shopify_sku}
+            # SPEC-ORDER-025 M2: unlike the bundle branch above, `sku` here
+            # sits in `defaults` (the lookup is order+shopify_line_item_id
+            # only), so an unconditional write silently reverts a manual
+            # correction on every sync. Omit it when this row is protected.
+            if (li["id"], shopify_sku) in protected_sku_by_key:
+                defaults.pop("sku")
             LineItem.objects.update_or_create(
                 order=order_obj,
                 shopify_line_item_id=li["id"],
-                defaults={**common_defaults, "sku": li.get("sku")},
+                defaults=defaults,
             )
     # Remove line items that Shopify no longer reports, but only if not purchase-ordered
     order_obj.line_items.filter(purchase_orders__isnull=True).exclude(

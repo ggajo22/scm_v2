@@ -324,7 +324,6 @@ class UnorderedItemsView(APIView):
     GET /api/purchase-orders/unordered/
 
     Returns LineItems (aggregated by SKU) that are NOT yet linked to any PurchaseOrder.
-    Each result includes auto_distributor derived from DistributorVendorRule.
     """
 
     authentication_classes = [JWTAuthentication]
@@ -354,10 +353,6 @@ class UnorderedItemsView(APIView):
             .order_by("-order__shopify_created_at")
         )
 
-        rule_map: dict[str, str] = dict(
-            DistributorVendorRule.objects.values_list("publisher_name", "distributor")
-        )
-
         results = []
         for li in line_items:
             # @MX:NOTE: [AUTO] SPEC-PURCHASE-ORDER-011 REQ-DEX-012/012a (결정 A):
@@ -384,7 +379,6 @@ class UnorderedItemsView(APIView):
                     "vendor": li.vendor or "",
                     "quantity": net_qty,
                     "purchase_status": li.purchase_status,
-                    "auto_distributor": rule_map.get(li.vendor or ""),
                 }
             )
 
@@ -400,13 +394,15 @@ class UnorderedItemsView(APIView):
 # other_publisher) line items — read-only restore-candidate list
 # ---------------------------------------------------------------------------
 
-# The four purchase_status codes that _reorder_candidate_filter above drops,
+# The purchase_status codes that _reorder_candidate_filter above drops,
 # leaving them invisible on every purchase screen (SPEC-ORDER-018 문제 정의).
+# SPEC-ORDER-025 REQ-LCONF-301: "other_publisher" was removed from this
+# tuple — 타출판사 건은 품목 노트 타출판사 탭에서 조회하며, 이 뷰에까지
+# 중복 노출하지 않는다.
 EXCLUDED_PURCHASE_STATUSES = (
     "on_hold",
     "order_cancelled",
     "cs_required",
-    "other_publisher",
 )
 
 
@@ -415,7 +411,7 @@ class ExcludedItemsView(APIView):
     GET /api/purchase-orders/excluded-items/
 
     REQ-RESTORE-001~008: read-only cross-order list of LineItems whose
-    purchase_status is one of the four excluded states, so an operator can
+    purchase_status is one of the three excluded states, so an operator can
     see them and restore them to "unordered" through the pre-existing
     LineItemStatusUpdateView / LineItemBulkStatusUpdateView endpoints
     (REQ-RESTORE-012 — this SPEC adds no write endpoint).
@@ -1213,6 +1209,210 @@ class ConfirmOrderView(APIView):
         )
 
 
+class LineItemConfirmView(APIView):
+    """
+    POST /api/purchase-orders/line-items/<int:pk>/confirm/
+
+    Body: {"distributor": str, "unit_price": str|null (optional)}
+
+    SPEC-ORDER-025 REQ-LCONF-001~015: confirms a single LineItem's purchase
+    order at LineItem grain — distinct from ConfirmOrderView above, which
+    batches an entire SKU across possibly-many LineItems. Creates a
+    PurchaseOrder(status="confirmed"), links it to the target LineItem via
+    M2M, and updates the LineItem's confirmed_distributor/confirmed_price.
+
+    SPEC-ORDER-025 M2: optional `sku` in the request body lets the operator
+    correct a stale Shopify-reported SKU (new book edition) at confirm time.
+    Absent, or equal to the current sku, is a no-op — identical to today's
+    behaviour. A different value replaces `sku`, stashes the PRE-correction
+    value into `original_sku` (only if still null — a second correction must
+    not clobber the true original), and the PurchaseOrder is created with the
+    NEW sku. `unique_together = ("order", "shopify_line_item_id", "sku")`
+    means the new value can collide with a sibling row from the same Shopify
+    line item (bundle expansion) — that surfaces as IntegrityError on save,
+    translated to 409 below rather than an unhandled 500.
+
+    # @MX:NOTE: [AUTO] SPEC-ORDER-025 REQ-LCONF-001~015. Uses
+    # select_for_update() + transaction.atomic(), the same lock-contention
+    # shape as ConfirmOrderView's @MX:WARN above (:1045-1046) — not re-tagged
+    # here because this file is already 2 tags over its warn_per_file budget
+    # (see .moai/config/sections/mx.yaml, research.md §1-8). Error response
+    # body uses the "error" key (not ConfirmOrderView's "detail") to match
+    # the <int:pk>/<segment>/ URL family convention shared with
+    # LineItemStatusUpdateView (research.md §1-7). PurchaseOrder.quantity
+    # recorded here (net of refunds, damaged_quantity-based for
+    # damaged_exchange rows) can diverge from the net_quantity
+    # PurchaseOrderListView displays via _attach_net_quantity, which always
+    # recomputes from the original LineItem.quantity — a pre-existing
+    # constraint already shared with ConfirmOrderView (see spec.md "알려진
+    # 제약"), not introduced by this view.
+    """
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk: int) -> Response:
+        distributor = request.data.get("distributor")
+        raw_price = request.data.get("unit_price")
+        # SPEC-ORDER-025 M2: optional SKU correction (see class docstring).
+        sku_override = request.data.get("sku")
+
+        # REQ-LCONF-009: reject empty/whitespace-only distributor; allow any
+        # non-empty free text (ConfirmOrderView precedent).
+        if not distributor or not distributor.strip():
+            return Response(
+                {"error": "distributor must not be empty."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        # REQ-LCONF-010: PurchaseOrder.distributor has max_length=20.
+        if len(distributor) > 20:
+            return Response(
+                {"error": "distributor must be 20 characters or fewer."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # SPEC-ORDER-025 M2: sku is optional; when present it must be a
+        # real value — blank/whitespace-only is rejected the same way
+        # distributor is above, and LineItem.sku has max_length=255.
+        if sku_override is not None:
+            if not sku_override.strip():
+                return Response(
+                    {"error": "sku must not be blank."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if len(sku_override) > 255:
+                return Response(
+                    {"error": "sku must be 255 characters or fewer."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        # REQ-LCONF-011/012: unit_price is optional; must parse as Decimal
+        # when provided.
+        unit_price = None
+        if raw_price is not None:
+            try:
+                unit_price = Decimal(str(raw_price))
+            except InvalidOperation:
+                return Response(
+                    {"error": f"Invalid unit_price: {raw_price}"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        try:
+            with transaction.atomic():
+                # REQ-LCONF-014: select_for_update() row lock, single atomic
+                # transaction covering the eligibility check through the
+                # aggregate recompute below.
+                try:
+                    li = LineItem.objects.select_for_update().get(pk=pk)
+                except LineItem.DoesNotExist:
+                    return Response(
+                        {"error": "Not found"}, status=status.HTTP_404_NOT_FOUND
+                    )
+
+                # REQ-LCONF-005/006: eligibility gate — damaged_exchange
+                # (any linkage state) or unordered-and-unlinked only.
+                is_damaged_exchange = li.purchase_status == "damaged_exchange"
+                unordered_and_unlinked = (
+                    li.purchase_status == "unordered" and not li.purchase_orders.exists()
+                )
+                if not (is_damaged_exchange or unordered_and_unlinked):
+                    raise ConflictError("LineItem is not eligible for confirmation.")
+
+                # REQ-LCONF-013: defensive — normal UI flow never surfaces a
+                # sku-less row here (unordered list only shows sku__isnull=False).
+                if not li.sku:
+                    return Response(
+                        {"error": "LineItem has no sku."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+                # REQ-LCONF-003: recompute net quantity at request time —
+                # same base_qty/refund-subtraction/floor-0 rule as
+                # UnorderedItemsView.get() (:371-375). Client-supplied
+                # quantity is never trusted.
+                refunded_qty = (
+                    Refund.objects.filter(
+                        order_id=li.order_id,
+                        line_item_id=li.shopify_line_item_id,
+                    ).aggregate(total=Sum("quantity"))["total"]
+                    or 0
+                )
+                base_qty = li.damaged_quantity if is_damaged_exchange else li.quantity
+                net_qty = max((base_qty or 0) - refunded_qty, 0)
+                # REQ-LCONF-007
+                if net_qty <= 0:
+                    raise ConflictError("Net quantity is zero after refunds.")
+
+                # SPEC-ORDER-025 M2: SKU correction, applied after the
+                # eligibility/net-qty checks above — both operate on the
+                # ORIGINAL sku, and a correction never changes which row was
+                # eligible or how much was owed. A no-op when sku_override is
+                # absent or equal to the current value (REQ-LCONF-SKU-001/002).
+                effective_sku = li.sku
+                update_fields = ["confirmed_distributor", "confirmed_price"]
+                if sku_override is not None and sku_override != li.sku:
+                    if li.original_sku is None:
+                        # Write-once: a second correction must not clobber
+                        # the true original with an intermediate value.
+                        li.original_sku = li.sku
+                        update_fields.append("original_sku")
+                    li.sku = sku_override
+                    update_fields.append("sku")
+                    effective_sku = sku_override
+
+                po = PurchaseOrder.objects.create(
+                    sku=effective_sku,
+                    title=li.title or effective_sku,
+                    distributor=distributor,
+                    quantity=net_qty,
+                    unit_price=unit_price,
+                    status="confirmed",
+                )
+                po.line_items.add(li)
+
+                # REQ-LCONF-002
+                li.confirmed_distributor = distributor
+                li.confirmed_price = unit_price
+                # REQ-LCONF-004: damaged_exchange -> unordered after a
+                # successful confirmation (REQ-DMG-006 precedent).
+                if is_damaged_exchange:
+                    li.purchase_status = "unordered"
+                    update_fields.append("purchase_status")
+                # SPEC-ORDER-025 M2: a corrected sku colliding with a sibling
+                # row's sku (unique_together = (order, shopify_line_item_id,
+                # sku), the bundle-expansion case) raises IntegrityError here
+                # — caught below and translated to 409, never a bare 500.
+                li.save(update_fields=update_fields)
+
+                # REQ-LCONF-015
+                _recompute_order_aggregates([li.order_id])
+
+        except ConflictError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_409_CONFLICT)
+        except IntegrityError:
+            return Response(
+                {
+                    "error": (
+                        f"sku '{sku_override}' is already used by another item "
+                        "in this order — pick a different sku or correct the "
+                        "other item first."
+                    )
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        return Response(
+            {
+                "line_item_id": li.id,
+                "purchase_order_id": po.id,
+                "distributor": distributor,
+                "unit_price": str(unit_price) if unit_price is not None else None,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Daily Review: Download + Upload
 # ---------------------------------------------------------------------------
@@ -1460,6 +1660,10 @@ class UploadDailyReviewView(APIView):
     SPEC-ORDER-012 REQ-RTS-003a/004: recomputes every Order status/
     ready_to_ship aggregate touched by any of the three branches, once per
     upload request.
+
+    SPEC-ORDER-025 REQ-LCONF-309: a '타출판사' CS row always gets a
+    LineItemNote, even when the 메모/Status cell is blank (falls back to
+    _OTHER_PUBLISHER_DEFAULT_NOTE) — the other three CS types are unaffected.
     """
 
     authentication_classes = [JWTAuthentication]
@@ -1789,12 +1993,22 @@ class UploadDailyReviewView(APIView):
                         # field list below).
                         publisher_distributor: str | None = None
                         publisher_price: Decimal | None = None
+                        effective_note = note
                         if note_type == "타출판사":
                             publisher_distributor = resolve_publisher_distributor(
                                 item.get("ky_publisher") or kyobo_publisher_by_sku.get(sku),
                                 vendor_rules,
                             )
                             publisher_price = _other_publisher_unit_price(sku, item)
+                            # SPEC-ORDER-025 REQ-LCONF-309: a '타출판사' row must
+                            # always carry a note, even when the 메모/Status cell
+                            # is blank — otherwise it becomes invisible on both
+                            # the excluded-items view (REQ-LCONF-302) and the
+                            # 품목 노트 타출판사 탭. The other three CS types
+                            # (주문취소/주문보류/CS필요) keep the pre-existing
+                            # conditional behaviour untouched below.
+                            if effective_note is None:
+                                effective_note = _OTHER_PUBLISHER_DEFAULT_NOTE
                         for li in unordered_lis:
                             li.purchase_status = new_status
                             if publisher_distributor is not None:
@@ -1802,12 +2016,12 @@ class UploadDailyReviewView(APIView):
                             if publisher_price is not None:
                                 li.confirmed_price = publisher_price
                         cs_status_updates.extend(unordered_lis)
-                        if note is not None:
+                        if effective_note is not None:
                             for li in unordered_lis:
                                 pending_notes.append(
                                     LineItemNote(
                                         line_item=li,
-                                        content=note,
+                                        content=effective_note,
                                         author=None,
                                         note_type=note_type,
                                         assignee="CS",
@@ -2478,6 +2692,21 @@ _DAMAGED_EXCHANGE_BLOCKED_MESSAGE = (
     "(damage quantity is required and cannot be provided through this endpoint)."
 )
 
+# SPEC-ORDER-025 REQ-LCONF-306/307: other_publisher can only be produced by
+# the Daily Review upload flow (UploadDailyReviewView), which always attaches
+# a LineItemNote (REQ-LCONF-309). Blocking it here prevents a manually
+# assigned other_publisher row from silently losing its note trail.
+_OTHER_PUBLISHER_BLOCKED_MESSAGE = (
+    "other_publisher can only be set via the Daily Review upload "
+    "(POST /api/purchase-orders/upload-daily-review/)."
+)
+
+# SPEC-ORDER-025 REQ-LCONF-309: default LineItemNote content for a '타출판사'
+# Daily Review upload row whose 메모/Status cell is blank — without this, the
+# row would get purchase_status="other_publisher" but no note, making it
+# invisible on both the excluded-items view and the 품목 노트 타출판사 탭.
+_OTHER_PUBLISHER_DEFAULT_NOTE = "타출판사 확정 처리 (Daily Review 업로드, 메모 없음)"
+
 
 # ---------------------------------------------------------------------------
 # SPEC-PURCHASE-ORDER-004: Single line item status update
@@ -2495,6 +2724,9 @@ class LineItemStatusUpdateView(APIView):
 
     SPEC-PURCHASE-ORDER-011: rejects purchase_status="damaged_exchange" —
     see _DAMAGED_EXCHANGE_BLOCKED_MESSAGE. Every other choice is unaffected.
+
+    SPEC-ORDER-025: rejects purchase_status="other_publisher" — see
+    _OTHER_PUBLISHER_BLOCKED_MESSAGE.
     """
 
     authentication_classes = [JWTAuthentication]
@@ -2516,6 +2748,11 @@ class LineItemStatusUpdateView(APIView):
         if purchase_status_value == "damaged_exchange":
             return Response(
                 {"error": _DAMAGED_EXCHANGE_BLOCKED_MESSAGE},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if purchase_status_value == "other_publisher":
+            return Response(
+                {"error": _OTHER_PUBLISHER_BLOCKED_MESSAGE},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -2549,6 +2786,9 @@ class LineItemBulkStatusUpdateView(APIView):
 
     SPEC-PURCHASE-ORDER-011: rejects purchase_status="damaged_exchange" —
     see _DAMAGED_EXCHANGE_BLOCKED_MESSAGE. Every other choice is unaffected.
+
+    SPEC-ORDER-025: rejects purchase_status="other_publisher" — see
+    _OTHER_PUBLISHER_BLOCKED_MESSAGE.
     """
 
     authentication_classes = [JWTAuthentication]
@@ -2573,6 +2813,11 @@ class LineItemBulkStatusUpdateView(APIView):
         if purchase_status_value == "damaged_exchange":
             return Response(
                 {"error": _DAMAGED_EXCHANGE_BLOCKED_MESSAGE},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if purchase_status_value == "other_publisher":
+            return Response(
+                {"error": _OTHER_PUBLISHER_BLOCKED_MESSAGE},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 

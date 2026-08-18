@@ -20,18 +20,27 @@ describe('PURCHASE_STATUS_OPTIONS', () => {
     expect(PURCHASE_STATUS_OPTIONS.map((o) => o.value)).not.toContain('damaged_exchange')
   })
 
-  it('preserves all six existing options unmodified', () => {
+  it('preserves all five remaining options unmodified', () => {
     const existing = [
       { value: 'unordered', label: '미발주' },
       { value: 'on_hold', label: '주문보류' },
       { value: 'order_cancelled', label: '주문취소' },
-      { value: 'other_publisher', label: '타출판사' },
       { value: 'cs_required', label: 'CS필요' },
       { value: 'in_stock', label: '재고' },
     ]
     for (const option of existing) {
       expect(PURCHASE_STATUS_OPTIONS).toContainEqual(option)
     }
+  })
+
+  // SPEC-ORDER-025 REQ-LCONF-304/AC-LCONF-304: other_publisher may only be
+  // produced by the Daily Review upload path now — the manual dropdown must
+  // no longer offer it, mirroring the damaged_exchange exclusion above.
+  it('does NOT include other_publisher (SPEC-ORDER-025: exclusive to Daily Review upload)', () => {
+    expect(PURCHASE_STATUS_OPTIONS).not.toContainEqual(
+      expect.objectContaining({ value: 'other_publisher' })
+    )
+    expect(PURCHASE_STATUS_OPTIONS.map((o) => o.value)).not.toContain('other_publisher')
   })
 })
 
@@ -42,6 +51,14 @@ describe('PURCHASE_STATUS_OPTIONS', () => {
 describe('PURCHASE_STATUS_LABELS', () => {
   it('still maps damaged_exchange to its Korean label for display purposes', () => {
     expect(PURCHASE_STATUS_LABELS.damaged_exchange).toBe('파손/교환')
+  })
+
+  // SPEC-ORDER-025 REQ-LCONF-305/AC-LCONF-305: other_publisher was removed
+  // from PURCHASE_STATUS_OPTIONS above, but existing rows at that status
+  // must still render their Korean label wherever displayed — same
+  // "selectable removed, display-map kept" pattern as damaged_exchange.
+  it('still maps other_publisher to its Korean label for display purposes', () => {
+    expect(PURCHASE_STATUS_LABELS.other_publisher).toBe('타출판사')
   })
 
   it('has a label for every selectable PURCHASE_STATUS_OPTIONS value', () => {

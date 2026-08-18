@@ -12,6 +12,8 @@ import {
 import { usePurchaseOrderStore } from '@/stores/usePurchaseOrderStore'
 import { PURCHASE_STATUS_OPTIONS, PURCHASE_STATUS_LABELS } from '@/services/purchaseOrderApi'
 import type { WarningResponse } from '@/services/purchaseOrderApi'
+import { LineItemConfirmModal } from './LineItemConfirmModal'
+import type { LineItemConfirmTarget } from './LineItemConfirmModal'
 
 // Helper: format Date as YYYYMMDD string
 function formatDateCompact(date: Date): string {
@@ -63,6 +65,15 @@ export function UnorderedItemsTab() {
   // Nothing in the excluded-view code path may read or write that store.
   const [selectedExcludedIds, setSelectedExcludedIds] = useState<number[]>([])
   const [excludedBulkStatus, setExcludedBulkStatus] = useState('unordered')
+
+  // SPEC-ORDER-025 R2/M4: which row's 발주처리 modal is open, if any.
+  const [confirmTarget, setConfirmTarget] = useState<LineItemConfirmTarget | null>(null)
+  const [confirmModalOpen, setConfirmModalOpen] = useState(false)
+
+  const handleOpenConfirmModal = (item: LineItemConfirmTarget) => {
+    setConfirmTarget(item)
+    setConfirmModalOpen(true)
+  }
 
   const excludedResults = excludedQuery.data?.results ?? []
 
@@ -423,8 +434,8 @@ export function UnorderedItemsTab() {
                   <th className="py-2 px-3 text-left font-medium">도서명</th>
                   <th className="py-2 px-3 text-left font-medium">출판사</th>
                   <th className="py-2 px-3 text-right font-medium">필요 수량</th>
-                  <th className="py-2 px-3 text-left font-medium">자동 추천 발주처</th>
                   <th className="py-2 px-3 text-left font-medium">발주 상태</th>
+                  <th className="py-2 px-3 text-left font-medium">발주처리</th>
                 </tr>
               </thead>
               <tbody>
@@ -460,15 +471,6 @@ export function UnorderedItemsTab() {
                     </td>
                     <td className="py-2 px-3">{item.vendor}</td>
                     <td className="py-2 px-3 text-right font-medium">{item.quantity}</td>
-                    <td className="py-2 px-3">
-                      {item.auto_distributor ? (
-                        <span className="text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded">
-                          {item.auto_distributor}
-                        </span>
-                      ) : (
-                        <span className="text-muted-foreground text-xs">-</span>
-                      )}
-                    </td>
                     <td className="py-2 px-3" onClick={(e) => e.stopPropagation()}>
                       <select
                         value={item.purchase_status}
@@ -499,6 +501,25 @@ export function UnorderedItemsTab() {
                         ))}
                       </select>
                     </td>
+                    <td className="py-2 px-3">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={(e) => {
+                          // REQ-LCONF-107: must not also toggle this row's
+                          // SKU selection via the <tr onClick> handler above.
+                          e.stopPropagation()
+                          handleOpenConfirmModal({
+                            id: item.id,
+                            title: item.title,
+                            sku: item.sku,
+                            quantity: item.quantity,
+                          })
+                        }}
+                      >
+                        발주처리
+                      </Button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -506,6 +527,13 @@ export function UnorderedItemsTab() {
           </div>
         </>
       )}
+
+      <LineItemConfirmModal
+        key={confirmTarget?.id ?? 'none'}
+        lineItem={confirmTarget}
+        open={confirmModalOpen}
+        onOpenChange={setConfirmModalOpen}
+      />
     </div>
   )
 }

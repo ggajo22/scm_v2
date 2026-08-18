@@ -2,7 +2,7 @@
 TDD tests for SPEC-PURCHASE-ORDER-001 M2~M7 purchase order API endpoints.
 
 Coverage targets:
-  SC-PO-001  unordered aggregation + auto_distributor
+  SC-PO-001  unordered aggregation
   SC-PO-002  generate-order-file normal (Content-Type Excel)
   SC-PO-003  generate-order-file with unknown SKUs
   SC-PO-004  upload vendor file
@@ -297,8 +297,10 @@ class TestUnorderedItemsView:
         skus = [r["sku"] for r in res.data["results"]]
         assert "SKU-B" not in skus
 
-    def test_auto_distributor_from_vendor_rule(self, auth_client):
-        """SC-PO-001: auto_distributor comes from DistributorVendorRule.publisher_name = vendor."""
+    def test_auto_distributor_key_absent_even_with_matching_vendor_rule(self, auth_client):
+        """SPEC-ORDER-025 REQ-LCONF-201: auto_distributor key is gone from the
+        response entirely, even when a matching DistributorVendorRule exists
+        (regression for test_auto_distributor_from_vendor_rule)."""
         DistributorVendorRule.objects.create(
             publisher_name="처음교육", distributor="choeumgoyuk"
         )
@@ -310,10 +312,12 @@ class TestUnorderedItemsView:
         res = auth_client.get(UNORDERED_URL)
         assert res.status_code == 200
         result = next(r for r in res.data["results"] if r["sku"] == "SKU-C")
-        assert result["auto_distributor"] == "choeumgoyuk"
+        assert "auto_distributor" not in result
 
-    def test_auto_distributor_null_when_no_rule(self, auth_client):
-        """SC-PO-001: auto_distributor is null when no DistributorVendorRule exists."""
+    def test_auto_distributor_key_absent_when_no_rule(self, auth_client):
+        """SPEC-ORDER-025 REQ-LCONF-201: auto_distributor key is gone from the
+        response entirely when no DistributorVendorRule exists either
+        (regression for test_auto_distributor_null_when_no_rule)."""
         order = _make_order(shopify_order_id=91005)
         _make_line_item(
             order, shopify_line_item_id=1, sku="SKU-D", vendor="알수없는출판사"
@@ -322,7 +326,7 @@ class TestUnorderedItemsView:
         res = auth_client.get(UNORDERED_URL)
         assert res.status_code == 200
         result = next(r for r in res.data["results"] if r["sku"] == "SKU-D")
-        assert result["auto_distributor"] is None
+        assert "auto_distributor" not in result
 
     def test_excludes_line_items_with_null_sku(self, auth_client):
         """LineItems with null SKU should be excluded from aggregation."""
@@ -2303,11 +2307,16 @@ class TestLineItemStatusUpdateView:
         res = anon_client.patch(url, data={"purchase_status": "on_hold"}, format="json")
         assert res.status_code == 401
 
-    def test_patch_all_six_choices(self, auth_client):
-        """All 6 valid purchase_status choices can be set via PATCH."""
+    def test_patch_all_five_choices(self, auth_client):
+        """All 5 valid purchase_status choices can be set via PATCH.
+
+        SPEC-ORDER-025 REQ-LCONF-306: other_publisher is removed from this
+        list (was 6 choices) — it is now rejected, see
+        test_patch_other_publisher_rejected below.
+        """
         valid_choices = [
             "unordered", "on_hold", "order_cancelled",
-            "other_publisher", "cs_required", "in_stock",
+            "cs_required", "in_stock",
         ]
         order = _make_order(shopify_order_id=95010)
         for i, choice in enumerate(valid_choices):
@@ -2334,6 +2343,18 @@ class TestLineItemStatusUpdateView:
         assert res.status_code == 400
         li.refresh_from_db()
         assert li.purchase_status != "damaged_exchange"
+
+    def test_patch_other_publisher_rejected(self, auth_client):
+        """SPEC-ORDER-025 REQ-LCONF-306/AC-LCONF-306: other_publisher can
+        only be produced by the Daily Review upload flow (REQ-LCONF-308/309)
+        — this generic PATCH endpoint rejects it the same way it already
+        rejects damaged_exchange (test_patch_damaged_exchange_rejected)."""
+        li = self._make_li(shopify_order_id=95012, shopify_line_item_id=12)
+        url = LINE_ITEM_STATUS_URL.format(pk=li.pk)
+        res = auth_client.patch(url, data={"purchase_status": "other_publisher"}, format="json")
+        assert res.status_code == 400
+        li.refresh_from_db()
+        assert li.purchase_status != "other_publisher"
 
 
 # ---------------------------------------------------------------------------
@@ -2428,6 +2449,23 @@ class TestLineItemBulkStatusUpdateView:
         for li in lis:
             li.refresh_from_db()
             assert li.purchase_status != "damaged_exchange"
+
+    def test_bulk_other_publisher_rejected(self, auth_client):
+        """SPEC-ORDER-025 REQ-LCONF-307/AC-LCONF-307: same rejection as
+        TestLineItemStatusUpdateView.test_patch_other_publisher_rejected,
+        applied to the bulk endpoint — no partial update (both LineItems
+        stay unchanged)."""
+        lis = self._make_lis(2, shopify_order_id=96011)
+        ids = [li.pk for li in lis]
+        res = auth_client.patch(
+            BULK_STATUS_URL,
+            data={"ids": ids, "purchase_status": "other_publisher"},
+            format="json",
+        )
+        assert res.status_code == 400
+        for li in lis:
+            li.refresh_from_db()
+            assert li.purchase_status != "other_publisher"
 
 
 # ---------------------------------------------------------------------------

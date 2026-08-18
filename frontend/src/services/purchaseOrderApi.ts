@@ -9,15 +9,14 @@ export interface UnorderedItem {
   title: string
   vendor: string
   quantity: number
-  auto_distributor: string | null
   purchase_status: string
 }
 
 // SPEC-ORDER-018 REQ-RESTORE-003: a row of the excluded-items list. Same
-// shape as UnorderedItem minus `auto_distributor` (a purchasing-vendor
-// suggestion that is meaningless for a restore decision), and with
-// `purchase_status` required rather than incidental — it is the column the
-// operator reads to decide whether to restore the row.
+// shape as UnorderedItem (SPEC-ORDER-025 removed that type's `auto_distributor`
+// field, so the two are now structurally identical), with `purchase_status`
+// required rather than incidental — it is the column the operator reads to
+// decide whether to restore the row.
 export interface ExcludedItem {
   id: number
   order_name: string | null
@@ -54,12 +53,16 @@ export const PURCHASE_STATUS_LABELS: Record<string, string> = {
 // /damaged-exchange page (DamagedExchangeSubmitView). The backend now rejects
 // it with HTTP 400 on PATCH .../line-items/<pk>/status/ and
 // PATCH .../line-items/bulk-status/, so it must not be offered as a choice.
+// SPEC-ORDER-025 REQ-LCONF-304: other_publisher is excluded here for the same
+// reason — it may only be produced by the Daily Review upload path
+// (REQ-LCONF-308/309). The backend now rejects it with HTTP 400 on the same
+// two PATCH endpoints, using the identical damaged_exchange rejection
+// pattern (REQ-LCONF-306/307).
 // Every value here must also exist as a key in PURCHASE_STATUS_LABELS above.
 export const PURCHASE_STATUS_OPTIONS = [
   { value: 'unordered', label: PURCHASE_STATUS_LABELS.unordered },
   { value: 'on_hold', label: PURCHASE_STATUS_LABELS.on_hold },
   { value: 'order_cancelled', label: PURCHASE_STATUS_LABELS.order_cancelled },
-  { value: 'other_publisher', label: PURCHASE_STATUS_LABELS.other_publisher },
   { value: 'cs_required', label: PURCHASE_STATUS_LABELS.cs_required },
   { value: 'in_stock', label: PURCHASE_STATUS_LABELS.in_stock },
 ] as const
@@ -181,6 +184,28 @@ export async function createVendorRule(data: {
 
 export async function deleteVendorRule(id: number): Promise<void> {
   await api.delete(`/api/purchase-orders/vendor-rules/${id}/`)
+}
+
+// SPEC-ORDER-025 REQ-LCONF-002: LineItem-grain 발주처리 response —
+// distinct from the SKU-grain ConfirmOrderView used elsewhere in this file.
+export interface ConfirmLineItemResponse {
+  line_item_id: number
+  purchase_order_id: number
+  distributor: string
+  unit_price: string | null
+}
+
+// SPEC-ORDER-025 M2: `sku` is an optional operator-supplied correction —
+// omitting it, or sending the row's current value, reproduces the pre-M2
+// payload/behaviour exactly (see LineItemConfirmView's class docstring in
+// backend/order/purchase_order_views.py). Only a genuinely different value
+// should ever be included by callers.
+export async function confirmLineItem(
+  id: number,
+  data: { distributor: string; unit_price: string | null; sku?: string }
+): Promise<ConfirmLineItemResponse> {
+  const res = await api.post(`/api/purchase-orders/line-items/${id}/confirm/`, data)
+  return res.data
 }
 
 export async function updateLineItemStatus(

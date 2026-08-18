@@ -52,16 +52,20 @@ LINE_ITEM_STATUS_URL = "/api/purchase-orders/line-items/{pk}/status/"
 BULK_STATUS_URL = "/api/purchase-orders/line-items/bulk-status/"
 UPLOAD_DAILY_URL = "/api/purchase-orders/upload-daily-review/"
 
-# The four purchase_status codes this SPEC makes visible again
-# (models.py PURCHASE_STATUS_CHOICES).
-EXCLUDED_STATUSES = ("on_hold", "order_cancelled", "cs_required", "other_publisher")
+# The three purchase_status codes this SPEC makes visible again
+# (models.py PURCHASE_STATUS_CHOICES). SPEC-ORDER-025 REQ-LCONF-301 removed
+# "other_publisher" from this tuple — it is no longer surfaced in the
+# excluded-items view (it now lives only in the 품목 노트 타출판사 탭).
+EXCLUDED_STATUSES = ("on_hold", "order_cancelled", "cs_required")
 
 # Queries GET /api/purchase-orders/unordered/ issues once the auth machinery
-# is warm: 1 JWT user lookup + the 2 the view already issued before
-# SPEC-ORDER-018. Pinned exactly so that ANY query added to a pre-existing
-# endpoint fails REQ-RESTORE-011 — a with/without comparison alone cannot,
-# because a constant addition lands in both measurements and cancels.
-UNORDERED_ENDPOINT_QUERY_COUNT = 3
+# is warm: 1 JWT user lookup + the 1 the view issues after SPEC-ORDER-025
+# REQ-LCONF-201 removed the DistributorVendorRule rule_map query (was 2
+# pre-SPEC-ORDER-025). Pinned exactly so that ANY query added to a
+# pre-existing endpoint fails REQ-RESTORE-011 — a with/without comparison
+# alone cannot, because a constant addition lands in both measurements and
+# cancels.
+UNORDERED_ENDPOINT_QUERY_COUNT = 2
 
 
 # ---------------------------------------------------------------------------
@@ -171,10 +175,14 @@ def _make_daily_review_excel(rows: list[dict]) -> bytes:
 class TestExcludedItemsViewSelection:
     """AC-RESTORE-001/002/003 — which rows come back."""
 
-    def test_returns_exactly_the_four_excluded_statuses_and_writes_nothing(
+    def test_returns_exactly_the_three_excluded_statuses_and_writes_nothing(
         self, auth_client
     ):
-        """T1 (AC-RESTORE-001) — REQ-RESTORE-001/002."""
+        """T1 (AC-RESTORE-001) — REQ-RESTORE-001/002.
+
+        SPEC-ORDER-025 REQ-LCONF-302: other_publisher is no longer surfaced
+        here — SKU-OTHERPUB is included as a control to prove it is excluded.
+        """
         order = _make_order()
         statuses = [
             ("unordered", "SKU-UNORDERED"),
@@ -205,10 +213,9 @@ class TestExcludedItemsViewSelection:
         assert {row["sku"] for row in res.data["results"]} == {
             "SKU-HOLD",
             "SKU-CANCEL",
-            "SKU-OTHERPUB",
             "SKU-CS",
         }
-        assert len(res.data["results"]) == 4
+        assert len(res.data["results"]) == 3
 
         # No write of any kind (REQ-RESTORE-001).
         assert list(LineItem.objects.order_by("pk").values()) == before
@@ -317,7 +324,7 @@ class TestExcludedItemsViewResponseContract:
                     title=f"도서 {line_no}",
                     vendor="처음교육",
                     quantity=1,
-                    purchase_status=EXCLUDED_STATUSES[line_no % 4],
+                    purchase_status=EXCLUDED_STATUSES[line_no % len(EXCLUDED_STATUSES)],
                 )
         # ... plus 2 items on two DIFFERENT orders sharing one timestamp,
         # which is what makes a single-key ordering non-deterministic.
@@ -513,7 +520,7 @@ class TestExistingReorderPathUnchanged:
                 shopify_line_item_id=100 + idx,
                 sku=f"SKU-X{idx}",
                 quantity=1,
-                purchase_status=EXCLUDED_STATUSES[idx % 4],
+                purchase_status=EXCLUDED_STATUSES[idx % len(EXCLUDED_STATUSES)],
             )
 
         with CaptureQueriesContext(connection) as ctx_b:
@@ -535,8 +542,10 @@ class TestExistingReorderPathUnchanged:
         # issues a different number of database queries as a result of this
         # SPEC" actually asks for.
         #
-        # The 3 are: the JWT user lookup (warmed above, but still one per
-        # request), plus the two this view issued before SPEC-ORDER-018.
+        # The 2 are: the JWT user lookup (warmed above, but still one per
+        # request), plus the one query this view issues after
+        # SPEC-ORDER-025 REQ-LCONF-201 removed the DistributorVendorRule
+        # rule_map query (was two pre-SPEC-ORDER-025).
         # To re-derive after an intentional change, temporarily assert a
         # wrong value and read the reported count.
         assert queries_without_excluded == UNORDERED_ENDPOINT_QUERY_COUNT
