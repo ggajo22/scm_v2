@@ -69,6 +69,9 @@ export interface RackNumberSummaryGroup {
   rack_number: string
   is_unassigned: boolean
   total_quantity: number
+  // SPEC-ORDER-027 REQ-RACKRECV-007: group-level aggregate only, server-computed
+  // as Sum(min(li.received_quantity, net_qty)) — not exposed on line_items.
+  received_quantity: number
   line_items: RackNumberSummaryLineItem[]
 }
 

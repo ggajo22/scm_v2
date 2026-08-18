@@ -93,7 +93,14 @@ function RackNumberSummaryGroupSection({ group }: { group: RackNumberSummaryGrou
           aria-hidden="true"
         />
         <h2 className="text-sm font-semibold">{label}</h2>
-        <span className="text-sm text-muted-foreground">총 {group.total_quantity}권</span>
+        {/* SPEC-ORDER-027 REQ-RACKRECV-008/009/012: both values come straight
+            from the API — no client-side arithmetic, guard, or reclamping.
+            Kept as a single text node (not split into separate <span>s) so it
+            does not collide with the exact-match "입고" assertion on the
+            expanded row's logistics_status cell (D5). */}
+        <span className="text-sm text-muted-foreground">
+          입고 {group.received_quantity} / 총 {group.total_quantity}권
+        </span>
       </button>
 
       {expanded && (
