@@ -1,7 +1,7 @@
 ---
 id: SPEC-ORDER-027
-version: 0.2.1
-status: draft
+version: 0.3.0
+status: completed
 created_at: 2026-08-18
 updated: 2026-08-18
 author: ggajo
@@ -19,6 +19,7 @@ labels: [order, logistics, rack-number, summary, frontend, backend]
 | 0.1.0 | 2026-08-18 | ggajo | 최초 작성. `logistics_status === "received"`인 행의 `quantity` 합산으로 "입고"를 정의하는 프런트엔드 전용 SPEC. |
 | 0.2.0 | 2026-08-18 | ggajo | plan-auditor 1차 리뷰(`.moai/reports/plan-audit/SPEC-ORDER-027-review-1.md`, iteration 1, **FAIL, 0.50**) 반영. **D1(critical)** — v0.1.0은 `LineItem.received_quantity`(`backend/order/models.py:228`, 기존 필드, `IntegerField(default=0)`)의 존재를 몰랐다. 이 필드는 `_process_warehouse_receipt_rows`(`purchase_order_views.py:2392-2579`)가 입고 업로드마다 누적하며, `logistics_status`는 `received_quantity >= quantity`가 될 때만 `"received"`로 전환된다(`:2549-2550`) — 즉 **부분 입고는 상태를 바꾸지 않는다**. v0.1.0의 "`received` 상태인 행만 카운트"라는 정의는 이 필드가 존재하는 한 부분 입고를 전부 0으로 표시하는 결함이었다. **사용자 재인터뷰로 입고 정의가 교체되었다**: `logistics_status` 기반 → `received_quantity` 기반(품목별 `min(li.received_quantity, net_qty)`의 그룹 합산, `net_qty`는 기존 환불 순액화 값 `purchase_order_views.py:3446`). 이 필드는 그룹 요약 응답에 없으므로 **더 이상 프런트엔드 전용이 아니다** — 백엔드가 그룹 레벨 `received_quantity`를 신규 집계해 응답에 추가해야 한다. **D2(critical)** — v0.1.0 AC-RACKRECV-004는 `null + 3`이 `NaN`이 된다는 잘못된 전제(`0 + null === 0`이 JS의 실제 동작)로 그 자신이 방어한다던 변이를 하나도 잡지 못했다. 새 설계는 프런트엔드에서 산술 자체를 제거해(REQ-RACKRECV-008) 이 결함 부류를 원천적으로 없앤다. **D3(major, MP-3 실패)** — frontmatter `created` → `created_at` 정정, `labels` 추가, `priority: low` → `Medium`(형제 SPEC 대문자 관례). **D4(major)** — 옛 acceptance.md가 "AC-002가 M3의 유일 판별자"라고 주장했으나 실제로는 5개 AC가 공동으로 잡았다 — 이번 버전은 모든 "단독/유일" 표시를 변이-AC 대조표로 직접 재검증했다. **D5(major)** — `SummaryTab.test.tsx:103`의 `getByText('입고')`(물류상태 `received` 라벨, `purchaseOrderApi.ts:78`과 동일 리터럴)와 신규 헤더 텍스트의 충돌 가능성을 REQ-RACKRECV-012(단일 텍스트 노드 요구) + AC-RACKRECV-011(전용 회귀 테스트)로 명문화했다. **D6(major)** — `(Unwanted)`로 잘못 라벨링된 무조건 `shall not` 문장 6개를 `(Ubiquitous)`로 정정하고, 진짜 조건부 클램프 요구(REQ-RACKRECV-003)만 올바른 `If … then` 형태의 `(Unwanted)`로 다시 썼다. **D7/D8(major/minor)** — v0.1.0의 "바이트 단위로 동일" 등가성 주장(클라이언트가 서버 순액화를 재현한다는 전제)은 새 아키텍처에서 통째로 폐기된다 — 클라이언트는 이제 어떤 산술도 하지 않고 API 값을 그대로 렌더링만 한다. **D9(minor)** — `null`/`undefined` 불일치 문구는 산술 제거로 무의미해져 삭제. **D10/D11(minor)** — 변이 없는 회귀 확인 AC는 acceptance.md §0에 명시적 면제 카테고리를 신설해 분류하고, 정렬 규칙(REQ-RACKRECV-016)은 존재하지 않는 테스트를 인용하는 대신 `git diff` 범위 확인으로 정직하게 재기술했다. **D12(minor)** — `priority: Medium`으로 정정. REQ 14개 → **18개**, AC 7개 → **11개**(백엔드 6 + 프런트엔드 5), 변이 7개(신규 체계). |
 | 0.2.1 | 2026-08-18 | ggajo | plan-auditor 2차 리뷰(`.moai/reports/plan-audit/SPEC-ORDER-027-review-2.md`, iteration 2, **PASS, 0.75**) 반영. 5건 정정 + 1건 정리, 구조·요구사항 신설 없음(감사 지시 범위 준수). **N9(minor, 유일한 실질 공백)** — 기존 6개 백엔드 AC가 전부 그룹 1개짜리 픽스처라, `received_quantity` 집계를 그룹별로 격리하지 않고 공유 누산기에 쌓는 변이(예: `groups.setdefault` 스코프 밖으로 누산기를 끌어올리는 실수)가 6개 AC 전부를 통과할 수 있었다. **AC-RACKRECV-012**(그룹 2개, 서로 다른/각자의 합계와도 다른 `received_quantity`) 신설 + 변이 **M8** 등록으로 해소. **N1(major)** — acceptance.md:19가 "AC-001이 M1의 단독 판별자"라면서 같은 셀에 AC-004를 공동 판별자로 나열하는 자기모순이었다(§0의 [HARD] "단독은 진짜 단독일 때만" 규칙을 그 문서 스스로 위반). M1은 AC-001(0 vs 3)과 AC-004(2 vs 3) **공동** 판별로 정정하고, `:231`의 [HARD] 단독 판별자 목록에서 AC-001을 제거했다(AC-001은 유지 — 가장 단순한 단일 품목 증명이라는 가치는 그대로다). **N2(minor)** — AC-RACKRECV-010이 "잡는 변이: 없음(회귀 확인)"으로 분류되어 있었으나 실제로는 그 픽스처(`입고 3 / 총 8권`, 서로 다른 두 값)가 M5(필드 뒤바뀜, `입고 8 / 총 3권`)에서도 실패한다 — "M5(공동 보조) — 그 외에는 회귀 확인"으로 정정했다. **N4(minor)** — 가정 A2/A3가 `received_quantity > net_qty`의 원인으로 환불만 열거했으나, `LineItem.quantity` 자체가 Shopify 재동기화마다 덮어써진다(`backend/order/shopify_orders.py:236`, `common_defaults`의 `"quantity": li.get("quantity")`, `LineItem.objects.update_or_create`의 `defaults`로 사용되는 지점은 `:265`/`:281` — 이 세션에서 직접 확인). 전량 입고(5/5) 후 재동기화로 `quantity`가 3으로 하향 정정되면 환불 없이도 `received_quantity(5) > net_qty(3)`이 된다 — REQ-RACKRECV-003의 조건은 이미 원인 무관(cause-agnostic)이므로 요구사항 문구는 무변경이며, A2/A3에 이 두 번째 독립 원인을 추가해 클램프가 환불 단독 대응보다 더 무거운 방어선임을 명시했다. **N6(minor)** — acceptance.md의 AC-003(NULL quantity) 설명이 이 경로를 실사용 시나리오처럼 서술했으나, 현재 유일한 쓰기 지점(`purchase_order_views.py:2525-2527`)은 `quantity IS NULL`이면 `effective_quantity=0`이 되어 어떤 `received_count`든 `quantity_exceeded`로 거부하고 저장하지 않는다 — 즉 `quantity IS NULL` + `received_quantity > 0`은 그 쓰기 경로만으로는 도달 불가능하다. AC는 유지하되(클램프의 방어선으로서 여전히 가치 있음) 방어적/도달 불가 케이스로 정직하게 재서술했다(N4의 재동기화 경로를 통해서만 간접적으로 도달 가능). **REQ-RACKRECV-006 정리**(감사 N7 부수 지적) — `li.received_quantity`가 `IntegerField(default=0)`로 NULL이 될 수 없다는 것은 강제 가능한 시스템 행동이 아니라 모델 사실 서술이었고 이미 가정 A1과 중복이었다 — 별도 요구사항으로 유지하지 않고 가정 A1로 통합·폐기했다(번호는 결번으로 유지, 이하 REQ 번호 재부여 없음 — 인용 안정성을 위해 007~018은 그대로 둔다). REQ 18개(그 중 1개 폐기, 유효 17개), AC 11개 → **12개**, 변이 7개 → **8개**. |
+| 0.3.0 | 2026-08-18 | ggajo | 구현 완료. `backend/order/purchase_order_views.py`(LineItemRackNumberSummaryView), `frontend/src/services/rackNumberApi.ts`, `frontend/src/pages/RackNumberPage/tabs/SummaryTab.tsx`, `backend/order/tests/test_spec_027.py`(신규 7개), `frontend/src/pages/RackNumberPage/tabs/SummaryTab.test.tsx`(신규 5개). 백엔드 신규 AC 7개 + 기존 SPEC-ORDER-014 회귀 20개 통과. 프론트엔드 RackNumberPage 40개 통과, tsc clean, ruff clean. 계획과 정확히 일치, 미예정 파일 0개, 유보 요구사항 0개. |
 
 ---
 
@@ -160,12 +161,36 @@ REQ-RACKRECV-002의 집계는 `li.logistics_status` 값과 **무관하게** 균�
 
 ---
 
-## 7. Definition of Done (요약, 전체는 `acceptance.md`)
+## 7. Implementation Notes
 
-- [ ] AC-RACKRECV-001 ~ AC-RACKRECV-006, AC-RACKRECV-012 전부 통과 (`backend/order/tests/test_spec_027.py` `[NEW]`)
-- [ ] AC-RACKRECV-007 ~ AC-RACKRECV-011 전부 통과 (`frontend/src/pages/RackNumberPage/tabs/SummaryTab.test.tsx`)
-- [ ] `git diff --stat` 로 `SearchTab.tsx`, `purchase_order_views.py:2392-2579`(쓰기 경로), `purchase_order_views.py:3481-3489`(정렬) 공집합 확인
-- [ ] `backend/order/migrations/` 신규 파일 0건 (REQ-RACKRECV-018)
-- [ ] 기존 `SummaryTab.test.tsx:103`의 `getByText('입고')` 단정이 무수정으로 통과함을 확인(REQ-RACKRECV-012, `plan.md` §검증 항목)
-- [ ] `SummaryTab.tsx:17-20`의 기존 `@MX:NOTE` 무삭제 확인
-- [ ] mx_plan 실행 결과 반영 (`plan.md` §MX 태그 계획)
+**구현 완료**
+
+이번 버전의 모든 요구사항(REQ-RACKRECV-001 ~ REQ-RACKRECV-018)이 다음 파일에서 구현되었다:
+
+- **백엔드**: `backend/order/purchase_order_views.py` `LineItemRackNumberSummaryView` 클래스의 그룹 집계 루프에서, 각 그룹별로 `min(li.received_quantity, net_qty)` 연산을 통해 입고 수량(`received_quantity` 필드)을 누적하고, 응답 스키마에 추가했다.
+- **API 타입**: `frontend/src/services/rackNumberApi.ts`의 `RackNumberSummaryGroup` 타입에 `received_quantity: number` 필드를 추가했다.
+- **프론트엔드**: `frontend/src/pages/RackNumberPage/tabs/SummaryTab.tsx`의 `RackNumberSummaryGroupSection` 컴포넌트에서 그룹 헤더를 `입고 {group.received_quantity} / 총 {group.total_quantity}권`으로 렌더링하며, API 값을 그대로 사용한다(클라이언트 산술 없음).
+
+**검증 결과**
+
+- **백엔드**: 신규 acceptance criteria 7개(`AC-RACKRECV-001 ~ 006, 012`, `backend/order/tests/test_spec_027.py`) 전부 통과.
+- **회귀**: SPEC-ORDER-014 기존 20개 테스트(`test_spec_014.py`) 무수정 통과.
+- **프론트엔드**: RackNumberPage 전체 40개 테스트 통과 (`SummaryTab.test.tsx`, `SearchTab.test.tsx` 포함).
+- **타입**: `tsc --noEmit` 클린.
+- **린트**: `ruff check` 클린.
+
+**계획 대 실제**
+
+v0.2.1 plan-auditor 리뷰 이후 구현 과정에서 범위 이탈 없음. 5개 파일(백엔드 2 + 프론트엔드 2 + 테스트 2)이 모두 예정대로 변경되었으며, 미예정 파일 추가 변경 0개, 요구사항 유보 0개, AC 추가 신설 0개(plan-auditor 2차 리뷰에서 AC-RACKRECV-012는 이미 신설됨).
+
+---
+
+## 8. Definition of Done (요약, 전체는 `acceptance.md`)
+
+- [x] AC-RACKRECV-001 ~ AC-RACKRECV-006, AC-RACKRECV-012 전부 통과 (`backend/order/tests/test_spec_027.py` `[NEW]`) — 7 passed
+- [x] AC-RACKRECV-007 ~ AC-RACKRECV-011 전부 통과 (`frontend/src/pages/RackNumberPage/tabs/SummaryTab.test.tsx`) — 18 passed
+- [x] `git diff --stat` 로 `SearchTab.tsx`, `purchase_order_views.py:2392-2579`(쓰기 경로), `purchase_order_views.py:3481-3489`(정렬) 공집합 확인 — 실제 변경 범위는 `:3463`, `:3468-3478` 두 헌크뿐
+- [x] `backend/order/migrations/` 신규 파일 0건 (REQ-RACKRECV-018)
+- [x] 기존 `SummaryTab.test.tsx:103`의 `getByText('입고')` 단정이 무수정으로 통과함을 확인(REQ-RACKRECV-012, `plan.md` §검증 항목)
+- [x] `SummaryTab.tsx:17-20`의 기존 `@MX:NOTE` 무삭제 확인
+- [x] mx_plan 실행 결과 반영 (`plan.md` §MX 태그 계획) — 집계 지점에 `@MX:NOTE` 1건 추가. 단, 해당 파일의 NOTE 총계가 22건이 되어 `mx.yaml` `note_per_file: 10`을 초과한다(변경 전 21건, 이 SPEC 이전부터의 상태). 저장소 차원 정리 대상으로 sync 리포트에 기록
