@@ -2,8 +2,10 @@ import json
 import re
 import urllib.error
 import urllib.request
+from datetime import timedelta
 
 from django.conf import settings
+from django.db.utils import OperationalError
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
@@ -458,4 +460,220 @@ def sync_store(store_type):
         "updated_count": updated_count,
         "error": None,
         "updated_at_min": updated_at_min,
+    }
+
+
+# ---------------------------------------------------------------------------
+# SPEC-ORDER-029: order cancellation/closure detection & backfill
+# ---------------------------------------------------------------------------
+
+SHOPIFY_ORDER_STATUS_FIELDS = "id,cancelled_at,closed_at"
+IDS_CHUNK_SIZE = 250
+
+
+def _chunked(seq, size):
+    """Pure helper: split seq into consecutive slices of at most `size`.
+    No I/O, no Django imports — trivially unit-testable on a plain list.
+    """
+    seq = list(seq)
+    for i in range(0, len(seq), size):
+        yield seq[i : i + size]
+
+
+def fetch_order_status_by_ids(domain, token, shopify_order_ids, fields=SHOPIFY_ORDER_STATUS_FIELDS):
+    """Query orders.json?ids=<up to 250 comma-separated>&status=any&fields=...
+    &limit=250 for an EXPLICIT list of Shopify order IDs (<=250), returning
+    their CURRENT cancelled_at/closed_at values regardless of status.
+
+    SPEC-ORDER-029 REQ-CANC-001/002: verified in production 2026-08-19 that a
+    request for exactly 250 ids returns exactly 250 records, both timestamp
+    fields populated, and NO Link header. This function still defensively
+    follows a Link header if one unexpectedly appears (REQ-CANC-003), reusing
+    the existing _parse_next_page_info() helper — but the expected path
+    issues exactly one HTTP call.
+
+    Caller MUST pass <=250 ids (REQ-CANC-002) — chunking is the caller's
+    responsibility, see reconcile_order_status_for_ids() below.
+    """
+    if not shopify_order_ids:
+        return []
+    ids_param = ",".join(str(i) for i in shopify_order_ids)
+    path = f"orders.json?ids={ids_param}&status=any&limit=250&fields={fields}"
+    records = []
+    while path:
+        body, headers = _get_with_headers(domain, token, path)
+        records.extend(body.get("orders", []))
+        link = headers.get("Link") or headers.get("link")
+        page_info = _parse_next_page_info(link)
+        path = (
+            f"orders.json?limit=250&page_info={page_info}&fields={fields}"
+            if page_info
+            else None
+        )
+    return records
+
+
+def open_candidate_order_ids(store_type, closed_grace_days=None):
+    """SPEC-ORDER-029 REQ-CANC-004/005: the reconciliation candidate set —
+    local Order rows whose cancellation state is not yet known, scoped to
+    one store.
+
+    Asymmetric definition: cancellation is treated as terminal (Shopify has
+    no public un-cancel API, spec.md Assumption A6) but closure is NOT — an
+    order can be archived (closed_at set) and cancelled afterwards. So:
+
+        cancelled_at IS NULL
+        AND (closed_at IS NULL OR closed_at >= now - closed_grace_days)
+
+    closed_grace_days=None (default) means the closed_at condition is not
+    applied at all — every non-cancelled order is a candidate, regardless of
+    how long ago it closed. This is what backfill_order_cancellations uses
+    (REQ-CANC-019): unbounded, because it runs once/occasionally, not every
+    5 minutes.
+
+    closed_grace_days=30 is what sync_order_cancellations uses
+    (REQ-CANC-014): bounds recurring cost while keeping recently-closed
+    orders under observation for the realistic window where a
+    closure-then-cancellation could still arrive.
+
+    .order_by("shopify_order_id") makes chunk composition deterministic
+    across repeated calls (REQ-CANC-012 / spec.md §8 C6).
+    """
+    from django.db.models import Q
+
+    from .models import Order
+
+    qs = Order.objects.filter(store_type=store_type, cancelled_at__isnull=True)
+    if closed_grace_days is not None:
+        threshold = timezone.now() - timedelta(days=closed_grace_days)
+        qs = qs.filter(Q(closed_at__isnull=True) | Q(closed_at__gte=threshold))
+    return list(qs.order_by("shopify_order_id").values_list("shopify_order_id", flat=True))
+
+
+# @MX:NOTE: [AUTO] SPEC-ORDER-029 REQ-CANC-025: string-matches MySQL error
+# 1205 ("Lock wait timeout exceeded") rather than a driver exception class
+# because this failure originates entirely from sync_orders' long-held row
+# locks (sync_orders.py sync_store(), transaction.atomic() wraps a Shopify
+# HTTP round-trip) — this function's own lock hold is milliseconds
+# (bulk_update on 2 columns). See spec.md §1.2 for the full analysis.
+def _is_lock_wait_timeout(exc):
+    """SPEC-ORDER-029 REQ-CANC-025: identify a MySQL "Lock wait timeout
+    exceeded" failure (InnoDB error 1205) so the caller can classify it
+    separately from other chunk failures.
+
+    Gates on exception TYPE first (django.db.utils.OperationalError) —
+    matching "1205" against str(exc) alone is type-blind and would
+    misclassify any unrelated exception (KeyError, ValueError, ...) whose
+    message happens to contain that digit sequence as a self-healing lock
+    wait, silently suppressing a real failure from the caller's `failed`
+    list (evaluator-active finding, 2026-08-19). Only once the type is
+    confirmed do we check the error code: numerically against args[0] when
+    it is an int (mysqlclient/PyMySQL both surface this as
+    django.db.utils.OperationalError wrapping a DB-API error whose first arg
+    is (1205, "Lock wait timeout exceeded; try restarting transaction")),
+    falling back to a message substring match only within that type — never
+    outside it.
+    """
+    if not isinstance(exc, OperationalError):
+        return False
+    args = getattr(exc, "args", ())
+    if args and isinstance(args[0], int):
+        return args[0] == 1205
+    return "1205" in str(exc) or "Lock wait timeout exceeded" in str(exc)
+
+
+# @MX:NOTE: [AUTO] SPEC-ORDER-029 REQ-CANC-007/008: writes ONLY
+# cancelled_at/closed_at via bulk_update(), never via _sync_single_order()
+# or update_or_create(defaults=...). The ids=/fields= payload this function
+# consumes lacks every other Order field AND lacks "line_items"/
+# "shipping_lines"/"refunds", so routing through _sync_single_order() would
+# null those fields out AND unconditionally delete PurchaseOrder-unlinked
+# LineItems, all ShippingLine rows, and all Refund rows on the order.
+def reconcile_order_status_for_ids(
+    store_type, domain, token, shopify_order_ids, dry_run=False, chunk_size=IDS_CHUNK_SIZE
+):
+    """Narrow-write Order.cancelled_at/closed_at for the given LOCAL
+    shopify_order_ids, chunked at `chunk_size` (default 250, REQ-CANC-002).
+    Every chunk is attempted even if an earlier one raises (REQ-CANC-011/
+    016 — per-chunk isolation). Never routes through _sync_single_order()
+    or a broad update_or_create(defaults=...) (REQ-CANC-007/008).
+
+    Returns {
+        "scanned": int,               # records actually returned by Shopify
+        "changed": list[dict],        # {"shopify_order_id", "cancelled_at", "closed_at"}
+        "chunk_failures": list[dict], # {"ids": list[int], "error": str, "lock_timeout": bool}
+        "missing_ids": list[int],     # requested but not returned by Shopify
+    }
+    When dry_run=True, `changed` is still populated (diff computed) but no
+    bulk_update() call happens — same "changed" key in both modes; the
+    caller chooses its own display label ("would_change" vs "changed") for
+    stdout only.
+    """
+    from django.db import transaction
+
+    from .models import Order
+
+    scanned = 0
+    changed: list[dict] = []
+    chunk_failures: list[dict] = []
+    missing_ids: list[int] = []
+
+    for chunk in _chunked(shopify_order_ids, chunk_size):
+        try:
+            # HTTP fetch happens OUTSIDE the DB transaction — a slow
+            # Shopify round-trip must not hold a DB transaction/lock open.
+            records = fetch_order_status_by_ids(domain, token, chunk)
+            scanned += len(records)
+
+            returned_ids = {r["id"] for r in records}
+            missing_ids.extend(i for i in chunk if i not in returned_ids)
+
+            with transaction.atomic():
+                existing = {
+                    o.shopify_order_id: o
+                    for o in Order.objects.filter(
+                        store_type=store_type, shopify_order_id__in=chunk
+                    ).only("id", "shopify_order_id", "cancelled_at", "closed_at")
+                }
+
+                to_update = []
+                for r in records:
+                    order = existing.get(r["id"])
+                    if order is None:
+                        continue  # REQ-CANC-009: not locally matched — skip
+
+                    new_cancelled = (
+                        parse_datetime(r["cancelled_at"]) if r.get("cancelled_at") else None
+                    )
+                    new_closed = parse_datetime(r["closed_at"]) if r.get("closed_at") else None
+                    if order.cancelled_at != new_cancelled or order.closed_at != new_closed:
+                        changed.append(
+                            {
+                                "shopify_order_id": order.shopify_order_id,
+                                "cancelled_at": new_cancelled,
+                                "closed_at": new_closed,
+                            }
+                        )
+                        if not dry_run:
+                            order.cancelled_at = new_cancelled
+                            order.closed_at = new_closed
+                            to_update.append(order)
+
+                if to_update:
+                    Order.objects.bulk_update(to_update, ["cancelled_at", "closed_at"])
+        except Exception as exc:  # noqa: BLE001 - one chunk must not abort the rest
+            chunk_failures.append(
+                {
+                    "ids": list(chunk),
+                    "error": str(exc),
+                    "lock_timeout": _is_lock_wait_timeout(exc),
+                }
+            )
+            continue
+
+    return {
+        "scanned": scanned,
+        "changed": changed,
+        "chunk_failures": chunk_failures,
+        "missing_ids": missing_ids,
     }
