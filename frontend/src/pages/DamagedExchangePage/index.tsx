@@ -82,7 +82,7 @@ export function DamagedExchangePage() {
                 <th className="py-2 px-3 text-left font-medium">도서명</th>
                 <th className="py-2 px-3 text-left font-medium">렉번호</th>
                 <th className="py-2 px-3 text-right font-medium">주문 수량</th>
-                <th className="py-2 px-3 text-left font-medium">오늘 출고 가능 여부</th>
+                <th className="py-2 px-3 text-left font-medium">오늘출고</th>
                 <th className="py-2 px-3 text-right font-medium">전체 출고 수량</th>
                 <th className="py-2 px-3 text-left font-medium">상태</th>
                 <th className="py-2 px-3 text-left font-medium">파손 수량 접수</th>
@@ -130,7 +130,7 @@ function DamagedExchangeRow({
     <tr className="border-b last:border-0 hover:bg-muted/30 [&>td]:whitespace-nowrap">
       <td className="py-2 px-3 font-mono text-xs">{row.order_name ?? '-'}</td>
       <td className="py-2 px-3 font-mono text-xs">{row.sku}</td>
-      <td className="py-2 px-3 max-w-xs truncate" title={row.title}>
+      <td className="py-2 px-3 max-w-3xs truncate" title={row.title}>
         {row.title}
       </td>
       {/* SPEC-ORDER-013 REQ-RACK-001: read-only shelf code. Empty string is
