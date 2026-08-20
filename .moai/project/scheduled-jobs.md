@@ -107,7 +107,7 @@ Register-ScheduledTask -TaskName "scm_v2 sync_orders" `
 
 ```powershell
 $action  = New-ScheduledTaskAction -Execute "C:\app\scm_v2\scripts\sync_exchange_rates.bat"
-$trigger = New-ScheduledTaskTrigger -Daily -At 10:00
+$trigger = New-ScheduledTaskTrigger -Daily -At 10:05
 $set     = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew `
            -ExecutionTimeLimit (New-TimeSpan -Minutes 10) -StartWhenAvailable
 Register-ScheduledTask -TaskName "scm_v2 sync_exchange_rates" `
@@ -115,7 +115,7 @@ Register-ScheduledTask -TaskName "scm_v2 sync_exchange_rates" `
     -Description "USD/KRW 환율 동기화 (일 1회)"
 ```
 
-환율은 KST 10:00에 돌린다. UTC 기준 01:00이라 전일 환율이 확정된 뒤다.
+환율은 KST 10:05에 돌린다. UTC 기준 01:05라 전일 환율이 확정된 뒤다.
 
 > ⚠️ `-RepetitionDuration` 에 `[TimeSpan]::MaxValue` 를 주면 안 된다.
 > `P99999999DT23H59M59S` 로 변환되어 작업 스케줄러가 XML을 거부한다
