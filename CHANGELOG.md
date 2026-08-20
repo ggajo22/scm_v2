@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+#### SPEC-PURCHASE-ORDER-011: 파손 접수 시 입고 상태를 미입고로 되돌림
+
+- 파손 교환 페이지에서 접수하면 해당 `LineItem`의 `logistics_status`를 `not_shipped`(미입고)로 되돌리고 `received_quantity`에서 파손 수량을 차감 (REQ-DEX-011 반전)
+  - 파손된 책은 사용 가능한 재고가 아니므로 물류 파이프라인 처음으로 되돌아간다
+  - `received_quantity` 동반 차감이 필수: `_process_warehouse_receipt_rows`가 `received_quantity + 입고건수 > quantity`를 `quantity_exceeded`로 거부하므로, 상태만 되돌리면 교환본 입고가 영구 거부되어 그 행이 다시 입고로 돌아갈 수 없음
+  - 재접수는 직전 차감분을 복원한 뒤 새 값을 차감 — 3→2 정정 시 1 복원 (REQ-DEX-009b 덮어쓰기 시맨틱의 확장)
+  - 결과는 `[0, quantity]`로 클램프 — 결정 G 이전 생성된 `damaged_quantity=0` 레거시 행 방어
+  - `shipped_quantity`/`shipped_at`/`received_at`은 변경하지 않음
+  - `_recompute_order_aggregates`는 수정하지 않음 — 파손 주문의 `ready_to_ship=False` 전환은 특수 분기가 아니라 미입고라는 데이터 사실의 귀결
+- 신규 마이그레이션 `0045_backfill_damaged_exchange_logistics`: 기존 `damaged_exchange` 행 소급 보정 + 부모 Order 집계 재계산
+  - `0040`은 v1.6.0에서 삭제된 단락 규칙을 담고 있어 선례로 재사용하지 않고, 현행 규칙(환불 차감 포함, 단락 없음)을 역사적 모델로 재구현
+- 테스트 46건 통과 (신규 10건), 뮤테이션 2종으로 판별력 확인
+  - `received_quantity` 차감 제거 → 4건 실패, `logistics_status` 리셋 제거 → 5건 실패
+- 문서: `spec.md`/`plan.md`/`acceptance.md`/`spec-compact.md` v1.7.0 동기화, v1.6.0(집계 단락 삭제) 드리프트 SUPERSEDED 표기
+
 #### SPEC-ORDER-029: 주문 취소·종료 감지 및 반영
 
 - 취소·종료된 Shopify 주문을 자동으로 감지해 로컬 `Order` 레코드에 반영하는 기능 추가
@@ -38,8 +53,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - REQ: 27개 (불변)
   - AC: 25개 → **28개** (AC-CANC-026/027/028 신규)
   - 변이: M25 → **M28** (M26/027/028 신규)
-
-### Changed
 
 #### SPEC-ORDER-023: 주문목록 표시 컬럼 개편
 
