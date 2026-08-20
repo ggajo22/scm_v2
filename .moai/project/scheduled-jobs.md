@@ -14,6 +14,8 @@
 | 작업 | 커맨드 | 권장 주기 | 1회 소요 |
 |---|---|---|---|
 | 주문 동기화 | `python manage.py sync_orders` | 5분 | 약 16초 (신규 0~2건 기준) |
+| 취소·종료 감지 | `python manage.py sync_order_cancellations` | 5분 | 약 20초 (후보 2,235건 기준) |
+| 취소·종료 백필 | `python manage.py backfill_order_cancellations` | 주 1회 | 약 25초 (후보 3,872건 기준) |
 | 환율 동기화 | `python manage.py sync_exchange_rates` | 하루 1회 | 약 4초 |
 
 두 커맨드 모두:
@@ -32,6 +34,31 @@
 - 증분 기준점은 `orders_store_sync_watermark` 테이블에서 읽고, 이번 배치에서
   실제로 받아온 주문들의 최대 `updated_at`으로만 전진한다(단조 증가).
 - `--store gimssine` 으로 한쪽만 돌릴 수 있다.
+
+**`sync_order_cancellations`** (SPEC-ORDER-029)
+
+- Shopify 목록 조회는 `status=open` 필터를 쓰기 때문에 취소·종료된 주문은
+  피드에서 빠진다. `sync_orders`로는 구조적으로 잡을 수 없어 이 작업이 따로 있다.
+- 로컬 ID를 250개씩 묶어 `orders.json?ids=...&status=any` 로 역조회하므로,
+  호출 비용이 Shopify 이력 크기가 아니라 로컬 건수로 결정된다.
+- 후보 집합은 `cancelled_at IS NULL AND (closed_at IS NULL OR closed_at >= 현재-30일)`.
+  취소는 종결 상태라 한 번 기록되면 후보에서 영구히 빠지고, 종료는 30일 창 안에서만 남는다.
+- 쓰기는 `cancelled_at`/`closed_at` 두 컬럼뿐이다. 다른 컬럼은 건드리지 않는다.
+- **[HARD] `sync_orders`와 트리거를 2분 이상 어긋내야 한다**(REQ-CANC-027). `sync_orders`가
+  스토어 전체를 한 트랜잭션으로 감싸 약 20초간 `Order` 행 잠금을 쥐기 때문이다.
+  현재 실측 위상: `sync_orders` `:X4:05`, 이 작업 `:X1:31` — 앞 2분 33초 / 뒤 2분 27초.
+- 락 대기 타임아웃(MySQL 1205)만으로 실패한 스토어는 종료 코드를 0으로 둔다. 다음
+  사이클에 후보 집합으로 자동 복귀하므로 5분마다 경보를 울리면 진짜 실패를 가린다.
+  실패 내용 자체는 로그에 항상 남는다.
+
+**`backfill_order_cancellations`** (SPEC-ORDER-029)
+
+- 감지 작업과 같은 메커니즘이되 30일 창 없이(`cancelled_at IS NULL`만) 전량을 훑는다.
+- **이 작업이 존재하는 이유**: 30일보다 오래 전에 종료된 주문이 그 뒤에 취소되면
+  감지 작업의 창 밖이라 영구히 놓친다. 실측 빈도는 취소 1,170건 중 1건(0.09%)이지만
+  걸리면 복구 경로가 이것뿐이다.
+- `--dry-run` 으로 쓰기 없이 변경 예정 건수만 볼 수 있다.
+- 멱등하다. 바뀐 게 없으면 `changed=0` 으로 끝난다.
 
 **`sync_exchange_rates`**
 
@@ -104,6 +131,56 @@ Register-ScheduledTask -TaskName "scm_v2 sync_orders" `
     -Action $action -Trigger $trigger -Settings $set -Principal $prin `
     -Description "Shopify 주문 증분 동기화 (5분 주기)"
 ```
+
+취소·종료 감지. `-At` 을 `sync_orders` 와 같은 `(Get-Date)` 로 복사하면 두 작업이
+같은 순간에 떠서 이 작업이 존재하는 이유였던 락 경합을 도로 만든다. 아래처럼
+`:X1:30` 위상으로 계산해 넣는다(`sync_orders` 는 `:X4:03` 경계, 실행은 `:X4:05`).
+
+```powershell
+$now = Get-Date
+$staggeredStart = $now.Date.AddHours($now.Hour).AddMinutes($now.Minute - ($now.Minute % 5) + 1).AddSeconds(30)
+
+$vbs     = "C:\app\scm_v2\scripts\run_hidden.vbs"
+$action  = New-ScheduledTaskAction -Execute "wscript.exe" `
+           -Argument ('"{0}" "C:\app\scm_v2\scripts\sync_order_cancellations.bat"' -f $vbs)
+$trigger = New-ScheduledTaskTrigger -Once -At $staggeredStart `
+           -RepetitionInterval (New-TimeSpan -Minutes 5) `
+           -RepetitionDuration (New-TimeSpan -Days 3650)
+$set     = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew `
+           -ExecutionTimeLimit (New-TimeSpan -Minutes 10) -StartWhenAvailable
+$prin    = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" `
+           -LogonType Interactive -RunLevel Limited
+Register-ScheduledTask -TaskName "scm_v2 sync_order_cancellations" `
+    -Action $action -Trigger $trigger -Settings $set -Principal $prin `
+    -Description "주문 취소/종료 감지 (5분 주기, sync_orders와 2분 이상 스태거)"
+```
+
+취소·종료 백필. 주 1회. 5분 주기 안에서 `sync_orders`(243초 지점)·감지(90초 지점)와
+겹치지 않게 165초 지점(`:X2:45`)에 둔다 — 세 작업 모두 20~30초라 서로 닿지 않는다.
+
+```powershell
+$start = (Get-Date).Date.AddDays(((7 - [int](Get-Date).DayOfWeek) % 7)).AddHours(4).AddMinutes(2).AddSeconds(45)
+if ($start -lt (Get-Date)) { $start = $start.AddDays(7) }
+
+$vbs     = "C:\app\scm_v2\scripts\run_hidden.vbs"
+$action  = New-ScheduledTaskAction -Execute "wscript.exe" `
+           -Argument ('"{0}" "C:\app\scm_v2\scripts\backfill_order_cancellations.bat"' -f $vbs)
+$trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Sunday -At $start
+$set     = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew `
+           -ExecutionTimeLimit (New-TimeSpan -Minutes 30) -StartWhenAvailable
+$prin    = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" `
+           -LogonType Interactive -RunLevel Limited
+Register-ScheduledTask -TaskName "scm_v2 backfill_order_cancellations" `
+    -Action $action -Trigger $trigger -Settings $set -Principal $prin `
+    -Description "취소/종료 전량 백필 (주 1회, 30일 창 밖 잔여 흡수)"
+```
+
+> 위 두 작업은 **관리자 권한 없이** 등록됐다(2026-08-19 확인). 본인 계정 작업이라
+> 상승 권한이 필요 없다.
+
+> `Get-ScheduledTaskInfo` 의 `NextRunTime` 은 실제 트리거 시각과 다르게 나온다
+> (초 자리가 분과 같은 값으로 표시되는 등). 스태거가 지켜지는지는 이 값이 아니라
+> **각 작업의 로그에 찍힌 실제 실행 시각**으로 확인할 것.
 
 ```powershell
 $action  = New-ScheduledTaskAction -Execute "C:\app\scm_v2\scripts\sync_exchange_rates.bat"

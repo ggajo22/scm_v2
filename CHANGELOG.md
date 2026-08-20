@@ -24,6 +24,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `received_quantity` 차감 제거 → 4건 실패, `logistics_status` 리셋 제거 → 5건 실패
 - 문서: `spec.md`/`plan.md`/`acceptance.md`/`spec-compact.md` v1.7.0 동기화, v1.6.0(집계 단락 삭제) 드리프트 SUPERSEDED 표기
 
+#### SPEC-ORDER-029: 주문 취소·종료 감지 및 반영
+
+- 취소·종료된 Shopify 주문을 자동으로 감지해 로컬 `Order` 레코드에 반영하는 기능 추가
+  - 신규 관리 커맨드 2개: `sync_order_cancellations`(감지, 5분 주기) + `backfill_order_cancellations`(백필, 저빈도)
+  - Shopify `orders.json?ids=<최대 250개>&status=any` 파라미터로 상태와 무관하게 현재 `cancelled_at`/`closed_at` 조회
+  - 비대칭 후보 집합: 취소는 영구 제외, 종료는 30일 유예 창 적용 (감지), 무제한 (백필)
+  - 스토어별 청킹으로 조회 비용 유계화: 감지 10회/사이클, 백필 17회/실행 (현재 규모)
+  - `cancelled_at`/`closed_at` 두 필드만 갱신 — 다른 필드·관계 데이터는 보존
+  - 한 스토어·청크 실패가 다른 처리를 막지 않음 (격리된 실패 처리)
+  - 동시성 완화: `sync_orders`(`:X4:05`)와 최소 2분 스태거링 (REQ-CANC-027)
+  - 잠금 대기 시간 초과를 연성 실패로 계상 (경보 피로 방지, 정보는 유지)
+- 테스트 커버리지: 28개 AC, 33개 테스트 신규 추가
+  - 공유 코어 13개 AC (취소·종료 반영, 필드 매핑, 청킹, 페이지네이션)
+  - 감지 커맨드 6개 AC (스토어·청크 격리, 파라미터 전달, 종료 코드, 필드 보존, 연성/경성 실패)
+  - 백필 커맨드 5개 AC (무제한 창, 기존 미반영 반영, --dry-run, 필드 보존, 멱등성)
+  - 동시성 4개 AC (잠금 분류, 연성/경성 대조, 스토어 격리, 청크 격리)
+- Windows Task Scheduler 작업 등록:
+  - `sync_order_cancellations`: 5분 주기, `:X1:30` 정렬 (`:X4:05` 대비 스태거링 적용)
+  - `backfill_order_cancellations`: 주간 일요일 04:02:45
+  - 스태거 검증: 실행 로그 기준 2m33~2m35초 전후 (설정값 기준이 아님)
+- 프로덕션 측정:
+  - 초기 백필: 3,919건 조회, 3,094건 변경(52건 취소 + 3,042건 종료), 27초 소요
+  - 멱등성: 즉시 재실행 → changed=0 (중복 행 생성 무함)
+  - 감지 사이클: gimssine 2,188건 + etoile 47건 = 2,235건 → 10회 API 호출/사이클
+  - 첫 예약 실행(2026-08-19 23:26:32) ~ 야간 실행(2026-08-20 08:21): exit 0 확인
+- SPEC 버전: 0.5.0 → **0.6.0**
+  - REQ: 27개 (불변)
+  - AC: 25개 → **28개** (AC-CANC-026/027/028 신규)
+  - 변이: M25 → **M28** (M26/027/028 신규)
 
 #### SPEC-ORDER-023: 주문목록 표시 컬럼 개편
 
