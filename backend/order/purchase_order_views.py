@@ -2934,10 +2934,14 @@ class DamagedExchangeSubmitView(APIView):
     creates exactly one audit LineItemNote with author=request.user (결정
     D — a deliberate departure from the author=None convention used by
     batch-driven note creation), and recomputes the parent Order's
-    aggregates via `_recompute_order_aggregates` — the same call that
-    implements the REQ-DEX-009c damaged_exchange short-circuit. Does not
-    read or write logistics_status/shipped_quantity (REQ-DEX-011). All
-    writes happen in one transaction.
+    aggregates via `_recompute_order_aggregates`.
+
+    REQ-DEX-011 (개정 v1.7.0, 사용자 지시): the submission ALSO resets
+    `logistics_status` to "not_shipped" and subtracts the damaged units from
+    `received_quantity` — a damaged copy is not usable stock, so the line
+    re-enters the logistics pipeline at 미입고. `shipped_quantity` /
+    `shipped_at` / `received_at` remain untouched. All writes happen in one
+    transaction.
     """
 
     authentication_classes = [JWTAuthentication]
@@ -2968,9 +2972,41 @@ class DamagedExchangeSubmitView(APIView):
             )
 
         with transaction.atomic():
+            # REQ-DEX-011 (개정): the damaged units leave the received pool and
+            # the line drops back to 미입고. Both writes are required together —
+            # resetting logistics_status alone would re-open the receipt
+            # upload's eligibility gate (logistics_status IN
+            # ("not_shipped","shipment_confirmed"), see
+            # _process_warehouse_receipt_rows) while leaving received_quantity
+            # at its old value, so the replacement copy's receipt would then be
+            # rejected by that function's `received_quantity + count >
+            # quantity` guard and the row could never return to 입고.
+            #
+            # Idempotent under REQ-DEX-009b's overwrite semantics: whatever a
+            # previous submission already subtracted is added back before the
+            # new value is subtracted, so correcting 3 -> 2 restores one unit
+            # instead of subtracting twice. Clamped into [0, quantity] so a
+            # legacy damaged_exchange row carrying damaged_quantity=0 (결정 G's
+            # documented pre-invariant state) cannot push the result out of
+            # range.
+            previously_applied = (
+                li.damaged_quantity if li.purchase_status == "damaged_exchange" else 0
+            )
+            li.received_quantity = max(
+                0,
+                min(li.received_quantity + previously_applied - damaged_quantity, max_quantity),
+            )
+            li.logistics_status = "not_shipped"
             li.purchase_status = "damaged_exchange"
             li.damaged_quantity = damaged_quantity  # REQ-DEX-009b: overwrite, not accumulate
-            li.save(update_fields=["purchase_status", "damaged_quantity"])
+            li.save(
+                update_fields=[
+                    "purchase_status",
+                    "damaged_quantity",
+                    "logistics_status",
+                    "received_quantity",
+                ]
+            )
             LineItemNote.objects.create(
                 line_item=li,
                 content=f"파손 수량 {damaged_quantity}건 접수",
@@ -2985,6 +3021,10 @@ class DamagedExchangeSubmitView(APIView):
                 "id": li.id,
                 "purchase_status": li.purchase_status,
                 "damaged_quantity": li.damaged_quantity,
+                # REQ-DEX-011 (개정): surfaced so a caller can confirm the
+                # 미입고 reset without a follow-up read.
+                "logistics_status": li.logistics_status,
+                "received_quantity": li.received_quantity,
             },
             status=status.HTTP_200_OK,
         )

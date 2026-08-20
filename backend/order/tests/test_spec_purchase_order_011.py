@@ -15,6 +15,7 @@ file-by-file implementation this suite exercises:
   M4.5  _recompute_order_aggregates damaged_exchange
         short-circuit                                     -> AC-DEX-009c
   M4.6  ready_to_ship backfill migration (0040)            -> AC-DEX-013/013a
+  M4.7  damaged_exchange logistics backfill (0045)          -> AC-DEX-013b
   (regression) five/six untouched reorder-quantity sites   -> AC-DEX-012d/e/f
 """
 
@@ -333,18 +334,16 @@ class TestDamagedExchangeSubmit:
         assert li.purchase_status == "unordered"
         assert li.damaged_quantity == 0
 
-    def test_valid_submission_sets_status_and_quantity_without_touching_ready_to_ship(
-        self, auth_client
-    ):
-        """AC-DEX-009 (개정): the damaged_exchange short-circuit was removed —
-        ready_to_ship now asks only "is every live item 입고/재고?", so a
-        damaged_exchange row that REQ-DEX-011 leaves at logistics_status=
-        "received" keeps the order 출고가능. The submission still writes
-        purchase_status/damaged_quantity; it just no longer flips the badge."""
+    def test_valid_submission_resets_to_not_shipped_and_flips_ready_to_ship(self, auth_client):
+        """AC-DEX-009 (개정 v1.7.0): the damaged_exchange short-circuit stays
+        removed — ready_to_ship still asks only "is every live item 입고/재고?"
+        — but REQ-DEX-011 now drops the damaged line back to 미입고, so that
+        single unchanged rule yields False on its own. The badge flips as a
+        consequence of the data, not of a special case."""
         order = _make_order(1100021)
         li = _make_line_item(
             order, 1, "SKU-DEX-009", quantity=8,
-            purchase_status="unordered", logistics_status="received",
+            purchase_status="unordered", logistics_status="received", received_quantity=8,
         )
         _recompute_order_aggregates([order.id])
         order.refresh_from_db()
@@ -357,8 +356,10 @@ class TestDamagedExchangeSubmit:
         order.refresh_from_db()
         assert li.purchase_status == "damaged_exchange"
         assert li.damaged_quantity == 3
-        assert li.logistics_status == "received"
-        assert order.ready_to_ship is True
+        assert li.logistics_status == "not_shipped"
+        assert li.received_quantity == 5
+        assert order.ready_to_ship is False
+        assert order.status == "not_shipped"
 
     def test_out_of_range_rejected_state_unchanged(self, auth_client):
         """AC-DEX-009a."""
@@ -429,18 +430,82 @@ class TestDamagedExchangeSubmit:
         assert note.author_id == user.id
         assert "3" in note.content
 
-    def test_logistics_status_and_shipped_quantity_untouched(self, auth_client):
-        """AC-DEX-011."""
+    def test_shipped_quantity_untouched_by_the_not_shipped_reset(self, auth_client):
+        """AC-DEX-011 (개정 v1.7.0): logistics_status/received_quantity are now
+        written, but shipped_quantity/shipped_at stay outside this endpoint."""
         order = _make_order(1100026)
         li = _make_line_item(
             order, 1, "SKU-DEX-011", quantity=8,
-            logistics_status="not_shipped", shipped_quantity=0,
+            logistics_status="outbound_scheduled", shipped_quantity=2, received_quantity=8,
         )
         resp = auth_client.post(SUBMIT_URL.format(pk=li.id), {"damaged_quantity": 4}, format="json")
         assert resp.status_code == 200
         li.refresh_from_db()
         assert li.logistics_status == "not_shipped"
-        assert li.shipped_quantity == 0
+        assert li.received_quantity == 4
+        assert li.shipped_quantity == 2
+        assert li.shipped_at is None
+
+    def test_received_quantity_floors_at_zero(self, auth_client):
+        """AC-DEX-011a: a never-received line cannot go negative — the reset
+        still applies, the subtraction just clamps."""
+        order = _make_order(1100027)
+        li = _make_line_item(
+            order, 1, "SKU-DEX-011A", quantity=5,
+            logistics_status="shipment_confirmed", received_quantity=0,
+        )
+        resp = auth_client.post(SUBMIT_URL.format(pk=li.id), {"damaged_quantity": 3}, format="json")
+        assert resp.status_code == 200
+        li.refresh_from_db()
+        assert li.logistics_status == "not_shipped"
+        assert li.received_quantity == 0
+
+    def test_resubmission_restores_over_subtracted_receipt(self, auth_client):
+        """AC-DEX-011b: REQ-DEX-009b's overwrite semantics extend to the
+        receipt subtraction — correcting 3 -> 2 gives back one unit rather
+        than subtracting a second time (5 - 3 = 2, then + 1 = 3)."""
+        order = _make_order(1100028)
+        li = _make_line_item(
+            order, 1, "SKU-DEX-011B", quantity=5,
+            logistics_status="received", received_quantity=5,
+        )
+        assert auth_client.post(
+            SUBMIT_URL.format(pk=li.id), {"damaged_quantity": 3}, format="json"
+        ).status_code == 200
+        li.refresh_from_db()
+        assert li.received_quantity == 2
+
+        assert auth_client.post(
+            SUBMIT_URL.format(pk=li.id), {"damaged_quantity": 2}, format="json"
+        ).status_code == 200
+        li.refresh_from_db()
+        assert li.damaged_quantity == 2
+        assert li.received_quantity == 3
+        assert li.logistics_status == "not_shipped"
+
+    def test_replacement_receipt_upload_is_accepted_after_reset(self, auth_client):
+        """AC-DEX-011c — the reason received_quantity must move with the
+        status: _process_warehouse_receipt_rows gates on logistics_status IN
+        ("not_shipped","shipment_confirmed") AND rejects any count pushing
+        received_quantity past quantity. Resetting only the status would leave
+        the row permanently stuck at 미입고."""
+        from order.purchase_order_views import _process_warehouse_receipt_rows
+
+        order = _make_order(1100029, name="#DEX-011C")
+        li = _make_line_item(
+            order, 1, "SKU-DEX-011C", quantity=1,
+            logistics_status="received", received_quantity=1,
+        )
+        assert auth_client.post(
+            SUBMIT_URL.format(pk=li.id), {"damaged_quantity": 1}, format="json"
+        ).status_code == 200
+
+        result = _process_warehouse_receipt_rows([{"name": "#DEX-011C", "sku": "SKU-DEX-011C"}])
+        assert result["quantity_exceeded_count"] == 0
+        assert result["matched_count"] == 1
+        li.refresh_from_db()
+        assert li.received_quantity == 1
+        assert li.logistics_status == "received"
 
 
 # ---------------------------------------------------------------------------
@@ -567,6 +632,92 @@ class TestBackfillReadyToShipDamagedExchangeMigration:
         with CaptureQueriesContext(connection) as ctx:
             operation.code(global_apps, None)
         assert len(ctx.captured_queries) <= 2
+
+
+# ---------------------------------------------------------------------------
+# M4.7 — damaged_exchange logistics backfill migration (0045) — AC-DEX-013b
+# ---------------------------------------------------------------------------
+
+
+def _run_dex_logistics_backfill_migration():
+    loader = MigrationLoader(connection)
+    migration = loader.get_migration("order", "0045_backfill_damaged_exchange_logistics")
+    operation = migration.operations[0]
+    operation.code(global_apps, None)
+
+
+@pytest.mark.django_db
+class TestBackfillDamagedExchangeLogisticsMigration:
+    def test_pre_existing_damaged_row_reset_to_not_shipped(self):
+        """AC-DEX-013b: the production shape this migration exists for —
+        quantity=1, damaged_quantity=1, logistics_status="received",
+        received_quantity=1 (LineItem 17142)."""
+        order = _make_order(1100060, ready_to_ship=True, status="received")
+        li = _make_line_item(
+            order, 1, "SKU-DEX-013B", quantity=1, damaged_quantity=1,
+            purchase_status="damaged_exchange", logistics_status="received", received_quantity=1,
+        )
+        _run_dex_logistics_backfill_migration()
+        li.refresh_from_db()
+        order.refresh_from_db()
+        assert li.logistics_status == "not_shipped"
+        assert li.received_quantity == 0
+        assert order.ready_to_ship is False
+        assert order.status == "not_shipped"
+
+    def test_partially_received_row_keeps_the_undamaged_units(self):
+        order = _make_order(1100061)
+        li = _make_line_item(
+            order, 1, "SKU-DEX-013B-P", quantity=5, damaged_quantity=2,
+            purchase_status="damaged_exchange", logistics_status="received", received_quantity=5,
+        )
+        _run_dex_logistics_backfill_migration()
+        li.refresh_from_db()
+        assert li.received_quantity == 3
+
+    def test_unrelated_order_without_damaged_exchange_is_unaffected(self):
+        order = _make_order(1100062, ready_to_ship=True, status="received")
+        li = _make_line_item(
+            order, 1, "SKU-DEX-013B-U",
+            purchase_status="unordered", logistics_status="received", received_quantity=1,
+        )
+        _run_dex_logistics_backfill_migration()
+        li.refresh_from_db()
+        order.refresh_from_db()
+        assert li.logistics_status == "received"
+        assert li.received_quantity == 1
+        assert order.ready_to_ship is True
+        assert order.status == "received"
+
+    def test_fully_refunded_line_is_netted_out_of_the_recompute(self):
+        """The backfill mirrors _recompute_order_aggregates' refund netting —
+        a fully refunded sibling must not drag the Order's status to
+        "partial"."""
+        order = _make_order(1100063)
+        _make_line_item(
+            order, 1, "SKU-DEX-013B-R", quantity=1, damaged_quantity=1,
+            purchase_status="damaged_exchange", logistics_status="received", received_quantity=1,
+        )
+        _make_line_item(
+            order, 2, "SKU-DEX-013B-R2", quantity=1,
+            purchase_status="unordered", logistics_status="shipped",
+        )
+        _make_refund(order, 2, quantity=1, shopify_refund_id=110063)
+        _run_dex_logistics_backfill_migration()
+        order.refresh_from_db()
+        assert order.status == "not_shipped"
+
+    def test_migration_reverse_code_is_noop(self):
+        from django.db import migrations as dj_migrations
+
+        loader = MigrationLoader(connection)
+        migration = loader.get_migration("order", "0045_backfill_damaged_exchange_logistics")
+        assert migration.operations[0].reverse_code is dj_migrations.RunPython.noop
+
+    def test_migration_dependency_chain(self):
+        loader = MigrationLoader(connection)
+        m0045 = loader.disk_migrations[("order", "0045_backfill_damaged_exchange_logistics")]
+        assert m0045.dependencies == [("order", "0044_lineitem_original_sku")]
 
 
 # ---------------------------------------------------------------------------
