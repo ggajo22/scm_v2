@@ -1,14 +1,14 @@
 ---
 id: SPEC-PURCHASE-ORDER-011
 document: acceptance
-version: 1.5.0
-status: draft
-updated: 2026-08-14
+version: 1.7.0
+status: completed
+updated: 2026-08-20
 ---
 
 # 인수 기준 — SPEC-PURCHASE-ORDER-011 파손 교환 신청 페이지
 
-Given/When/Then 형태의 실행 가능한 테스트 시나리오. 각 시나리오는 `spec.md`의 AC-DEX-XXX/REQ-DEX-XXX ID를 인용해 상호 추적된다. 모든 시나리오는 "구현이 조용히 잘못 동작해도 이 기준이 통과하는가?"를 기준으로 판별력을 갖도록 작성되었다 — 특히 `damaged_quantity` vs 전체 `quantity` 구분(REQ-DEX-012), "전체 출고 수량" 합산 범위(REQ-DEX-006), `logistics_status` 무변경(REQ-DEX-011), `ready_to_ship` 재계산(REQ-DEX-009c)에 집중한다.
+Given/When/Then 형태의 실행 가능한 테스트 시나리오. 각 시나리오는 `spec.md`의 AC-DEX-XXX/REQ-DEX-XXX ID를 인용해 상호 추적된다. 모든 시나리오는 "구현이 조용히 잘못 동작해도 이 기준이 통과하는가?"를 기준으로 판별력을 갖도록 작성되었다 — 특히 `damaged_quantity` vs 전체 `quantity` 구분(REQ-DEX-012), "전체 출고 수량" 합산 범위(REQ-DEX-006), **접수 시 `logistics_status`→`not_shipped` 전환과 `received_quantity` 차감(REQ-DEX-011, v1.7.0에서 반전 — 구 "무변경")**, `ready_to_ship` 재계산에 집중한다.
 
 **v1.2.0 변경 요지** (plan-auditor iteration 1 FAIL 대응): 시나리오 9를 D1(critical) 대응으로 전면 교체. 시나리오 9a(재접수 덮어쓰기)·9c(집계 단락 단위 검증) 추가. 시나리오 6/12/12b/12c에 `sku` not null 및(12c에) `quantity=10` 명시. 시나리오 12e를 4개 지점으로 확장하고 시나리오 12f(`VendorComparisonView`)·12g(`ConfirmOrderView`) 신규 추가. 시나리오 10에 `author` 검증 추가.
 
@@ -17,6 +17,10 @@ Given/When/Then 형태의 실행 가능한 테스트 시나리오. 각 시나리
 **v1.3.1 변경 요지** (plan-auditor iteration 3 FAIL의 잔여 blocking 2건 대응): **D24(blocking)** 시나리오 13의 `damaged_exchange` 행을 `logistics_status="received"`로 고정 — 미고정 시 `0033_backfill_order_ready_to_ship.py`를 그대로 베껴 `damaged_exchange` 단락을 누락한 마이그레이션도 통과했다(이 기준이 D13을 지탱하는 유일한 가드이므로 필수). 시나리오 13a의 두 번째 Order에 `sku` not null 고정 추가 — 백필 스코프가 "추적 가능 LineItem 1건 이상"이라 미고정 시 기준이 공허. **D23(blocking)** 시나리오 12f를 화이트박스 단언으로 재작성 — `VendorComparisonView`는 응답에 수량 필드를 내보내지 않고(`purchase_order_views.py:808-833`), 이 픽스처에서 수량 의존 출력이 `10`/`3` 모두 동일해 블랙박스로는 실행도 판별도 불가능했다.
 
 **v1.4.0 변경 요지** (Run 단계에서 발견된 결함, plan-audit 3라운드 모두 놓침, 결정 G 반영 — 코드는 이미 구현·커밋되어 있고 이 문서만 그에 맞춘다): REQ-DEX-012의 무조건 `quantity→damaged_quantity` 치환이 안전하려면 `damaged_exchange`이면서 `damaged_quantity=0`인 행이 존재할 수 없어야 하는데, 그런 행을 만들 수 있는 레거시 쓰기 경로 3곳(`LineItemStatusUpdateView`, `LineItemBulkStatusUpdateView`, `UploadDailyReviewView`의 `선택="파손/교환"` 매핑)이 남아 있었다 — `TestUnorderedItemsViewDamagedExchange`의 기존 테스트 3건이 이 결함으로 실패했었다. 사용자는 그 3곳을 전면 차단하는 쪽을 선택했다(대안: `net_qty` 계산에 0-폴백을 추가하는 것 — 기각). 신규 시나리오 14/14a/14b(단건·일괄 상태 변경 API 차단, 다른 값은 정상 동작), 15/15a(Daily Review 엑셀 `선택="파손/교환"` 거부·보고, PurchaseOrder 미생성), 16/16a(프론트엔드 드롭다운에서 제외, 이미 그 상태인 행은 비활성 옵션으로 표시) 추가 — 전부 실제 커밋된 테스트(`test_spec_purchase_order_011.py::TestDamagedExchangeLegacyWritePathsBlocked`, `test_purchase_orders.py::TestLineItemStatusUpdateView`, `test_daily_review_upload.py::TestParseDailyReviewDamagedExchangeBlocked`/`TestUploadDamagedExchangeSelectionRejected`)의 실제 단언과 대조해 작성했다.
+
+**v1.6.0 변경 요지** (사용자 지시 2026-08-17 — 코드는 이미 반영됨): `_recompute_order_aggregates`의 `ready_to_ship` 규칙에서 `damaged_exchange` 단락(REQ-DEX-009c)과 `cs_required` 단락이 함께 삭제됐다. 시나리오 9/9c는 그 단락을 전제로 작성됐으므로 **더 이상 현행 규칙을 서술하지 않는다** — 각 시나리오에 SUPERSEDED를 명시하고, 대응하는 현행 기준은 v1.7.0의 시나리오 9(재작성)가 담당한다.
+
+**v1.7.0 변경 요지** (사용자 지시 2026-08-20 — 코드는 이미 구현·커밋·머지됨, PR #46 / master `6556ef6`, 이 문서는 그에 맞춘다): REQ-DEX-011을 반전해, 파손 접수가 `logistics_status`를 `not_shipped`로 되돌리고 `received_quantity`에서 파손 수량을 차감한다. 시나리오 9를 현행 규칙(단락 없이 데이터 사실만으로 `ready_to_ship=False`)으로 재작성하고, 시나리오 11을 "무변경"에서 "전환 + 차감, 단 `shipped_*`/`received_at`은 불변"으로 재작성했다. 신규 시나리오 11a(0 하한 클램프), 11b(재접수 시 과차감 복원), 11c(**교환본 재입고가 실제로 수락되는지** — `received_quantity` 차감이 필수인 이유를 직접 증명하는 판별 기준), 13b(백필 마이그레이션 `0045`) 추가. 전부 실제 커밋된 테스트의 단언과 대조해 작성했으며, 뮤테이션 2종으로 판별력을 확인했다(`received_quantity` 차감 제거 → 4건 실패, `logistics_status` 리셋 제거 → 5건 실패).
 
 **v1.5.0 변경 요지** (PR 오픈 후 사용자가 요청한 소규모 기능 추가, 결정 H — 코드는 이미 구현·커밋·테스트되어 있고 이 문서만 그에 맞춘다): 파손 교환 페이지에 렉번호(`LineItem.rack_number`, SPEC-ORDER-013 REQ-RACK-001에서 이미 도입된 기존 필드)를 읽기 전용으로 노출한다 — 신규 쿼리·신규 편집 경로 없음. 신규 시나리오 17(백엔드가 저장된 `rack_number`를 정확히 반환), 17a(검색 요청이 `rack_number`를 쓰지 않음), 18/18a(프론트엔드가 저장된 값 또는 "미지정" 폴백을 정확히 렌더링) 추가 — 전부 실제 커밋된 테스트(`test_spec_purchase_order_011.py::TestDamagedExchangeSearch::test_search_response_exposes_stored_rack_number`/`test_search_does_not_write_rack_number`, `frontend/src/pages/DamagedExchangePage/index.test.tsx`의 두 렉번호 테스트)의 실제 단언과 대조해 작성했다.
 
@@ -126,11 +130,11 @@ Given/When/Then 형태의 실행 가능한 테스트 시나리오. 각 시나리
 **When** 파손 수량 입력 컨트롤을 확인하고, `LineItem.quantity`를 초과하는 값으로 제출을 시도한다.
 **Then** 입력값은 `1`로 미리 채워져 있고, 제출은 최소한 서버 측에서 거부된다(클라이언트 측 검증이 우회되거나 비활성화된 요청을 서버에 직접 보내도 동일하게 거부되어야 한다).
 
-### 시나리오 9 — Traces: AC-DEX-009 (정상 접수 → damaged_quantity ≠ quantity, ready_to_ship 재계산은 신규 단락 때문)
+### 시나리오 9 — Traces: AC-DEX-009 (정상 접수 → damaged_quantity ≠ quantity, 미입고 전환의 귀결로 ready_to_ship=False) — **v1.7.0 재작성**
 
-**Given** `quantity=8`, `purchase_status="unordered"`, `logistics_status="received"`인 LineItem 하나만 속한 Order가 있다 — 이 LineItem이 유일한 추적 가능 행이므로 기존 `logistics_status=="received"` disjunct에 의해 Order의 `ready_to_ship=True`로 이미 계산되어 있다.
+**Given** `quantity=8`, `purchase_status="unordered"`, `logistics_status="received"`, `received_quantity=8`인 LineItem 하나만 속한 Order가 있다 — 이 LineItem이 유일한 추적 가능 행이므로 `logistics_status=="received"` disjunct에 의해 Order의 `ready_to_ship=True`로 이미 계산되어 있다.
 **When** 파손 수량 `3`으로 접수 요청을 제출한다.
-**Then** 해당 LineItem은 `purchase_status="damaged_exchange"`, `damaged_quantity=3`(`8`이 아님)으로 갱신되고, 부모 Order의 `ready_to_ship`은 재계산되어 `False`로 바뀐다. **이 전환은 `logistics_status`가 바뀌어서가 아니다** — REQ-DEX-011에 의해 `logistics_status`는 여전히 `"received"`로 남는다. 전환의 원인은 REQ-DEX-009c가 추가하는 `damaged_exchange` 단락(기존 `cs_required` 단락과 동일한 방식)이 `all(received/in_stock)` 판정보다 먼저 적용되기 때문이다. 이 시나리오는 `_recompute_order_aggregates([li.order_id])` 호출을 아예 생략한 구현과, 호출은 하되 REQ-DEX-009c 단락을 구현하지 않은 구현 양쪽 모두에서 `ready_to_ship`이 `True`로 정체되므로 실패한다.
+**Then** 해당 LineItem은 `purchase_status="damaged_exchange"`, `damaged_quantity=3`(`8`이 아님), `logistics_status="not_shipped"`, `received_quantity=5`(`8-3`)로 갱신되고, 부모 Order는 `ready_to_ship=False`, `status="not_shipped"`로 재계산된다. **이 전환의 원인은 집계 규칙의 특수 분기가 아니다** — v1.6.0에서 `damaged_exchange`/`cs_required` 단락이 모두 삭제된 뒤 남은 유일한 규칙("비취소·비환불 행 전원이 `received` 또는 `in_stock`")이, REQ-DEX-011이 만든 `not_shipped`라는 **데이터 사실** 위에서 그대로 `False`를 산출한 것이다. 이 시나리오는 (a) `_recompute_order_aggregates([li.order_id])` 호출을 생략한 구현, (b) `logistics_status`를 `received`로 남겨 두는 구현(구 REQ-DEX-011), (c) `received_quantity`를 차감하지 않는 구현 셋 모두에서 실패한다.
 
 ### 시나리오 9a — Traces: AC-DEX-009a (범위 밖 거부, quantity=null 거부)
 
@@ -144,7 +148,9 @@ Given/When/Then 형태의 실행 가능한 테스트 시나리오. 각 시나리
 **When** 같은 LineItem에 파손 수량 `2`로 재접수 요청을 제출한다.
 **Then** `damaged_quantity=2`가 된다 — `5`(3+2 누적)가 아니다.
 
-### 시나리오 9c — Traces: AC-DEX-009c (집계 단락 자체의 단위 수준 검증, v1.3.0 D14 재작성)
+### 시나리오 9c — Traces: AC-DEX-009c (집계 단락 자체의 단위 수준 검증, v1.3.0 D14 재작성) — **SUPERSEDED v1.6.0**
+
+> **SUPERSEDED (2026-08-17)**: 이 시나리오가 검증하던 `damaged_exchange` 단락은 삭제됐다. 현행 코드에서 이 픽스처(두 행 모두 `logistics_status="received"`)는 `ready_to_ship=True`를 산출하는 것이 **정상**이다 — 실제 테스트(`test_damaged_exchange_no_longer_short_circuits_ready_to_ship`)도 그렇게 기대값이 반전된 채 유지되고 있다. 아래 원문은 이력 보존용이다.
 
 **Given** 하나의 Order에 추적 가능·비취소 LineItem 두 건이 있다: (a) `purchase_status="damaged_exchange"`, **`logistics_status="received"`**; (b) `purchase_status="unordered"`, `logistics_status="received"`. 두 행 모두 개별적으로 기존 `received`/`in_stock` disjunct를 만족하므로, **REQ-DEX-009c 단락이 없다면** `all(...)` 판정은 두 행 모두에 대해 참이 되어 `ready_to_ship=True`가 산출된다. (v1.3.0 D14 정정 — v1.2.0은 (a)의 `logistics_status`를 `"not_shipped"`로 고정했는데, 그 경우 (a) 행이 신규 단락 없이도 `all(...)`을 이미 `False`로 만들어 이 기준이 무엇도 검증하지 못했다. `"received"`로 고정해야 무수정 규칙=`True`, 수정된 규칙=`False`로 갈라진다.)
 **When** 이 Order에 대해 `_recompute_order_aggregates`가 직접 호출된다(엔드포인트를 거치지 않고 함수 자체를 단위 테스트).
@@ -156,11 +162,31 @@ Given/When/Then 형태의 실행 가능한 테스트 시나리오. 각 시나리
 **When** 파손 수량 `3`으로 접수가 성공한다.
 **Then** 그 LineItem에 신규 `LineItemNote`가 정확히 1건 생성되며, `note_type="파손/교환"`, `assignee="발주"`, `author`가 그 인증된 사용자와 동일(`null`이 아님)이고 `content`에 `"3"`이 포함되어 있다 — 노트가 0건이거나 2건 생성되지 않으며, `note_type`이 빈 값이나 다른 유형("CS필요" 등)으로 잘못 저장되지 않으며, `author=None`으로 저장하는 구현(기존 배치 흐름의 관례를 그대로 답습한 구현)은 이 기준에서 실패한다.
 
-### 시나리오 11 — Traces: AC-DEX-011 (logistics_status/shipped_quantity 무변경)
+### 시나리오 11 — Traces: AC-DEX-011, REQ-DEX-011b (미입고 전환 + 입고 수량 차감, 단 shipped_* / received_at은 불변) — **v1.7.0 재작성**
 
-**Given** `logistics_status="not_shipped"`, `shipped_quantity=0`인 LineItem이 있다.
+**Given** `quantity=8`, `logistics_status="outbound_scheduled"`, `received_quantity=8`, `shipped_quantity=2`인 LineItem이 있다 — 초기 `logistics_status`를 `not_shipped`가 아닌 값으로 고정하는 것이 판별력의 핵심이다: `not_shipped`로 두면 전환을 구현하지 않은 구현도 그대로 통과한다.
 **When** 파손 수량 `4`로 접수가 성공한다.
-**Then** 접수 이후에도 `logistics_status="not_shipped"`, `shipped_quantity=0` 그대로다 — 접수 수량만큼 `shipped_quantity`가 증가하거나 `logistics_status`가 변경되지 않는다.
+**Then** `logistics_status="not_shipped"`, `received_quantity=4`(`8-4`)로 갱신되고, `shipped_quantity=2`와 `shipped_at=null`은 접수 이전 값 그대로다 — 접수가 출고 관련 필드를 건드리지 않는다.
+
+### 시나리오 11a — Traces: AC-DEX-011a (0 하한 클램프) — **v1.7.0 신규**
+
+**Given** `quantity=5`, `logistics_status="shipment_confirmed"`, `received_quantity=0`인 LineItem이 있다(아직 한 권도 입고되지 않음).
+**When** 파손 수량 `3`으로 접수가 성공한다.
+**Then** `logistics_status="not_shipped"`로 전환되고 `received_quantity=0` 그대로다 — `-3`이 되지 않는다. 차감은 적용되되 하한에서 클램프된다.
+
+### 시나리오 11b — Traces: AC-DEX-011b, REQ-DEX-011a (재접수 시 과차감 복원) — **v1.7.0 신규**
+
+**Given** `quantity=5`, `logistics_status="received"`, `received_quantity=5`인 LineItem이 있다.
+**When** 먼저 파손 수량 `3`으로 접수하고(→ `received_quantity=2`), 이어서 같은 LineItem에 `2`로 정정 재접수한다.
+**Then** `damaged_quantity=2`, `received_quantity=3`이 된다 — `0`(3과 2를 연달아 차감)이 아니다. 직전 접수가 이미 차감한 `3`을 되돌린 뒤 새 값 `2`를 차감한 결과이며, REQ-DEX-009b의 덮어쓰기 시맨틱이 `received_quantity`까지 일관되게 적용됨을 확인한다. `logistics_status`는 두 번 모두 `not_shipped`다.
+
+### 시나리오 11c — Traces: AC-DEX-011c (교환본 재입고가 실제로 수락된다 — `received_quantity` 차감이 필수인 이유) — **v1.7.0 신규**
+
+**Given** `name="#DEX-011C"`인 Order에 `quantity=1`, `logistics_status="received"`, `received_quantity=1`인 LineItem(SKU `SKU-DEX-011C`)이 있고, 파손 수량 `1`로 접수가 성공한 직후다.
+**When** 그 (주문번호, SKU) 조합에 대한 창고 입고 업로드 행 1건을 `_process_warehouse_receipt_rows`로 처리한다(교환본이 실제로 도착한 상황).
+**Then** `quantity_exceeded_count=0`, `matched_count=1`이며 그 LineItem은 `received_quantity=1`, `logistics_status="received"`로 복귀한다.
+
+이 시나리오가 이 개정 전체의 **판별 기준**이다. `logistics_status`만 되돌리고 `received_quantity`를 그대로 두는 구현은 적격 게이트(`logistics_status IN ("not_shipped","shipment_confirmed")`)는 통과하지만 바로 다음 수량 가드(`received_quantity + 입고건수 > quantity` → `1+1 > 1`)에서 거부되어 `quantity_exceeded_count=1`을 반환하고, 그 행은 영구히 미입고에 갇힌다. 나머지 시나리오(9/11/11a/11b)는 필드 값만 보므로 이 실패 경로를 잡아내지 못한다.
 
 ## Order.ready_to_ship 백필 마이그레이션 시나리오 (v1.3.0 신규, D13)
 
@@ -175,6 +201,18 @@ Given/When/Then 형태의 실행 가능한 테스트 시나리오. 각 시나리
 **Given** 시나리오 13과 같은 마이그레이션 실행 범위 안에, `damaged_exchange` LineItem이 전혀 없는 두 번째 Order가 있다 — 예: `sku`가 null이 아닌 `in_stock` LineItem 1건만 있고 저장된 `ready_to_ship=True`(기존 규칙으로도 이미 정확한 값). `sku` not null 고정이 필요하다(v1.3.1 D24): 백필 범위가 "추적 가능 LineItem 1건 이상"인 Order이므로, `sku`가 null이면 이 Order는 애초에 마이그레이션 대상 밖이라 기준이 공허해진다.
 **When** 백필 마이그레이션이 적용된다(시나리오 13과 동일한 실행).
 **Then** 이 두 번째 Order의 `ready_to_ship`은 `True`로 그대로 유지된다 — 시나리오 13의 Order를 처리하는 과정이 이 무관한 Order를 건드리지 않는다.
+
+## damaged_exchange 물류 상태 백필 마이그레이션 시나리오 (v1.7.0 신규, REQ-DEX-013b)
+
+### 시나리오 13b — Traces: AC-DEX-013b (기존 파손 행이 미입고로 소급 보정됨)
+
+**Given** 백필 마이그레이션(`0045`) 적용 전, `purchase_status="damaged_exchange"`, `quantity=1`, `damaged_quantity=1`, `logistics_status="received"`, `received_quantity=1`인 LineItem을 가진 Order가 있고 그 Order의 저장된 값은 `ready_to_ship=True`, `status="received"`다 — 이는 프로덕션에 실제로 존재하던 유일한 행(LineItem 17142)의 형태 그대로다.
+**When** 백필 마이그레이션이 적용된다.
+**Then** 그 LineItem은 `logistics_status="not_shipped"`, `received_quantity=0`이 되고, 부모 Order는 `ready_to_ship=False`, `status="not_shipped"`로 갱신된다. 같은 실행 범위 안에 `damaged_exchange` LineItem이 전혀 없는 Order(예: `sku` not null인 `unordered` 행 1건, `logistics_status="received"`, 저장된 `ready_to_ship=True`)가 있다면 그 Order의 LineItem과 집계 값은 **전부 그대로 유지**된다.
+
+부분 입고 케이스도 함께 고정한다: `quantity=5`, `damaged_quantity=2`, `received_quantity=5`인 행은 `received_quantity=3`이 되어야 한다 — `0`(전량 차감)이 아니다. 정상 입고분 3권은 창고에 그대로 있기 때문이다.
+
+환불 정합도 함께 고정한다: 같은 Order에 전량 환불된 형제 LineItem(`logistics_status="shipped"`)이 있어도 그 행은 순수량 0이므로 두 집계 모두에서 제외되어야 하며, Order의 `status`는 `"partial"`이 아니라 `"not_shipped"`가 되어야 한다 — 백필이 현행 `_recompute_order_aggregates`의 환불 차감 규칙을 그대로 옮겼는지 확인하는 기준이다.
 
 ## 파손 접수 경로 배타성 시나리오 (v1.4.0 신규, 결정 G — Run 단계에서 발견된 결함)
 
@@ -268,6 +306,8 @@ Given/When/Then 형태의 실행 가능한 테스트 시나리오. 각 시나리
 
 - 백엔드 pytest: REQ-DEX-001~018(하위 항목 005a/006a/006b/009a/009b/009c/009d/012a/012b/012c/013a/014a/016a/017a 포함) 전 항목에 대해 최소 1개 이상의 테스트 매핑(AC-DEX-001~018, 하위 004a/005a/005b/005c/009a/009b/009c/012a~012f/013a/014a/014b/015a/017a/018a 전량 포함).
 - **파손 접수 경로 배타성 테스트(v1.4.0 신규, 결정 G)**: `backend/order/tests/test_spec_purchase_order_011.py::TestDamagedExchangeLegacyWritePathsBlocked`(3개), `test_purchase_orders.py::TestLineItemStatusUpdateView::test_patch_damaged_exchange_rejected`, `test_daily_review_upload.py::TestParseDailyReviewDamagedExchangeBlocked`/`TestUploadDamagedExchangeSelectionRejected`가 REQ-DEX-014/014a/015를 커버한다. `TestUnorderedItemsViewDamagedExchange`의 픽스처가 `damaged_quantity`를 명시적으로 채우도록 갱신되어 있어야 한다(그렇지 않던 3개 테스트가 원래 이 결함으로 실패했음).
+- **미입고 전환 테스트(v1.7.0 신규, REQ-DEX-011/011a/011b/013b)**: `backend/order/tests/test_spec_purchase_order_011.py::TestDamagedExchangeSubmit`의 `test_valid_submission_resets_to_not_shipped_and_flips_ready_to_ship`/`test_shipped_quantity_untouched_by_the_not_shipped_reset`/`test_received_quantity_floors_at_zero`/`test_resubmission_restores_over_subtracted_receipt`/`test_replacement_receipt_upload_is_accepted_after_reset`와 `TestBackfillDamagedExchangeLogisticsMigration`(6건)이 커버한다. 스위트 전체 46건 통과.
+- **뮤테이션 판별력 확인(v1.7.0 신규)**: 인수 기준이 실제로 판별력을 갖는지 구현을 의도적으로 훼손해 확인했다 — `received_quantity` 차감을 제거하면 4건이 실패하고(그중 시나리오 11c는 `quantity_exceeded_count=1`로 실패해 실제 결함 경로를 직접 드러냄), `logistics_status` 리셋을 제거하면 5건이 실패한다. "통과하는 테스트 ≠ 검증된 구현"이므로 이 확인 없이는 기준을 신뢰하지 않는다.
 - **렉번호 읽기 전용 노출 테스트(v1.5.0 신규, 결정 H)**: `backend/order/tests/test_spec_purchase_order_011.py::TestDamagedExchangeSearch::test_search_response_exposes_stored_rack_number`/`test_search_does_not_write_rack_number`가 REQ-DEX-017/017a를 커버하고, `frontend/src/pages/DamagedExchangePage/index.test.tsx`의 "렉번호 컬럼" 테스트 2건이 REQ-DEX-018을 커버한다.
 - pytest 실행은 **순차 실행**만 허용 — 원격 공유 MySQL 테스트 DB 특성상 동시 실행 시 무관한 테스트가 가짜로 실패할 수 있다.
 - **기존 특성화 테스트 확인(신규 작성 아님)**: `_recompute_order_aggregates`의 `damaged_exchange` 단락(REQ-DEX-009c) 추가 전, `backend/order/tests/test_spec_012.py`의 `TestRecomputeOrderAggregatesReadyToShip` 클래스(9개 테스트 — `cs_required` 단락, `all(received/in_stock)` 판정, 추적 가능 LineItem 0건→`None` 세 분기 전부 커버)가 그대로 통과하는지 확인한다(plan.md M1.5). 이 9개는 새로 작성하는 것이 아니라 기존에 이미 존재하는 스위트다.
@@ -275,7 +315,7 @@ Given/When/Then 형태의 실행 가능한 테스트 시나리오. 각 시나리
 - **백필 마이그레이션 쿼리 수 테스트(v1.3.0 신규, D13)**: `0033_backfill_order_ready_to_ship.py` 선례와 동일하게, Order 수와 무관하게 고정된 쿼리 수(1 SELECT + 1 `bulk_update`)임을 증명하는 테스트 최소 1건 포함.
 - 프론트엔드 테스트: ISBN 검색 폼 제출, 결과 테이블 렌더링(배지 포함), 행별 파손 수량 입력(기본값/서버측 범위 검증), 접수 성공/실패 처리에 대한 테스트 포함.
 - 회귀 테스트: 발주 관리 페이지(`/purchase-orders`, `UnorderedItemsView` 소비 화면), SPEC-PURCHASE-ORDER-010 기존 테스트 스위트(`test_purchase_order_models.py`, `test_purchase_orders.py`), SPEC-ORDER-012 기존 테스트 스위트(`test_spec_012.py`, `test_backfill_order_ready_to_ship_migration.py`)와 `OrderDetailPage.test.tsx`(REQ-DEX-009c가 `ready_to_ship`의 기존 소비자에도 영향을 주므로, "회귀 없음"이 아니라 "의도된 변경 반영"을 확인하는 목적), **`test_order_resync.py`/`test_spec_012.py:609`(`test_resync_does_not_change_ready_to_ship`, v1.3.0 신규 — D15가 추가한 `OrderResyncView` 소비 경로 확인)**, **`test_daily_review_upload.py`(v1.3.0 신규 — D17, `damaged_exchange` 행이 `_recompute_order_aggregates`를 실제로 경유하는 유일한 기존 스위트, 25건의 `damaged_exchange` 픽스처를 포함하나 `ready_to_ship` 단언은 없음을 사전 확인함)** 전량 통과.
-- 마이그레이션: `damaged_quantity` 필드 마이그레이션과 `ready_to_ship` 백필 마이그레이션 적용 후 기존 데이터 손실/오류 없이 `python manage.py migrate` 성공.
+- 마이그레이션: `damaged_quantity` 필드 마이그레이션, `ready_to_ship` 백필 마이그레이션(`0040`), `damaged_exchange` 물류 상태 백필 마이그레이션(`0045`, v1.7.0 신규) 적용 후 기존 데이터 손실/오류 없이 `python manage.py migrate` 성공.
 - Exclusions 위반 없음: `book.Info.qty`, `order.WarehouseStock`, `LineItem.fulfillment_status`, `Order.status`를 도출하는 규칙(REQ-DEX-009d — 컬럼 자체는 매 호출마다 다시 쓰이므로 "컬럼 write 없음"이 아니라 "규칙 불변"이 검증 대상), `RunComparisonView`/`DailyReviewExcelView`/`UploadDailyReviewView`/`GenerateOrderFileView`/`VendorComparisonView`/`ConfirmOrderView`의 수량 계산에 대한 변경이 diff에 존재하지 않아야 한다. `Order.ready_to_ship`은 Exclusion이 아니다 — REQ-DEX-009c가 그 계산 규칙을 의도적으로 수정하고 REQ-DEX-013이 기존 데이터를 백필한다. `damaged_exchange ⇒ damaged_quantity >= 1` 불변식의 모델 레벨 강제(`clean()`/`save()` 오버라이드, DB 제약)는 diff에 존재하지 않아야 한다 — REQ-DEX-014/015가 강제하는 엔드포인트 레벨 검사만 범위 안이다(v1.4.0 신규, 결정 G, 알려진 한계).
 - **운영 커뮤니케이션(v1.4.0 신규, 결정 G)**: Daily Review 엑셀 `선택` 컬럼에 "파손/교환"을 사용해 오던 팀에게 신규 `/damaged-exchange` 페이지로 전환하라는 공지가 전달되었는지 확인 — 이는 자동화된 테스트로 검증할 수 없는 운영 변경사항이므로 배포 체크리스트에서 별도 확인한다.
 - **Exclusions 위반 없음(v1.5.0 신규, 결정 H)**: `rack_number`를 생성·수정하는 diff(모델 `save()`/`clean()` 변경, SPEC-ORDER-013 편집 엔드포인트 수정, 신규 편집 엔드포인트 추가)가 존재하지 않아야 한다 — 이 SPEC은 그 필드를 읽기 전용으로만 소비한다.
@@ -286,11 +326,13 @@ Given/When/Then 형태의 실행 가능한 테스트 시나리오. 각 시나리
 - [ ] ISBN 검색 엔드포인트 + 파손 접수 엔드포인트(재접수 덮어쓰기 포함) 구현 완료(배치 쿼리 설계 확인)
 - [ ] `UnorderedItemsView`의 재발주 수량 계산 보정 완료(`damaged_exchange` 행 한정)
 - [ ] `_recompute_order_aggregates`의 `damaged_exchange` 단락 추가 완료 — 선행 기존 특성화 테스트(`test_spec_012.py` T2) 통과 확인 후 구현(REQ-DEX-009c/009d)
-- [ ] `ready_to_ship` 백필 마이그레이션 구현 완료 — 배치 쿼리 설계 확인(REQ-DEX-013/013a, v1.3.0 신규)
+- [x] `ready_to_ship` 백필 마이그레이션 구현 완료 — 배치 쿼리 설계 확인(REQ-DEX-013/013a, v1.3.0 신규). **v1.6.0 참고**: 이 마이그레이션이 기록한 값은 단락 삭제와 함께 전수 재계산됐다.
+- [x] 파손 접수의 `logistics_status`→`not_shipped` 전환 + `received_quantity` 차감 구현 완료 — 이미 커밋·머지됨(REQ-DEX-011/011a/011b, v1.7.0 신규, PR #46)
+- [x] `damaged_exchange` 물류 상태 백필 마이그레이션(`0045`) 구현·적용 완료 — 적용 시점 대상 1건, 이후 접수된 3건은 동일 규칙으로 수동 보정(REQ-DEX-013b, v1.7.0 신규)
 - [x] 파손 접수 레거시 경로 3곳(단건/일괄 상태 변경 API, Daily Review 엑셀 `선택` 매핑) 차단 구현 완료 — 이미 커밋됨(REQ-DEX-014/014a/015, v1.4.0 신규, 결정 G)
 - [x] 프론트엔드 `PURCHASE_STATUS_OPTIONS`에서 `damaged_exchange` 제외 + `PURCHASE_STATUS_LABELS` 신설 + 비활성 옵션 렌더링 구현 완료 — 이미 커밋됨(REQ-DEX-016/016a, v1.4.0 신규, 결정 G)
 - [x] 렉번호(rack_number) 읽기 전용 노출 — 백엔드 응답 필드 추가 + 프론트엔드 컬럼/미지정 폴백 구현 완료 — 이미 커밋됨(REQ-DEX-017/017a/018, v1.5.0 신규, 결정 H)
-- [ ] REQ-DEX-001~018(하위 항목 포함, 총 32개 항목) 및 AC-DEX-001~018(하위 항목 포함, 총 38개 항목) 테스트 전량 통과
+- [x] REQ-DEX-001~018(하위 항목 포함, 총 35개 항목) 및 AC-DEX-001~018(하위 항목 포함, 총 43개 항목) 테스트 전량 통과 — `test_spec_purchase_order_011.py` 46건, CI(backend/frontend) 통과
 - [ ] 신규 `/damaged-exchange` 프론트엔드 페이지 + 사이드바 메뉴 항목 구현 완료
 - [ ] SPEC-PURCHASE-ORDER-010, 발주 관리 페이지, SPEC-ORDER-012(`ready_to_ship`, `OrderResyncView` 포함), `test_daily_review_upload.py` 기존 테스트 스위트(백엔드+프론트엔드) 확인 완료 — SPEC-ORDER-012 관련 스위트는 "회귀 없음"이 아니라 "의도된 변경 반영" 기준
 - [x] 결정 A(환불 차감 적용 범위)와 결정 B("전체 출고 수량" 합산 범위 — 취소·미추적 행 제외)에 대한 사용자 확인 완료(2026-08-14, `spec.md` 설계 결정 섹션 참조)
@@ -300,4 +342,5 @@ Given/When/Then 형태의 실행 가능한 테스트 시나리오. 각 시나리
 - [x] 결정 G(파손 접수 레거시 경로 3곳 차단, `damaged_quantity==0` 폴백 대안 기각, 모델 레벨 불변식 미강제를 알려진 한계로 기록)에 대한 사용자 확인 완료(2026-08-14, v1.4.0 신규 — Run 단계에서 발견)
 - [x] 결정 H(렉번호 읽기 전용 노출 추가, SPEC-ORDER-013과의 관계를 읽기 전용 소비자로 명시)에 대한 사용자 확인 완료(2026-08-14, v1.5.0 신규 — PR 오픈 후 추가 요청)
 - [ ] `product.md` 기능 목록에 SPEC-PURCHASE-ORDER-011 항목 추가(sync 단계)
-- [ ] `spec.md` `status: draft → completed` 전이 및 HISTORY 갱신
+- [x] `spec.md` `status: completed` 전이 및 HISTORY 갱신(v1.7.0)
+- [x] 결정 없음 — v1.6.0/v1.7.0은 모두 사용자 직접 지시로 확정(2026-08-17 / 2026-08-20)
