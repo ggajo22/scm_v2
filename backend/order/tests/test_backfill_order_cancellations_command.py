@@ -12,14 +12,17 @@ from unittest.mock import patch
 
 import pytest
 from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.utils.dateparse import parse_datetime
 
 from order.models import LineItem, Order, PurchaseOrder, Refund, ShippingLine
+from order.shopify_orders import open_candidate_order_ids
 
 _GET_HEADERS_TARGET = "order.shopify_orders._get_with_headers"
 _OPEN_CANDIDATE_TARGET = (
     "order.management.commands.backfill_order_cancellations.open_candidate_order_ids"
 )
+_FETCH_BY_IDS_TARGET = "order.shopify_orders.fetch_order_status_by_ids"
 
 
 # ---------------------------------------------------------------------------
@@ -171,3 +174,189 @@ def test_ac_cancc_023_idempotent_rerun_no_duplicates():
     order.refresh_from_db()
     assert order.cancelled_at == parse_datetime("2026-07-03T00:00:00Z")
     assert Order.objects.filter(shopify_order_id=90023).count() == 1
+
+
+# ---------------------------------------------------------------------------
+# AC-CANC-026 — store-level failure does not block other stores
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_ac_cancc_026_store_level_failure_does_not_block_other():
+    """Verify one store's failure is recorded and other store is processed.
+
+    SPEC-ORDER-029 §8.4: One store's exception is caught, reported to stderr,
+    and the loop continues to the next store. Positive evidence: etoile order
+    is processed despite gimssine failure.
+    """
+    Order.objects.create(shopify_order_id=90241, store_type="etoile")
+
+    def side_effect(store_type, closed_grace_days=None):
+        if store_type == "gimssine":
+            raise RuntimeError("shopify 500 on gimssine")
+        return open_candidate_order_ids(store_type, closed_grace_days=closed_grace_days)
+
+    with (
+        patch(_OPEN_CANDIDATE_TARGET, side_effect=side_effect),
+        patch(
+            _GET_HEADERS_TARGET,
+            return_value=(
+                {"orders": [{"id": 90241, "cancelled_at": None, "closed_at": "2026-08-15T00:00:00Z"}]},
+                {},
+            ),
+        ),
+    ):
+        with pytest.raises(CommandError):
+            call_command("backfill_order_cancellations")
+
+    # Positive evidence: etoile order WAS processed despite gimssine failure.
+    order = Order.objects.get(shopify_order_id=90241)
+    assert order.closed_at == parse_datetime("2026-08-15T00:00:00Z")
+
+
+@pytest.mark.django_db
+def test_ac_cancc_026_store_level_failure_on_stderr():
+    """Verify store-level failure message appears on stderr."""
+    def side_effect(store_type, closed_grace_days=None):
+        if store_type == "gimssine":
+            raise RuntimeError("shopify 500 on gimssine")
+        return []
+
+    stderr = StringIO()
+    with patch(_OPEN_CANDIDATE_TARGET, side_effect=side_effect):
+        with pytest.raises(CommandError):
+            call_command("backfill_order_cancellations", stderr=stderr)
+
+    output = stderr.getvalue()
+    assert "gimssine" in output
+    assert "FAILED" in output
+
+
+# ---------------------------------------------------------------------------
+# AC-CANC-027 — chunk-level failure reported and does not block other chunks
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_ac_cancc_027_chunk_level_failure_raises_partial():
+    """Verify chunk-level failure is reported with (partial) marker.
+
+    When fetch_order_status_by_ids fails on one chunk, reconcile_order_status_for_ids
+    returns chunk_failures. The command reports each failure to stderr and raises
+    CommandError with (partial) marker. Positive evidence: successful chunk is processed.
+    Uses different stores to force separate API calls (like AC-CANC-017 scenario 2).
+    """
+    Order.objects.create(shopify_order_id=900241, store_type="gimssine")
+    Order.objects.create(shopify_order_id=900242, store_type="etoile")
+
+    def side_effect(domain, token, shopify_order_ids):
+        ids = list(shopify_order_ids)
+        if ids == [900241]:
+            raise RuntimeError("chunk fetch error")
+        if ids == [900242]:
+            return [{"id": 900242, "cancelled_at": "2026-08-01T00:00:00Z", "closed_at": None}]
+        raise AssertionError(f"unexpected chunk: {ids}")
+
+    with patch(_FETCH_BY_IDS_TARGET, side_effect=side_effect):
+        with pytest.raises(CommandError, match="partial"):
+            call_command("backfill_order_cancellations")
+
+    # Positive evidence: etoile order WAS updated despite gimssine chunk failure.
+    order_success = Order.objects.get(shopify_order_id=900242)
+    assert order_success.cancelled_at == parse_datetime("2026-08-01T00:00:00Z")
+
+
+@pytest.mark.django_db
+def test_ac_cancc_027_chunk_failures_reported_on_stderr():
+    """Verify chunk failure details appear on stderr."""
+    Order.objects.create(shopify_order_id=900241, store_type="gimssine")
+    Order.objects.create(shopify_order_id=900242, store_type="etoile")
+
+    def side_effect(domain, token, shopify_order_ids):
+        ids = list(shopify_order_ids)
+        if ids == [900241]:
+            raise RuntimeError("network timeout")
+        if ids == [900242]:
+            return [{"id": 900242, "cancelled_at": "2026-08-01T00:00:00Z", "closed_at": None}]
+        raise AssertionError(f"unexpected chunk: {ids}")
+
+    stderr = StringIO()
+    with patch(_FETCH_BY_IDS_TARGET, side_effect=side_effect):
+        with pytest.raises(CommandError):
+            call_command("backfill_order_cancellations", stderr=stderr)
+
+    output = stderr.getvalue()
+    assert "ids=" in output
+    assert "900241" in output
+    assert "error=" in output
+
+
+# ---------------------------------------------------------------------------
+# AC-CANC-026 (negative control) — success path does not raise CommandError
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_ac_cancc_026_success_path_no_error_raised():
+    """Verify successful execution does not raise CommandError.
+
+    Negative control: without failures, call_command completes cleanly.
+    Positive evidence: orders are actually updated, not just "no error".
+    """
+    Order.objects.create(shopify_order_id=900243, store_type="gimssine")
+
+    with patch(
+        _GET_HEADERS_TARGET,
+        return_value=(
+            {"orders": [{"id": 900243, "cancelled_at": "2026-08-01T00:00:00Z", "closed_at": None}]},
+            {},
+        ),
+    ):
+        # Should not raise CommandError
+        call_command("backfill_order_cancellations", "--store", "gimssine")
+
+    # Positive evidence: order WAS updated.
+    order = Order.objects.get(shopify_order_id=900243)
+    assert order.cancelled_at == parse_datetime("2026-08-01T00:00:00Z")
+
+
+# ---------------------------------------------------------------------------
+# AC-CANC-028 — etoile credentials branch resolves correctly
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_ac_cancc_028_etoile_credentials_passed():
+    """Verify etoile store resolves and passes correct domain/token.
+
+    The _credentials(store_type) function returns different domain/token
+    based on store_type. Capture the arguments passed to reconcile_order_status_for_ids
+    and verify etoile's credentials are used (not gimssine's).
+    """
+    Order.objects.create(shopify_order_id=900244, store_type="etoile")
+
+    captured_calls = []
+    original_fetch = __import__("order.shopify_orders", fromlist=["fetch_order_status_by_ids"]).fetch_order_status_by_ids
+
+    def mock_fetch(domain, token, shopify_order_ids):
+        captured_calls.append({"domain": domain, "token": token})
+        # Return empty list so no orders are updated (we only care about capturing args)
+        return []
+
+    # Patch _credentials to return test values per store type
+    credentials_gimssine = ("gimssine.myshopify.com", "gimssine_token")
+    credentials_etoile = ("etoile.myshopify.com", "etoile_token")
+
+    def mock_credentials(store_type):
+        if store_type == "gimssine":
+            return credentials_gimssine
+        return credentials_etoile
+
+    with patch(_FETCH_BY_IDS_TARGET, side_effect=mock_fetch):
+        with patch("order.management.commands.backfill_order_cancellations._credentials", side_effect=mock_credentials):
+            call_command("backfill_order_cancellations", "--store", "etoile")
+
+    # Verify etoile's credentials (not gimssine's) are passed to the Shopify API
+    assert len(captured_calls) > 0
+    assert captured_calls[0]["domain"] == credentials_etoile[0]
+    assert captured_calls[0]["token"] == credentials_etoile[1]

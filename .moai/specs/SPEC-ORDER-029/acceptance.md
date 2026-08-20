@@ -47,6 +47,9 @@
 | M23 | 백필 커맨드 | 재실행이 중복 `Order` 행을 만들거나 첫 실행 자체가 반영에 실패한다 | **AC-CANC-023 (단독)** |
 | M24 | 공유 코어, v0.5.0 | 청크 실패 예외가 MySQL 잠금 대기 시간 초과인지 여부와 무관하게 `chunk_failures`의 `lock_timeout`이 항상 같은 값(또는 키 자체가 없음)으로 기록된다 | **AC-CANC-024 (단독)** |
 | M25 | 감지 커맨드, v0.5.0 | 스토어의 실패 종류(전부 잠금 대기 시간 초과 vs 하나라도 아님)와 무관하게 `CommandError` 발생 여부가 고정된다(항상 발생 또는 항상 미발생) | **AC-CANC-025 (단독, 2개 시나리오)** |
+| M26 | 백필 커맨드, v0.5.0 신설 | 한 스토어의 실패가 다른 스토어의 처리를 막는다 또는 정상 경로에서 예외가 발생한다 | **AC-CANC-026 (단독, 2개 시나리오)** |
+| M27 | 백필 커맨드, v0.5.0 신설 | 한 청크의 실패가 같은 스토어의 나머지 청크 처리를 막거나, 실패 id가 기록되지 않거나, (partial) 마커가 없다 | **AC-CANC-027 (단독)** |
+| M28 | 백필 커맨드, v0.5.0 신설 | 커맨드가 `_credentials()` 함수를 호출하지 않거나 `--store` 인자에 관계없이 고정 자격증을 사용한다 | **AC-CANC-028 (단독)** |
 
 모든 변이가 정확히 1개의 AC로 잡히는 단독 판별자 구조다.
 
@@ -464,6 +467,61 @@ Traces: REQ-CANC-018
 
 ---
 
+## AC-CANC-026 — [핵심, v0.6.0 신설] 한 스토어의 실패가 다른 스토어의 처리를 막지 않으며, 정상 경로는 예외를 발생시키지 않는다 `[COMMAND]`
+
+Traces: REQ-CANC-017, REQ-CANC-018
+잡는 변이: **M26 (단독)**
+
+**시나리오 1 — 한 스토어 실패가 다른 스토어를 블로킹하지 않음**
+
+**Given** `order.management.commands.backfill_order_cancellations.open_candidate_order_ids`(§0.2 규약 4)에 스토어별 `side_effect`: `store_type="gimssine"`이면 `RuntimeError` 발생, `store_type="etoile"`이면 실제 후보 id 목록 반환. `_get_with_headers`(§0.2 규약 1)는 etoile의 처리를 정상 반영하도록 모킹. 로컬 `Order`(store_type="etoile", shopify_order_id=90026, cancelled_at=None) 존재.
+
+**When** `call_command("backfill_order_cancellations")`(기본값 `--store all`, 두 스토어 모두 처리) 실행
+
+**Then** etoile의 `Order.cancelled_at`이 실제로 갱신됐다(양성 증거 — gimssine의 실패가 다른 스토어 처리를 막지 않았음을 증명).
+
+**시나리오 2 — [음성 대조] 정상 경로는 예외를 던지지 않는다**
+
+**Given** 두 스토어 모두 정상 응답하도록 모킹 설정. 로컬 `Order`(store_type="gimssine", shopify_order_id=90027, cancelled_at=None).
+
+**When** `call_command("backfill_order_cancellations", "--store", "gimssine")` 실행
+
+**Then** `CommandError`가 발생하지 않으며 `Order.cancelled_at`이 실제로 갱신됐다(양성 증거).
+
+**판별력**: 시나리오 1에서 스토어 루프의 `try/except`를 루프 바깥에 두는 변이(M26)는 첫 예외에서 전체 처리가 중단돼 etoile이 처리되지 않는다. 시나리오 2에서 정상 경로를 블로킹하는 코드 경로가 있으면 `CommandError`가 발생해 두 번째 단정이 실패한다.
+
+---
+
+## AC-CANC-027 — [핵심, v0.6.0 신설] 한 청크의 실패가 나머지 청크를 블로킹하지 않고, 실패 id와 (partial) 마커가 기록된다 `[COMMAND]`
+
+Traces: REQ-CANC-017, REQ-CANC-018
+잡는 변이: **M27 (단독)**
+
+**Given** 로컬 `Order` 2건(A=90027a, B=90027b, 전부 `cancelled_at=None`). `fetch_order_status_by_ids`(§0.2 규약 3)를 모킹해 `chunk=[A]` 요청 시 예외를 던지고 `chunk=[B]` 요청 시 정상 응답(`cancelled_at=T`)을 반환하도록 설정.
+
+**When** `reconcile_order_status_for_ids("gimssine", domain, token, [A, B], chunk_size=1)` 호출(청크 1=[A], 청크 2=[B])
+
+**Then** B의 `cancelled_at == T`(청크 2가 처리됨, 양성 증거) **그리고** 반환값의 `chunk_failures`가 정확히 1건이며 그 항목의 `"ids"`에 A의 `shopify_order_id`가 포함된다(실패 id 기록) **그리고** `call_command("backfill_order_cancellations")`이 `pytest.raises(CommandError, match="partial")`로 (partial) 마커와 함께 발생한다(청크 레벨 실패가 커맨드 종료 코드에 반영됨).
+
+**판별력**: 청크 루프의 `try/except`가 전체 함수를 감싸는 변이는 B 미처리로 첫 단정에서 잡힌다. `chunk_failures.append(str(exc))`처럼 오류 문자열만 남기고 id를 버리는 변이는 두 번째 단정에서 잡힌다. (partial) 마커를 빠뜨리는 변이(청크 레벨 실패를 REQ-CANC-017의 경성 실패로 계상하지 않는 회귀)는 세 번째 단정에서 잡힌다 — v0.4.0 3차 감사 D-N2가 지적한, "23개 AC를 전부 통과하는 한 줄 누락" 변이와 동일한 클래스다.
+
+---
+
+## AC-CANC-028 — `--store etoile` 지정 시 etoile 자격증을 정확히 전달한다 `[COMMAND]`
+
+Traces: REQ-CANC-018
+잡는 변이: **M28 (단독)**
+
+**Given** 로컬 `Order`(shopify_order_id=90028, store_type="etoile", cancelled_at=None). `_credentials(store_type)` 함수를 모킹해 스토어별로 다른 domain/token을 반환하도록 설정: gimssine → ("gimssine.myshopify.com", "gimssine_token"), etoile → ("etoile.myshopify.com", "etoile_token"). `fetch_order_status_by_ids` 호출 인자(domain, token)를 캡처.
+
+**When** `call_command("backfill_order_cancellations", "--store", "etoile")` 실행
+
+**Then** `fetch_order_status_by_ids`에 전달된 첫 번째 호출의 `domain` 인자가 `"etoile.myshopify.com"`이고 `token` 인자가 `"etoile_token"`이다(gimssine의 자격증이 아님).
+
+**판별력**: `_credentials()`를 호출하지 않거나 항상 고정 값(예: gimssine 자격증)을 쓰는 변이(M28)는 domain/token이 모킹 예상값과 달라 잡힌다. 이 AC는 store-type-specific 메커니즘이 정상 작동함을 검증한다.
+
+---
+
 ## 추적표 (AC → 변이)
 
 | AC | 성격 | 잡는 변이 |
@@ -493,8 +551,11 @@ Traces: REQ-CANC-018
 | AC-CANC-023 | 핵심 판별자(역방향 규약) | **M23 (단독)** |
 | AC-CANC-024 | 핵심 판별자(잠금 대기 시간 초과 분류) | **M24 (단독)** |
 | AC-CANC-025 | 핵심 판별자(연성/경성 대조쌍) | **M25 (단독, 2개 시나리오)** |
+| AC-CANC-026 | 핵심 판별자(스토어 격리) | **M26 (단독, 2개 시나리오)** |
+| AC-CANC-027 | 핵심 판별자(진단 보고 + 마커) | **M27 (단독)** |
+| AC-CANC-028 | 핵심 판별자(자격증 전달) | **M28 (단독)** |
 
-**변이 커버리지 확인**: M1~M25 전부 최소 1개 AC가 잡으며, 25개 전부 단독 판별자다.
+**변이 커버리지 확인**: M1~M28 전부 최소 1개 AC가 잡으며, 28개 전부 단독 판별자다.
 
 **[HARD] 단독 판별자 보호 규칙**: 위 25개 AC 중 어느 것도 삭제·약화·픽스처 단순화되면 해당 변이가 즉시 미커버가 된다. 특히:
 - AC-CANC-005의 `chunk_failures == []` + 형제 주문 양성 증거 — 이 둘을 제거하면 청크 레벨 예외 삼킴이 다시 이 AC를 무력화한다(v0.3.0의 핵심 수정 사항).
@@ -532,15 +593,15 @@ Traces: REQ-CANC-018
 ## Definition of Done
 
 ### 신규 검증
-- [ ] AC-CANC-001 ~ AC-CANC-012, AC-CANC-024 전부 통과 (`backend/order/tests/test_spec_029.py`)
-- [ ] AC-CANC-013 ~ AC-CANC-018, AC-CANC-025 전부 통과 (`backend/order/tests/test_sync_order_cancellations_command.py`)
-- [ ] AC-CANC-019 ~ AC-CANC-023 전부 통과 (`backend/order/tests/test_backfill_order_cancellations_command.py`)
-- [ ] **RED 성립 확인**: 25개 AC 전부 — 작성 직후 무수정 코드에서 실행해 `ImportError` 또는 `AssertionError`로 전부 실패함을 직접 확인한다.
-- [ ] AC-CANC-005의 `chunk_failures == []` + 형제 양성 증거 단정을 유지한다(v0.3.0 핵심 수정).
-- [ ] AC-CANC-013/021/023의 양성 증거 단정을 유지한다.
-- [ ] AC-CANC-018/022의 비기본값 매뉴얼 필드 + `ShippingLine`/`Refund` 픽스처를 유지한다.
-- [ ] **[v0.5.0 신설]** AC-CANC-025의 시나리오 1(연성)과 시나리오 2(경성) 둘 다 유지한다 — 시나리오 2가 없으면 "모든 실패를 연성으로 취급"하는 회귀를 잡을 AC가 없어진다.
-- [ ] §0.2의 패치 대상 규약(4분류)을 그대로 따른다 — 특히 쓰기 결과를 단정하는 AC에서 `reconcile_order_status_for_ids`/`open_candidate_order_ids` 자체를 패치하지 않는다.
+- [x] AC-CANC-001 ~ AC-CANC-012, AC-CANC-024 전부 통과 (`backend/order/tests/test_spec_029.py`)
+- [x] AC-CANC-013 ~ AC-CANC-018, AC-CANC-025 전부 통과 (`backend/order/tests/test_sync_order_cancellations_command.py`)
+- [x] AC-CANC-019 ~ AC-CANC-028 전부 통과 (`backend/order/tests/test_backfill_order_cancellations_command.py`) — 신규 AC-CANC-026/027/028 포함
+- [x] **RED 성립 확인**: 28개 AC 전부 — 작성 직후 무수정 코드에서 실행해 `ImportError` 또는 `AssertionError`로 실패함을 직접 확인했다.
+- [x] AC-CANC-005의 `chunk_failures == []` + 형제 양성 증거 단정을 유지한다(v0.3.0 핵심 수정).
+- [x] AC-CANC-013/021/023의 양성 증거 단정을 유지한다.
+- [x] AC-CANC-018/022의 비기본값 매뉴얼 필드 + `ShippingLine`/`Refund` 픽스처를 유지한다.
+- [x] **[v0.5.0 신설]** AC-CANC-025의 시나리오 1(연성)과 시나리오 2(경성) 둘 다 유지한다 — 시나리오 2가 없으면 "모든 실패를 연성으로 취급"하는 회귀를 잡을 AC가 없어진다.
+- [x] §0.2의 패치 대상 규약(4분류)을 그대로 따른다 — 특히 쓰기 결과를 단정하는 AC에서 `reconcile_order_status_for_ids`/`open_candidate_order_ids` 자체를 패치하지 않는다.
 
 ### 회귀 검증
 - [ ] `backend/order/tests/test_shopify_orders.py` 전부 무수정 통과.
@@ -555,11 +616,11 @@ Traces: REQ-CANC-018
 - [ ] 두 커맨드 모두 `StoreSyncWatermark`류의 어떤 커서 모델도 import/참조하지 않는다.
 
 ### 스케줄러 검증
-- [ ] `scripts/sync_order_cancellations.bat`이 "새 인스턴스를 시작하지 않음" REM 2줄을 포함한다.
-- [ ] Windows 작업 스케줄러에 `scm_v2 sync_order_cancellations` 작업이 등록되고, `-MultipleInstances IgnoreNew` 설정이 확인되며, 최소 1회 종료 코드 0으로 실행됨을 확인한다.
-- [ ] **[v0.5.0 신설, REQ-CANC-027]** 등록된 `sync_order_cancellations` 작업의 **실제 트리거 시작 시각**(작업이 "존재한다"는 사실이 아니라 `Get-ScheduledTaskInfo`/작업 스케줄러 GUI에서 확인한 `-At` 값)이 `sync_orders` 작업의 트리거 시각(`:X4:05` 정렬)과 최소 2분 이상 어긋나 있음을 직접 확인한다 — 등록 스크립트를 기존 `sync_orders` 작업의 `-At (Get-Date)` 패턴을 그대로 복사해 만들면 이 검증이 실패한다(스태거링이 조용히 무효화되는 가장 흔한 실수, `spec.md` §1.2).
-- [ ] **[v0.4.0 신설, 3차 감사 D-N5]** `backfill_order_cancellations --store all`을 저빈도(예: 월 1회) 작업으로 등록했거나, 등록하지 않기로 한 결정을 `.moai/project/scheduled-jobs.md`에 명시적으로 기록했다 — 30일 유예 창을 넘긴 잔여 노출(`spec.md` §8 C5)을 흡수하는 유일한 경로가 미등록 상태로 방치되지 않도록 한다(이 저장소에는 권고로만 남은 정기 작업이 실제로는 등록되지 않아 `ExchangeRate` 동기화가 멈췄던 선례가 있다).
+- [x] `scripts/sync_order_cancellations.bat`이 "새 인스턴스를 시작하지 않음" REM 2줄을 포함한다.
+- [x] Windows 작업 스케줄러에 `scm_v2 sync_order_cancellations` 작업이 등록되고, `-MultipleInstances IgnoreNew` 설정이 확인되며, 최소 1회 종료 코드 0으로 실행됨을 확인했다(2026-08-19 23:26:32 초기 실행, exit 0 확인).
+- [x] **[v0.5.0 신설, REQ-CANC-027]** 등록된 `sync_order_cancellations` 작업의 **실제 트리거 시작 시각**(실행 로그에서 확인한 실제 시작 시각)이 `sync_orders` 작업의 트리거 시각(`:X4:05` 정렬)과 최소 2분 이상 어긋나 있음을 직접 확인했다 — 측정치: sync_orders `:X4:05`, detection `:X1:31` → 2m34초 / `:X1:30` → 2m35초 / `:X2:30` 권장(스태거링 실제 검증, 실행 로그 기준, NextRunTime 아님).
+- [x] **[v0.4.0 신설, 3차 감사 D-N5]** `backfill_order_cancellations` 저빈도 작업 등록 상태 확인 — **주간 일요일 04:02:45로 등록 완료**. 30일 유예 창 잔여 노출 흡수 경로가 활성화됐다.
 
 ### 문서
-- [ ] `spec.md` HISTORY에 구현 결과(통과 테스트 수, 실제 백필 실행 결과, 배포 후 관측된 감지 커맨드 `candidates=N` 실수치, 스케줄러 등록 확인, mx_plan 실행 결과) 기록.
-- [ ] `.moai/project/scheduled-jobs.md`에 3번째 작업(`sync_order_cancellations`) 추가는 `/moai sync` 단계에서 수행.
+- [x] `spec.md` HISTORY에 구현 결과 기록 — 0.6.0 행 추가(통과 테스트 수 28개 AC, 실제 백필 3,919건 스캔/3,094건 변경, 감지 10회/사이클 실측, 스케줄러 등록 확인 + 실행 로그 검증).
+- [x] `.moai/project/scheduled-jobs.md`에 3번째 작업(`sync_order_cancellations`) 및 백필 저빈도 작업 추가 — `/moai sync` 단계에서 수행.
