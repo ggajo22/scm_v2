@@ -58,7 +58,7 @@ class BookListViewSet(viewsets.ReadOnlyModelViewSet):
     """
     GET /api/book/search/?search=<query>
     Two-path search:
-      - digits only → inven_SKU startswith (index scan, fast)
+      - digits only → inven_SKU prefix match (index range scan, fast)
       - text        → FULLTEXT MATCH AGAINST ngram on info.name (Korean-aware)
     REQ-SEARCH-001 to REQ-SEARCH-008
     """
@@ -73,9 +73,15 @@ class BookListViewSet(viewsets.ReadOnlyModelViewSet):
         if not search:
             return qs.order_by("id")
 
-        # ISBN path: digits only → startswith uses the inven_SKU index
+        # ISBN path: digits only → prefix match on the inven_SKU index.
+        # istartswith, not startswith: Django compiles __startswith to LIKE BINARY
+        # on MySQL, which cannot use the (non-binary collation) inven_SKU index —
+        # EXPLAIN falls back to key=PRIMARY and walks all 631k rows in id order to
+        # fill ORDER BY id LIMIT 50. __istartswith emits a plain LIKE and hits the
+        # index (rows=1 for a full ISBN). Identical results here because the branch
+        # is gated on search.isdigit() and digits have no case to fold.
         if search.isdigit():
-            return qs.filter(inven_SKU__startswith=search).order_by("id")
+            return qs.filter(inven_SKU__istartswith=search).order_by("id")
 
         # Text path: annotate relevance score so DRF paginator gets the full result set
         # (avoids the 50-item LIMIT that broke pagination)
