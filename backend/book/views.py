@@ -67,8 +67,10 @@ class BookListViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = BookDetailSerializer
 
     def get_queryset(self):
-        # REQ-SEARCH-008: select_related avoids N+1 on info fields
-        qs = Inven.objects.select_related("info")
+        # REQ-SEARCH-008: select_related avoids N+1 on info fields.
+        # etoile_inven is joined for the same reason — BookDetailSerializer reads its
+        # status_of_shopify per row, and the remote DB costs ~130 ms per round trip.
+        qs = Inven.objects.select_related("info", "etoile_inven")
         search = self.request.query_params.get("search", "").strip()
         if not search:
             return qs.order_by("id")

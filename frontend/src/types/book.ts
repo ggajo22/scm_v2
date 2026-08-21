@@ -21,8 +21,13 @@ export interface BookSearchResult {
   id: number
   inven_SKU: string
   name: string
-  price_sale: number
+  /** Info.cover_image_url — empty string when the book has no cover */
+  cover_image_url: string
   status_of_shopify: number
+  /** true only when the book is live on ETOILE (etoile status 80) */
+  etoile_listed: boolean
+  /** ETOILE state text: "미등록" when the book has no ETOILE record */
+  etoile_status_label: string
 }
 
 // Book detail types (SPEC-BOOK-EDIT-001)
