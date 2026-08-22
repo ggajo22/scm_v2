@@ -148,7 +148,7 @@ export function OrdersPage() {
     <div className="p-6 space-y-4">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <h1 className="text-2xl font-bold">주문관리</h1>
+          <h1 className="text-2xl font-bold">주문 목록</h1>
           {role === 'super_admin' && <SyncStatusIndicator />}
         </div>
         <Button

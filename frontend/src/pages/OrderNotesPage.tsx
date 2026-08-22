@@ -39,7 +39,7 @@ export function OrderNotesPage() {
     <div className="p-6 space-y-4">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-semibold">미해결 메모</h1>
+          <h1 className="text-xl font-semibold">고객 메모</h1>
           <p className="text-sm text-muted-foreground mt-0.5">
             {data?.length ?? 0}건의 미해결 메모
           </p>
