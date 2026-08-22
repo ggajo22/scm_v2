@@ -674,6 +674,7 @@ class ShopifyLiveInfoView(APIView):
                     "weight": None,
                     "weight_unit": None,
                     "price": None,
+                    "image_count": None,
                     "error": None,
                 }
             info = shopify_client.fetch_store_live_info(
@@ -699,6 +700,7 @@ class ShopifyLiveInfoView(APIView):
                     "weight": None,
                     "weight_unit": None,
                     "price": None,
+                    "image_count": None,
                     "error": None,
                 }
             info = shopify_client.fetch_store_live_info(
