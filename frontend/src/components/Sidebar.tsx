@@ -35,6 +35,8 @@ const navGroups: NavGroup[] = [
       { label: 'ISBN 추가', href: '/books/add-isbn' },
       { label: '빠른 리스팅', href: '/books/fast-listing' },
       { label: 'Etoile 현황', href: '/books/etoile' },
+      // SPEC-ETOILE-INVEN-ADD-001
+      { label: 'Etoile ISBN 추가', href: '/books/etoile-add-isbn' },
     ],
   },
   {
