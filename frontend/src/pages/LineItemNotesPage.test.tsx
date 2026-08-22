@@ -343,4 +343,13 @@ describe('LineItemNotesPage — SPEC-ORDER-020 order-number grouping', () => {
     expect(text.indexOf('메모 A')).toBeGreaterThanOrEqual(0)
     expect(text.indexOf('메모 B')).toBeLessThan(text.indexOf('메모 A'))
   })
+
+  // SPEC-NAV-SIDEBAR-001 REQ-016 — 페이지 제목은 사이드바 라벨과 같은 문구여야 한다
+  it('renders the page heading with the same wording as the sidebar label (REQ-016)', () => {
+    mockNotes([])
+
+    renderPage()
+
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('CS')
+  })
 })

@@ -396,7 +396,8 @@ export function LineItemNotesPage() {
   return (
     <div className="p-6 space-y-4">
       <div>
-        <h1 className="text-xl font-semibold">미해결 품목 메모</h1>
+        {/* SPEC-NAV-SIDEBAR-001 REQ-016: 제목은 사이드바 라벨("CS")과 같은 문구를 쓴다. */}
+        <h1 className="text-xl font-semibold">CS</h1>
         <p className="text-sm text-muted-foreground mt-0.5">전체 {data?.length ?? 0}건</p>
       </div>
 
