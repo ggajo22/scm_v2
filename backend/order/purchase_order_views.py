@@ -1657,6 +1657,14 @@ class UploadDailyReviewView(APIView):
     Rows with empty or unrecognized '선택' are skipped from PO/CS/warehouse
     confirmation only.
 
+    REQ-PO8-020: the response carries a `skipped` list alongside the
+    pre-existing `skipped_count`, one entry per skipped (order name, SKU) pair
+    with the reason it was skipped — `order_not_found`, `line_item_not_found`,
+    `selection_empty`, `selection_unrecognized` or
+    `warehouse_location_unresolved`. Same rationale and entry shape as
+    REQ-LOGI-017's `unmatched` list on UploadWarehouseReceiptView: a bare tally
+    left an operator with no way to tell which rows failed to confirm.
+
     SPEC-ORDER-012 REQ-RTS-003a/004: recomputes every Order status/
     ready_to_ship aggregate touched by any of the three branches, once per
     upload request.
@@ -1712,9 +1720,35 @@ class UploadDailyReviewView(APIView):
             pair_map[(row.get("name") or "", row["sku"])] = row
 
         confirmed_count = 0
-        skipped_count = 0
         errors: list[dict] = []
         confirmed_by_distributor: dict[str, list] = {}
+
+        # REQ-PO8-020: per-row skip detail, so the response says WHICH rows were
+        # skipped and why instead of only a tally — same motivation (and the same
+        # {name, sku, reason} entry shape) as REQ-LOGI-017's `unmatched` list on
+        # UploadWarehouseReceiptView. `skipped_count` is derived from this list
+        # at response time, so a branch can never bump the count without also
+        # recording its reason.
+        skipped: list[dict] = []
+
+        def _record_skip(
+            row_name: str,
+            row_sku: str,
+            row: dict,
+            reason: str,
+            title: str = "",
+        ) -> None:
+            skipped.append(
+                {
+                    "name": row_name,
+                    "sku": row_sku,
+                    # Empty when the branch fired before a LineItem (and hence a
+                    # title) could be resolved — the frontend column stays stable.
+                    "title": title,
+                    "selection": row.get("selection") or "",
+                    "reason": reason,
+                }
+            )
 
         # Warehouse distributor code → location mapping (legacy location-suffixed codes)
         _WAREHOUSE_LOCATION_MAP: dict[str, str] = {
@@ -1948,7 +1982,7 @@ class UploadDailyReviewView(APIView):
                         # Blank order-name cell, or a name that does not
                         # match any Order — same skip convention as
                         # _apply_logistics_transition / _process_outbound_rows.
-                        skipped_count += 1
+                        _record_skip(name, sku, item, "order_not_found")
                         continue
 
                     distributor_code = item["distributor"]
@@ -1975,7 +2009,11 @@ class UploadDailyReviewView(APIView):
                     unordered_lis = lineitems_by_key.get((order.id, sku), [])
 
                     if not unordered_lis:
-                        skipped_count += 1
+                        # The order exists but has no re-orderable LineItem for
+                        # this SKU — either the SKU is not in that order at all,
+                        # or every matching LineItem is already ordered (i.e.
+                        # excluded by _reorder_candidate_filter).
+                        _record_skip(name, sku, item, "line_item_not_found")
                         continue
 
                     title = unordered_lis[0].title or sku
@@ -2034,7 +2072,16 @@ class UploadDailyReviewView(APIView):
                         # REQ-PO8-011: empty or unrecognized '선택' (e.g. 합계/total/
                         # check legend values) — skip PO/CS/warehouse confirmation.
                         # Vendor sync above already ran regardless.
-                        skipped_count += 1
+                        # REQ-PO8-020: the two cases are reported separately —
+                        # a blank cell is a row the operator simply left alone,
+                        # while a filled-but-unrecognized cell is a likely typo
+                        # worth surfacing with its verbatim value.
+                        reason = (
+                            "selection_unrecognized"
+                            if item.get("selection")
+                            else "selection_empty"
+                        )
+                        _record_skip(name, sku, item, reason, title=title)
                         continue
 
                     is_warehouse = (
@@ -2046,7 +2093,12 @@ class UploadDailyReviewView(APIView):
                             # REQ-PO8-008: resolve location from the Status value
                             loc = _WAREHOUSE_NOTE_LOCATION_MAP.get(note or "")
                             if loc is None:
-                                skipped_count += 1
+                                # '창고' selected but the Status cell carries no
+                                # recognizable location (한국재고/Fullerton재고/
+                                # NJ재고), so there is nothing to deduct from.
+                                _record_skip(
+                                    name, sku, item, "warehouse_location_unresolved", title=title
+                                )
                                 continue
                             # The generic 'warehouse' code carries no location, so
                             # persist the resolved, location-suffixed code instead —
@@ -2318,7 +2370,11 @@ class UploadDailyReviewView(APIView):
         return Response(
             {
                 "confirmed_count": confirmed_count,
-                "skipped_count": skipped_count,
+                "skipped_count": len(skipped),
+                # REQ-PO8-020: per-row skip detail (name/sku/title/selection/
+                # reason). `skipped_count` keeps its original meaning — the
+                # length of this list — so existing consumers are unaffected.
+                "skipped": skipped,
                 "errors": errors,
                 "confirmed_by_distributor": confirmed_by_distributor,
             },

@@ -255,10 +255,37 @@ export interface SkuQuantity {
   quantity: number
 }
 
+// REQ-PO8-020: why a (주문번호, SKU) row was skipped instead of confirmed.
+export type DailyReviewSkipReason =
+  // Blank 주문번호/Name cell, or a value matching no Order.
+  | 'order_not_found'
+  // Order found, but it has no re-orderable LineItem for this SKU (wrong SKU,
+  // or every matching item is already ordered).
+  | 'line_item_not_found'
+  // '선택' cell left blank.
+  | 'selection_empty'
+  // '선택' filled in with a value the parser does not recognize.
+  | 'selection_unrecognized'
+  // '창고' selected but the Status cell names no known warehouse location.
+  | 'warehouse_location_unresolved'
+
+export interface DailyReviewSkippedItem {
+  name: string
+  sku: string
+  // Empty when the skip happened before a LineItem could be resolved.
+  title: string
+  // Verbatim '선택' cell text, so a typo is visible as typed.
+  selection: string
+  reason: DailyReviewSkipReason
+}
+
 export interface UploadDailyReviewResponse {
   message?: string
   confirmed_count?: number
   skipped_count?: number
+  // REQ-PO8-020: per-row skip detail. Optional so a response from an older
+  // backend still type-checks.
+  skipped?: DailyReviewSkippedItem[]
   confirmed_by_distributor: Record<string, SkuQuantity[]>
 }
 

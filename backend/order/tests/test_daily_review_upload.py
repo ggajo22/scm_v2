@@ -2455,3 +2455,146 @@ class TestParseDailyReviewMissingNameColumnRejected:
             parse_daily_review_excel(buf.getvalue())
         assert "Name" in str(exc_info.value)
         assert "주문번호" in str(exc_info.value)
+
+
+# ===========================================================================
+# REQ-PO8-020: upload response carries a per-row `skipped` list with reasons
+# ===========================================================================
+
+
+class TestUploadDailyReviewSkippedDetail:
+    """
+    REQ-PO8-020: every row the confirmation loop skips is reported in a
+    `skipped` list with the reason it was skipped, so an operator can act on
+    the tally instead of only seeing it. `skipped_count` stays equal to
+    len(skipped).
+    """
+
+    def _upload(self, auth_client, file_bytes: bytes):
+        file_obj = io.BytesIO(file_bytes)
+        file_obj.name = "daily_review.xlsx"
+        return auth_client.post(UPLOAD_DAILY_URL, data={"file": file_obj}, format="multipart")
+
+    def test_order_not_found_reason(self, auth_client):
+        """A 주문번호 matching no Order is reported as order_not_found."""
+        res = self._upload(
+            auth_client,
+            _make_daily_review_excel([
+                {"order_name": "#no-such-order", "isbn": "9788901300001", "selected": "북센"},
+            ]),
+        )
+        assert res.status_code == 201
+        assert res.data["skipped_count"] == 1
+        assert res.data["skipped"] == [
+            {
+                "name": "#no-such-order",
+                "sku": "9788901300001",
+                "title": "",
+                "selection": "북센",
+                "reason": "order_not_found",
+            }
+        ]
+
+    def test_line_item_not_found_reason(self, auth_client):
+        """Order exists but carries no re-orderable LineItem for that SKU."""
+        _make_order(shopify_order_id=80020, name="#8020")
+        res = self._upload(
+            auth_client,
+            _make_daily_review_excel([
+                {"order_name": "#8020", "isbn": "9788901300002", "selected": "북센"},
+            ]),
+        )
+        assert res.status_code == 201
+        assert res.data["skipped_count"] == 1
+        assert res.data["skipped"][0]["reason"] == "line_item_not_found"
+        assert res.data["skipped"][0]["name"] == "#8020"
+        assert res.data["skipped"][0]["sku"] == "9788901300002"
+
+    def test_selection_empty_reason_carries_title(self, auth_client):
+        """A blank '선택' is selection_empty, and the row's title is included."""
+        order = _make_order(shopify_order_id=80021, name="#8021")
+        sku = "9788901300003"
+        _make_line_item(order, sku=sku, title="빈선택 도서", shopify_line_item_id=8021)
+
+        res = self._upload(
+            auth_client,
+            _make_daily_review_excel([{"order_name": "#8021", "isbn": sku, "selected": ""}]),
+        )
+        assert res.status_code == 201
+        assert res.data["skipped"] == [
+            {
+                "name": "#8021",
+                "sku": sku,
+                "title": "빈선택 도서",
+                "selection": "",
+                "reason": "selection_empty",
+            }
+        ]
+
+    def test_selection_unrecognized_reason_keeps_raw_value(self, auth_client):
+        """
+        A filled-but-unrecognized '선택' is reported separately from a blank
+        one, with the cell's verbatim text so a typo is visible as typed.
+        """
+        order = _make_order(shopify_order_id=80022, name="#8022")
+        sku = "9788901300004"
+        _make_line_item(order, sku=sku, title="오타 도서", shopify_line_item_id=8022)
+
+        res = self._upload(
+            auth_client,
+            _make_daily_review_excel([{"order_name": "#8022", "isbn": sku, "selected": "북셴"}]),
+        )
+        assert res.status_code == 201
+        assert res.data["skipped"][0]["reason"] == "selection_unrecognized"
+        assert res.data["skipped"][0]["selection"] == "북셴"
+
+    def test_warehouse_location_unresolved_reason(self, auth_client):
+        """
+        REQ-PO8-008 path: generic '재고' selection whose Status cell names no
+        known warehouse location is reported as warehouse_location_unresolved.
+        """
+        order = _make_order(shopify_order_id=80023, name="#8023")
+        sku = "9788901300005"
+        _make_line_item(order, sku=sku, title="창고 도서", shopify_line_item_id=8023)
+
+        res = self._upload(
+            auth_client,
+            _make_daily_review_excel([
+                {"order_name": "#8023", "isbn": sku, "selected": "재고", "note": "어디재고"},
+            ]),
+        )
+        assert res.status_code == 201
+        assert res.data["skipped"][0]["reason"] == "warehouse_location_unresolved"
+        assert res.data["skipped"][0]["title"] == "창고 도서"
+
+    def test_confirmed_rows_are_absent_from_skipped(self, auth_client):
+        """A mixed upload lists only the skipped rows, and count == len(list)."""
+        order = _make_order(shopify_order_id=80024, name="#8024")
+        good_sku = "9788901300006"
+        bad_sku = "9788901300007"
+        _make_line_item(order, sku=good_sku, title="정상 도서", shopify_line_item_id=8024)
+        _make_line_item(order, sku=bad_sku, title="미선택 도서", shopify_line_item_id=8025)
+
+        res = self._upload(
+            auth_client,
+            _make_daily_review_excel([
+                {"order_name": "#8024", "isbn": good_sku, "selected": "북센"},
+                {"order_name": "#8024", "isbn": bad_sku, "selected": ""},
+            ]),
+        )
+        assert res.status_code == 201
+        assert res.data["confirmed_count"] == 1
+        assert res.data["skipped_count"] == len(res.data["skipped"]) == 1
+        assert res.data["skipped"][0]["sku"] == bad_sku
+
+    def test_selection_key_present_in_parser_output(self):
+        """The parser exposes the raw '선택' text the view reports back."""
+        from order.excel_utils import parse_daily_review_excel
+
+        rows = parse_daily_review_excel(
+            _make_daily_review_excel([
+                {"order_name": "#8025", "isbn": "9788901300008", "selected": "북셴"},
+            ])
+        )
+        assert rows[0]["selection"] == "북셴"
+        assert rows[0]["distributor"] is None

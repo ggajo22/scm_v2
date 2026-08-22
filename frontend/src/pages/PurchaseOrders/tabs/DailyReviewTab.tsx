@@ -1,11 +1,15 @@
 import { useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
+import { ResultSection } from '@/components/ResultSection'
 import {
   useDownloadDailyReview,
   useUploadDailyReview,
   useGenerateOrderFile,
 } from '@/hooks/usePurchaseOrderQueries'
-import type { UploadDailyReviewResponse } from '@/services/purchaseOrderApi'
+import type {
+  DailyReviewSkipReason,
+  UploadDailyReviewResponse,
+} from '@/services/purchaseOrderApi'
 
 const DISTRIBUTOR_DISPLAY_NAMES: Record<string, string> = {
   booxen: '북센',
@@ -16,6 +20,18 @@ const DISTRIBUTOR_DISPLAY_NAMES: Record<string, string> = {
   warehouse_korea: '창고(한국)',
   warehouse_ca: '창고(CA)',
   warehouse_nj: '창고(NJ)',
+}
+
+// REQ-PO8-020: Korean label per backend skip reason code, mirroring
+// InboundPage's WAREHOUSE_RECEIPT_REASON_LABELS. Record (not Partial) so a new
+// reason code added to the union without a label here is a compile error
+// rather than a raw snake_case string leaking into the UI.
+const SKIP_REASON_LABELS: Record<DailyReviewSkipReason, string> = {
+  order_not_found: '주문번호 없음',
+  line_item_not_found: '발주 대상 품목 없음',
+  selection_empty: '선택 미입력',
+  selection_unrecognized: '선택값 인식 불가',
+  warehouse_location_unresolved: '창고 위치 확인 불가',
 }
 
 export function DailyReviewTab() {
@@ -127,6 +143,30 @@ export function DailyReviewTab() {
             ))}
           </div>
         </div>
+      )}
+
+      {/* REQ-PO8-020: which rows were skipped and why — rendered full-width
+          below the cards (the table is too wide for the upload card) and shown
+          whenever an upload succeeded, so an empty list reads as "nothing was
+          skipped" rather than as a missing section. */}
+      {uploadResult && uploadResult.skipped && (
+        <ResultSection
+          testId="daily-review-skipped"
+          title="건너뜀"
+          count={uploadResult.skipped.length}
+          toneClassName="border-amber-300 bg-amber-50"
+          columns={['주문번호', 'SKU', '도서명', '선택값', '사유']}
+          rows={uploadResult.skipped.map((item, index) => ({
+            key: `${item.name}-${item.sku}-${index}`,
+            cells: [
+              item.name || '(없음)',
+              item.sku,
+              item.title,
+              item.selection || '(비어 있음)',
+              SKIP_REASON_LABELS[item.reason] ?? item.reason,
+            ],
+          }))}
+        />
       )}
 
       {/* Selection guide */}

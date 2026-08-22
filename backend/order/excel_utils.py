@@ -805,7 +805,7 @@ def parse_daily_review_excel(file_bytes: bytes) -> list[dict]:
 
     Returns:
         List of dicts:
-            sku, name, distributor, note_type, note,
+            sku, name, distributor, selection, note_type, note,
             bs_price, ky_price, yes24_price (always present, value None when
                 the cell/column is unset — safe because callers only act on
                 these when not None),
@@ -821,6 +821,9 @@ def parse_daily_review_excel(file_bytes: bytes) -> list[dict]:
         distributor is the internal code (booxen, kyobo, yes24, choeumgoyuk,
         agape, sungseoyunion, warehouse, warehouse_korea/ca/nj) or None when
         '선택' is empty or unrecognized.
+        selection is that same cell's raw whitespace-stripped text (empty
+        string when blank), always present — REQ-PO8-020 keeps it so callers
+        can report an unrecognized value back to the operator verbatim.
 
     Raises:
         ValueError: If file is unreadable or no header row is found.
@@ -972,6 +975,11 @@ def parse_daily_review_excel(file_bytes: bytes) -> list[dict]:
             "sku": sku,
             "name": name,
             "distributor": distributor_code,
+            # REQ-PO8-020: the raw '선택' cell text, kept so the view can tell
+            # an operator WHICH value it failed to recognize (and distinguish a
+            # blank cell from an unrecognized one) instead of only reporting a
+            # skip tally. Always present, empty string when the cell is blank.
+            "selection": selected_label,
             "note_type": note_type,
             "blocked_reason": blocked_reason,
             "note": note,
