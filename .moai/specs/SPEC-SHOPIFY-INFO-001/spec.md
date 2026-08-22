@@ -1,9 +1,9 @@
 ---
 id: SPEC-SHOPIFY-INFO-001
-version: 1.0.0
+version: 1.1.0
 status: Completed
 created: 2026-06-20
-updated: 2026-06-20
+updated: 2026-08-21
 author: ggajo
 priority: Medium
 issue_number: ~
@@ -16,14 +16,15 @@ issue_number: ~
 | Version | Date | Author | Description |
 |---------|------|--------|-------------|
 | 1.0.0 | 2026-06-20 | ggajo | Initial SPEC creation |
+| 1.1.0 | 2026-08-21 | ggajo | 현재 판매가(`price`) 응답 필드 및 표시 요구사항 추가 (REQ-SHPINFO-015). 구현과 어긋나 있던 Shopify API 서술(버전 2024-01 → 2024-10, 무게를 별도 `variants` 호출로 기술 → `products` 단일 호출) 정정 |
 
 ---
 
 ## Overview
 
-도서 상세 페이지에서 각 Shopify 스토어(Booksen, Etoile)의 상품 상태(Active / Draft / Archived)와 배송 무게를 실시간으로 조회하여 표시한다.
+도서 상세 페이지에서 각 Shopify 스토어(Booksen, Etoile)의 상품 상태(Active / Draft / Archived), 배송 무게, 현재 판매가를 실시간으로 조회하여 표시한다.
 
-현재 DB에는 상품 상태와 무게 필드가 없으므로, 페이지 로드 시 백엔드가 Shopify Admin REST API를 호출하여 해당 정보를 반환한다.
+현재 DB에는 상품 상태와 무게 필드가 없고, 저장된 `shopify_price`는 동기화 시점의 값이므로 스토어의 현재 판매가와 다를 수 있다. 따라서 페이지 로드 시 백엔드가 Shopify Admin REST API를 호출하여 해당 정보를 반환한다.
 
 ---
 
@@ -31,7 +32,7 @@ issue_number: ~
 
 **In Scope:**
 - 백엔드: 신규 엔드포인트 `GET /api/book/{inven_id}/shopify-live-info/` 구현
-- 백엔드: Shopify Admin REST API 호출 (product status, variant weight)
+- 백엔드: Shopify Admin REST API 호출 (product status, variant weight, variant price)
 - 프론트엔드: 도서 상세 페이지에 "Shopify 연동 정보" 섹션 추가
 - 두 스토어(Booksen, Etoile) 모두 지원
 - 스토어 미등록, 네트워크 오류 등 예외 상황 처리
@@ -63,10 +64,15 @@ issue_number: ~
 
 ### Shopify API 엔드포인트
 
-- 상품 상태: `GET https://{domain}/admin/api/2024-01/products/{product_id}.json`
-  - 반환 필드: `product.status` (`active` | `draft` | `archived`)
-- 무게: `GET https://{domain}/admin/api/2024-01/variants/{variant_id}.json`
-  - 반환 필드: `variant.weight`, `variant.weight_unit`
+스토어당 단일 호출로 상태 / 무게 / 판매가를 모두 확보한다.
+
+- `GET https://{domain}/admin/api/2024-10/products/{product_id}.json`
+  - 상태: `product.status` (`active` | `draft` | `archived`)
+  - 무게: `product.variants[].weight`, `product.variants[].weight_unit`
+  - 판매가: `product.variants[].price` (스토어 통화 기준 decimal 문자열)
+  - variant 선택: `variant_id` 일치 항목, 없거나 `"0"`이면 첫 번째 variant
+
+API 버전은 `book/shopify_client.py`의 `SHOPIFY_API_VERSION` 상수 한 곳에서 관리한다.
 
 ---
 
@@ -78,11 +84,11 @@ The system **shall** provide a dedicated endpoint `GET /api/book/{inven_id}/shop
 
 ### REQ-SHPINFO-002 (Event-Driven)
 
-**When** the endpoint is called for a given `inven_id`, the system **shall** look up the associated `Shopify_product` record for Booksen and call the Shopify Admin API to retrieve `product.status` and `variant.weight` / `variant.weight_unit`.
+**When** the endpoint is called for a given `inven_id`, the system **shall** look up the associated `Shopify_product` record for Booksen and call the Shopify Admin API to retrieve `product.status`, `variant.weight` / `variant.weight_unit`, and `variant.price`.
 
 ### REQ-SHPINFO-003 (Event-Driven)
 
-**When** the endpoint is called for a given `inven_id`, the system **shall** look up the associated `EtoileShopifyProduct` record (via `EtoileBookInven`) for Etoile and call the Shopify Admin API to retrieve `product.status` and `variant.weight` / `variant.weight_unit`.
+**When** the endpoint is called for a given `inven_id`, the system **shall** look up the associated `EtoileShopifyProduct` record (via `EtoileBookInven`) for Etoile and call the Shopify Admin API to retrieve `product.status`, `variant.weight` / `variant.weight_unit`, and `variant.price`.
 
 ### REQ-SHPINFO-004 (State-Driven — 스토어 미등록)
 
@@ -94,7 +100,7 @@ The system **shall** provide a dedicated endpoint `GET /api/book/{inven_id}/shop
 
 ### REQ-SHPINFO-006 (Unwanted Behavior — API 오류)
 
-**If** the Shopify Admin API call fails (network error, HTTP 4xx/5xx), **then** the system **shall** return `{"status": null, "weight": null, "weight_unit": null, "error": "<reason>"}` for the affected store and **shall not** raise an unhandled exception.
+**If** the Shopify Admin API call fails (network error, HTTP 4xx/5xx), **then** the system **shall** return `{"status": null, "weight": null, "weight_unit": null, "price": null, "error": "<reason>"}` for the affected store and **shall not** raise an unhandled exception.
 
 ### REQ-SHPINFO-007 (Unwanted Behavior — 인증)
 
@@ -113,6 +119,7 @@ The system **shall** return the following JSON structure for the endpoint:
     "status": "active | draft | archived | null",
     "weight": "number | null",
     "weight_unit": "g | kg | lb | oz | null",
+    "price": "string | null",
     "error": "string | null"
   },
   "etoile": {
@@ -122,6 +129,7 @@ The system **shall** return the following JSON structure for the endpoint:
     "status": "active | draft | archived | null",
     "weight": "number | null",
     "weight_unit": "g | kg | lb | oz | null",
+    "price": "string | null",
     "error": "string | null"
   }
 }
@@ -156,6 +164,14 @@ The system **shall** display weight with its unit (e.g., `500 g`, `1.2 kg`) when
 ### REQ-SHPINFO-014 (Ubiquitous — 병렬 API 호출)
 
 The system **shall** call Booksen and Etoile Shopify APIs concurrently (not sequentially) to minimize response latency.
+
+### REQ-SHPINFO-015 (Ubiquitous — 현재 판매가 표시)
+
+The system **shall** display the store's current selling price, sourced from the same variant used for weight, formatted as `$` + thousands-separated value with trailing zero decimals trimmed (e.g., `13.00` → `$13`, `12.99` → `$12.99`).
+
+- 두 스토어(Booksen, Etoile) 모두 USD로 판매하므로 통화 기호는 `$`로 고정한다.
+- `price`가 `null`이면 "판매가 없음"을 표시한다.
+- 판매가 조회를 위해 추가 API 호출을 하지 않는다 (REQ-SHPINFO-002/003의 단일 `products` 호출 응답을 재사용).
 
 ---
 

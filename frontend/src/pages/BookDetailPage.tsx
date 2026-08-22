@@ -730,6 +730,16 @@ function ShopifyStoreBadge({ info }: { info: ShopifyStoreInfo }) {
   )
 }
 
+/**
+ * Shopify returns the variant price as a decimal string. Both stores (GIMSSINE, ETOILE)
+ * sell in USD, so the price is rendered with a $ prefix and trailing .00 trimmed.
+ */
+function formatShopifyPrice(price: string): string {
+  const value = Number(price)
+  if (!Number.isFinite(value)) return price
+  return `$${value.toLocaleString('en-US', { maximumFractionDigits: 2 })}`
+}
+
 function ShopifyLiveInfoSection({
   bookId,
   etoileInfo,
@@ -793,6 +803,11 @@ function ShopifyLiveInfoSection({
                   {info.weight != null
                     ? `${info.weight} ${info.weight_unit ?? ''}`
                     : '중량 없음'}
+                </span>
+              )}
+              {info.registered && (
+                <span className="text-sm font-medium">
+                  {info.price != null ? formatShopifyPrice(info.price) : '판매가 없음'}
                 </span>
               )}
               {info.registered && (

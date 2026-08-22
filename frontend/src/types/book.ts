@@ -151,6 +151,8 @@ export interface ShopifyStoreInfo {
   status: 'active' | 'draft' | 'archived' | null
   weight: number | null
   weight_unit: 'g' | 'kg' | 'lb' | 'oz' | null
+  /** Current Shopify selling price — decimal string in the store's own currency */
+  price: string | null
   error: string | null
 }
 

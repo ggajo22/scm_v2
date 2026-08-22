@@ -30,13 +30,20 @@ def _get(domain: str, token: str, path: str) -> dict:
 
 def _fetch_product_info(domain: str, token: str, product_id: str, variant_id: str) -> dict:
     """
-    Single API call to GET /products/{product_id}.json — returns status and weight.
-    The product response includes variants with weight, so no separate variant call needed.
+    Single API call to GET /products/{product_id}.json — returns status, weight and price.
+    The product response includes variants with weight and price, so no separate
+    variant call is needed.
     When variant_id is "0" or absent, falls back to the first variant in the response.
     REQ-SHPINFO-010: product_id="0" treated as invalid.
     """
     if not product_id or product_id == "0":
-        return {"status": None, "weight": None, "weight_unit": None, "error": "Invalid product_id"}
+        return {
+            "status": None,
+            "weight": None,
+            "weight_unit": None,
+            "price": None,
+            "error": "Invalid product_id",
+        }
     try:
         data = _get(domain, token, f"products/{product_id}.json")
         product = data.get("product", {})
@@ -53,20 +60,28 @@ def _fetch_product_info(domain: str, token: str, product_id: str, variant_id: st
             "status": product.get("status"),
             "weight": target.get("weight") if target else None,
             "weight_unit": target.get("weight_unit") if target else None,
+            # Shopify returns price as a decimal string in the store's own currency
+            "price": target.get("price") if target else None,
             "error": None,
         }
     except (urllib.error.URLError, OSError, json.JSONDecodeError, KeyError) as exc:
-        return {"status": None, "weight": None, "weight_unit": None, "error": str(exc)}
+        return {
+            "status": None,
+            "weight": None,
+            "weight_unit": None,
+            "price": None,
+            "error": str(exc),
+        }
 
 
-# @MX:NOTE: [AUTO] Single products API call returns both status and variant weight.
+# @MX:NOTE: [AUTO] Single products API call returns status, variant weight and variant price.
 # variant_id="0" (DB default) falls back to first variant — no separate variant endpoint needed.
 def fetch_store_live_info(
     domain: str, token: str, product_id: str, variant_id: str
 ) -> dict:
     """
-    Fetch product status and weight for one store via a single API call.
-    Returns dict with keys: status, weight, weight_unit, error.
+    Fetch product status, weight and current selling price for one store via a single API call.
+    Returns dict with keys: status, weight, weight_unit, price, error.
     REQ-SHPINFO-002: product and variant data from GET /products/{id}.json.
     REQ-SHPINFO-014: API errors surface as error field; caller always gets HTTP 200.
     """
@@ -75,6 +90,7 @@ def fetch_store_live_info(
             "status": None,
             "weight": None,
             "weight_unit": None,
+            "price": None,
             "error": "Store credentials not configured",
         }
     return _fetch_product_info(domain, token, product_id, variant_id)

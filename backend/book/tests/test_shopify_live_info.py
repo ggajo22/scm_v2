@@ -88,16 +88,20 @@ def _make_urlopen_mock(
     product_status: str = "active",
     weight: float = 500.0,
     weight_unit: str = "g",
+    price: str = "10000.00",
 ):
     """Return a side_effect for urllib.request.urlopen that returns product data with variants.
-    The products endpoint response includes variants so both status and weight come from one call.
+    The products endpoint response includes variants so status, weight and price
+    all come from one call.
     """
 
     def fake_urlopen(req, timeout=5):
         body = json.dumps({
             "product": {
                 "status": product_status,
-                "variants": [{"id": 1, "weight": weight, "weight_unit": weight_unit}],
+                "variants": [
+                    {"id": 1, "weight": weight, "weight_unit": weight_unit, "price": price}
+                ],
             }
         }).encode()
 
@@ -138,7 +142,7 @@ def test_inven_not_found_returns_404(auth_client):
 @patch("book.shopify_client.urllib.request.urlopen")
 def test_both_stores_registered_normal_response(mock_urlopen, auth_client, db):
     inven, booksen_product, etoile_inven, etoile_product = make_full_book("ISBN-BOTH-001")
-    mock_urlopen.side_effect = _make_urlopen_mock("active", 500.0, "g")
+    mock_urlopen.side_effect = _make_urlopen_mock("active", 500.0, "g", price="12345.00")
 
     url = URL_TEMPLATE.format(pk=inven.pk)
     with patch("django.conf.settings.SHOPIFY_BOOXEN_DOMAIN", "booksen.myshopify.com"), \
@@ -159,6 +163,7 @@ def test_both_stores_registered_normal_response(mock_urlopen, auth_client, db):
     assert bs["status"] == "active"
     assert bs["weight"] == 500.0
     assert bs["weight_unit"] == "g"
+    assert bs["price"] == "12345.00"
     assert bs["error"] is None
 
     # Etoile store
@@ -170,6 +175,7 @@ def test_both_stores_registered_normal_response(mock_urlopen, auth_client, db):
     assert et["status"] == "active"
     assert et["weight"] == 500.0
     assert et["weight_unit"] == "g"
+    assert et["price"] == "12345.00"
     assert et["error"] is None
 
 
@@ -224,6 +230,7 @@ def test_booksen_not_registered(auth_client, db):
     assert bs["status"] is None
     assert bs["weight"] is None
     assert bs["weight_unit"] is None
+    assert bs["price"] is None
     assert bs["error"] is None
 
 
@@ -276,6 +283,7 @@ def test_etoile_not_registered(mock_urlopen, auth_client, db):
     assert et["status"] is None
     assert et["weight"] is None
     assert et["weight_unit"] is None
+    assert et["price"] is None
     assert et["error"] is None
 
 
@@ -499,3 +507,43 @@ def test_api_error_returns_200_not_500(auth_client, db):
     # errors captured in error field, not HTTP 500
     assert "booxen" in data
     assert "etoile" in data
+    # price degrades to null on API failure instead of raising
+    assert data["booxen"]["price"] is None
+    assert data["etoile"]["price"] is None
+
+
+# ---------------------------------------------------------------------------
+# Current selling price: variant without a price field degrades to null
+# ---------------------------------------------------------------------------
+
+@patch("book.shopify_client.urllib.request.urlopen")
+def test_variant_without_price_returns_null(mock_urlopen, auth_client, db):
+    inven, _, _, _ = make_full_book("ISBN-NOPRICE-001")
+
+    def fake_urlopen(req, timeout=5):
+        body = json.dumps({
+            "product": {
+                "status": "active",
+                # variant carries no price key at all
+                "variants": [{"id": 1, "weight": 500.0, "weight_unit": "g"}],
+            }
+        }).encode()
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = body
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        return mock_resp
+
+    mock_urlopen.side_effect = fake_urlopen
+    url = URL_TEMPLATE.format(pk=inven.pk)
+    with patch("django.conf.settings.SHOPIFY_BOOXEN_DOMAIN", "booksen.myshopify.com"), \
+         patch("django.conf.settings.SHOPIFY_BOOXEN_TOKEN", "tok1"), \
+         patch("django.conf.settings.SHOPIFY_ETOILE_DOMAIN", "etoile.myshopify.com"), \
+         patch("django.conf.settings.SHOPIFY_ETOILE_TOKEN", "tok2"):
+        response = auth_client.get(url)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["booxen"]["price"] is None
+    assert data["booxen"]["status"] == "active"
+    assert data["booxen"]["error"] is None
