@@ -346,10 +346,10 @@ describe('Sidebar', () => {
       expect(screen.queryByText('미해결 메모')).not.toBeInTheDocument()
     })
 
-    it('"품목 노트"가 발주 & CS 그룹에 속한다', async () => {
+    it('"CS"가 발주 & CS 그룹에 속한다', async () => {
       await renderAndExpand('발주 & CS')
       const group = screen.getByRole('group', { name: '발주 & CS' })
-      const link = screen.getByRole('link', { name: '품목 노트' })
+      const link = screen.getByRole('link', { name: 'CS' })
       expect(link).toHaveAttribute('href', '/line-item-notes')
       expect(group).toContainElement(link)
     })
@@ -402,7 +402,7 @@ describe('Sidebar', () => {
 
       expect(screen.getByRole('link', { name: '입고 처리' })).toBeInTheDocument()
       expect(screen.getByRole('button', { name: '발주 & CS' })).toHaveAttribute('aria-expanded', 'false')
-      expect(screen.queryByRole('link', { name: '품목 노트' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('link', { name: 'CS' })).not.toBeInTheDocument()
       // 현재 경로가 속한 도서관리는 그대로 열려 있다
       expect(screen.getByRole('link', { name: '대시보드' })).toBeInTheDocument()
     })

@@ -1,9 +1,9 @@
 ---
 id: SPEC-NAV-SIDEBAR-001
-version: 1.1.0
+version: 1.1.1
 status: Completed
 created: 2026-06-20
-updated: 2026-08-21
+updated: 2026-08-22
 author: ggajo
 priority: Medium
 issue_number: ~
@@ -17,6 +17,7 @@ issue_number: ~
 |-------|------------|--------------------------|
 | 1.0.0 | 2026-06-20 | 최초 작성                |
 | 1.1.0 | 2026-08-21 | 전체 내비게이션을 담당 팀 축으로 4개 그룹(도서관리 / 주문관리 / 발주 & CS / 한국창고)으로 재편. 그룹별 독립 접기 도입, 페이지 제목을 내비게이션 라벨에 정렬 (REQ-011~REQ-016 신설) |
+| 1.1.1 | 2026-08-22 | "발주 & CS" 그룹의 `/line-item-notes` 라벨을 "품목 노트" → "CS"로 변경 (REQ-016 구현 노트 추가). 경로·권한·그룹 구성 변경 없음 |
 
 ---
 
@@ -141,6 +142,17 @@ The **Sidebar** shall toggle each group independently — expanding one group sh
 The **Sidebar** labels and the corresponding page headings shall use the same wording.
 
 > 내비게이션 라벨과 해당 페이지의 제목은 동일한 문구를 사용해야 한다. v1.1.0에서 `/orders` 는 "주문관리" → "주문 목록", `/orders/notes` 는 "미해결 메모" → "고객 메모"로 정렬했다. "미해결"은 주제가 아니라 필터 상태를 가리키는 말이었다.
+
+#### 구현 노트 (v1.1.1)
+
+`/line-item-notes` 라벨을 "품목 노트" → "CS"로 변경했다 (`frontend/src/components/Sidebar.tsx:59`).
+그룹 헤더 "발주 & CS"가 이미 쓰는 담당자 축(CS / 발주 / 한국창고 / 미국창고)과 항목 이름을 맞춘 것으로,
+경로·권한·그룹 구성은 그대로다.
+
+**미해결 divergence**: 해당 페이지의 제목은 `LineItemNotesPage.tsx:399`에서 "미해결 품목 메모"로,
+라벨과 일치하지 않는다. 이 불일치는 v1.1.0 시점부터 존재했고(당시 라벨은 "품목 노트") 이번 변경으로
+해소되지 않았다. REQ-016을 엄격히 적용하려면 페이지 제목도 함께 조정해야 하나, 이번 작업은
+사용자가 "네비게이션 이름만" 범위로 한정했다.
 
 ---
 

@@ -56,7 +56,7 @@ const navGroups: NavGroup[] = [
       { label: '발주 관리', href: '/purchase-orders' },
       { label: '창고 재고', href: '/warehouse' },
       { label: 'SKU 세트 매핑', href: '/settings/sku-sets' },
-      { label: '품목 노트', href: '/line-item-notes' },
+      { label: 'CS', href: '/line-item-notes' },
     ],
   },
   {
