@@ -1,9 +1,9 @@
 ---
 id: SPEC-NAV-SIDEBAR-001
-version: 1.0.0
+version: 1.1.0
 status: Completed
 created: 2026-06-20
-updated: 2026-06-20
+updated: 2026-08-21
 author: ggajo
 priority: Medium
 issue_number: ~
@@ -16,6 +16,7 @@ issue_number: ~
 | 버전  | 날짜       | 변경 내용                |
 |-------|------------|--------------------------|
 | 1.0.0 | 2026-06-20 | 최초 작성                |
+| 1.1.0 | 2026-08-21 | 전체 내비게이션을 담당 팀 축으로 4개 그룹(도서관리 / 주문관리 / 발주 & CS / 한국창고)으로 재편. 그룹별 독립 접기 도입, 페이지 제목을 내비게이션 라벨에 정렬 (REQ-011~REQ-016 신설) |
 
 ---
 
@@ -100,6 +101,46 @@ The **Sidebar** shall visually indent sub-items relative to the "도서관리" g
 The **Sidebar** shall mark the "도서관리" group header with `role="group"` and `aria-label="도서관리"` (or equivalent semantic HTML) so that screen readers announce the grouping.
 
 > 사이드바는 "도서관리" 그룹 헤더에 `role="group"` 및 `aria-label="도서관리"` (또는 동등한 시맨틱 HTML)를 적용하여 스크린 리더가 그룹 구조를 인식할 수 있도록 해야 한다.
+
+### 그룹 개편 (v1.1.0)
+
+REQ-001~REQ-010은 "도서관리" 그룹 하나만을 대상으로 했다. v1.1.0에서 나머지 평면 항목까지 모두 그룹으로 편입한다.
+
+### REQ-011: 4개 그룹 구성
+
+The **Sidebar** shall render exactly four group headers — "도서관리", "주문관리", "발주 & CS", "한국창고" — grouped by the team that owns the work.
+
+> 사이드바는 담당 팀 축을 기준으로 "도서관리", "주문관리", "발주 & CS", "한국창고" 네 개의 그룹 헤더를 렌더링해야 한다. 이 축은 품목 노트가 이미 사용 중인 담당자 축(CS / 발주 / 한국창고 / 미국창고)과 일치시켜, 두 화면의 어휘를 통일한다.
+
+### REQ-012: 평면 항목 유지 대상
+
+The **Sidebar** shall keep "관리자 계정 관리" as a flat item outside every group.
+
+> 사이드바는 "관리자 계정 관리"를 어떤 그룹에도 속하지 않는 평면 항목으로 유지해야 한다 (REQ-007/008의 super_admin 가시성 규칙 그대로 적용).
+
+### REQ-013: 현재 경로가 속한 그룹만 펼침
+
+**When** the sidebar first renders, the **Sidebar** shall open only the group containing the current route and keep every other group collapsed.
+
+> 사이드바 최초 렌더링 시, 현재 경로가 속한 그룹만 펼치고 나머지 그룹은 접힌 상태로 시작해야 한다. 어떤 그룹에도 속하지 않는 경로에서는 모든 그룹이 접혀 있어야 한다.
+
+### REQ-014: 그룹별 독립 접기
+
+The **Sidebar** shall toggle each group independently — expanding one group shall not collapse or expand any other.
+
+> 사이드바는 각 그룹을 독립적으로 토글해야 하며, 한 그룹을 펼쳐도 다른 그룹의 접힘 상태는 변하지 않아야 한다.
+
+### REQ-015: 접힌 그룹으로 이동 시 자동 펼침
+
+**When** the current route changes into a collapsed group, the **Sidebar** shall open that group so the active item is never hidden behind a closed header.
+
+> 접혀 있는 그룹에 속한 경로로 이동하면 해당 그룹을 자동으로 펼쳐, 활성 항목이 닫힌 헤더 뒤에 가려지지 않도록 해야 한다. 단, 이미 머무르고 있는 그룹을 사용자가 수동으로 접은 경우에는 그 상태를 유지한다 (활성 그룹이 바뀔 때만 동작).
+
+### REQ-016: 페이지 제목과 내비게이션 라벨 일치
+
+The **Sidebar** labels and the corresponding page headings shall use the same wording.
+
+> 내비게이션 라벨과 해당 페이지의 제목은 동일한 문구를 사용해야 한다. v1.1.0에서 `/orders` 는 "주문관리" → "주문 목록", `/orders/notes` 는 "미해결 메모" → "고객 메모"로 정렬했다. "미해결"은 주제가 아니라 필터 상태를 가리키는 말이었다.
 
 ---
 
