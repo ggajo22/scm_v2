@@ -89,10 +89,11 @@ def _make_urlopen_mock(
     weight: float = 500.0,
     weight_unit: str = "g",
     price: str = "10000.00",
+    image_count: int = 3,
 ):
     """Return a side_effect for urllib.request.urlopen that returns product data with variants.
-    The products endpoint response includes variants so status, weight and price
-    all come from one call.
+    The products endpoint response includes variants and the images array, so status,
+    weight, price and image count all come from one call.
     """
 
     def fake_urlopen(req, timeout=5):
@@ -102,6 +103,8 @@ def _make_urlopen_mock(
                 "variants": [
                     {"id": 1, "weight": weight, "weight_unit": weight_unit, "price": price}
                 ],
+                "images": [{"id": i, "src": f"https://cdn.example.com/{i}.jpg"}
+                           for i in range(image_count)],
             }
         }).encode()
 
@@ -547,3 +550,109 @@ def test_variant_without_price_returns_null(mock_urlopen, auth_client, db):
     assert data["booxen"]["price"] is None
     assert data["booxen"]["status"] == "active"
     assert data["booxen"]["error"] is None
+
+
+# ---------------------------------------------------------------------------
+# REQ-SHPINFO-016: Shopify product image count, from the same products response
+# ---------------------------------------------------------------------------
+
+@patch("book.shopify_client.urllib.request.urlopen")
+def test_image_count_returned_for_both_stores(mock_urlopen, auth_client, db):
+    """image_count is served for both stores; only the frontend limits display to ETOILE."""
+    inven, _, _, _ = make_full_book("ISBN-IMGCOUNT-001")
+    mock_urlopen.side_effect = _make_urlopen_mock(image_count=4)
+
+    url = URL_TEMPLATE.format(pk=inven.pk)
+    with patch("django.conf.settings.SHOPIFY_BOOXEN_DOMAIN", "booksen.myshopify.com"), \
+         patch("django.conf.settings.SHOPIFY_BOOXEN_TOKEN", "tok1"), \
+         patch("django.conf.settings.SHOPIFY_ETOILE_DOMAIN", "etoile.myshopify.com"), \
+         patch("django.conf.settings.SHOPIFY_ETOILE_TOKEN", "tok2"):
+        response = auth_client.get(url)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["booxen"]["image_count"] == 4
+    assert data["etoile"]["image_count"] == 4
+
+
+@patch("book.shopify_client.urllib.request.urlopen")
+def test_image_count_zero_when_product_has_no_images(mock_urlopen, auth_client, db):
+    """An empty images array is 0, not null — the product exists and genuinely has none."""
+    inven, _, _, _ = make_full_book("ISBN-IMGCOUNT-002")
+    mock_urlopen.side_effect = _make_urlopen_mock(image_count=0)
+
+    url = URL_TEMPLATE.format(pk=inven.pk)
+    with patch("django.conf.settings.SHOPIFY_BOOXEN_DOMAIN", "booksen.myshopify.com"), \
+         patch("django.conf.settings.SHOPIFY_BOOXEN_TOKEN", "tok1"), \
+         patch("django.conf.settings.SHOPIFY_ETOILE_DOMAIN", "etoile.myshopify.com"), \
+         patch("django.conf.settings.SHOPIFY_ETOILE_TOKEN", "tok2"):
+        response = auth_client.get(url)
+
+    assert response.json()["etoile"]["image_count"] == 0
+
+
+@patch("book.shopify_client.urllib.request.urlopen")
+def test_image_count_null_when_images_key_absent(mock_urlopen, auth_client, db):
+    """A response without an images key yields null — absence of data, not zero images."""
+    inven, _, _, _ = make_full_book("ISBN-IMGCOUNT-003")
+
+    def fake_urlopen(req, timeout=5):
+        body = json.dumps({
+            "product": {
+                "status": "active",
+                "variants": [{"id": 1, "weight": 500.0, "weight_unit": "g", "price": "10.00"}],
+                # no images key at all
+            }
+        }).encode()
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = body
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        return mock_resp
+
+    mock_urlopen.side_effect = fake_urlopen
+    url = URL_TEMPLATE.format(pk=inven.pk)
+    with patch("django.conf.settings.SHOPIFY_BOOXEN_DOMAIN", "booksen.myshopify.com"), \
+         patch("django.conf.settings.SHOPIFY_BOOXEN_TOKEN", "tok1"), \
+         patch("django.conf.settings.SHOPIFY_ETOILE_DOMAIN", "etoile.myshopify.com"), \
+         patch("django.conf.settings.SHOPIFY_ETOILE_TOKEN", "tok2"):
+        response = auth_client.get(url)
+
+    assert response.json()["etoile"]["image_count"] is None
+    # the rest of the payload still resolves normally
+    assert response.json()["etoile"]["status"] == "active"
+
+
+def test_image_count_null_on_api_error(auth_client, db):
+    """API failure degrades image_count to null without raising, same as price."""
+    inven, _, _, _ = make_full_book("ISBN-IMGCOUNT-004")
+
+    url = URL_TEMPLATE.format(pk=inven.pk)
+    with patch("book.shopify_client.urllib.request.urlopen", side_effect=OSError("boom")), \
+         patch("django.conf.settings.SHOPIFY_BOOXEN_DOMAIN", "booksen.myshopify.com"), \
+         patch("django.conf.settings.SHOPIFY_BOOXEN_TOKEN", "tok1"), \
+         patch("django.conf.settings.SHOPIFY_ETOILE_DOMAIN", "etoile.myshopify.com"), \
+         patch("django.conf.settings.SHOPIFY_ETOILE_TOKEN", "tok2"):
+        response = auth_client.get(url)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["booxen"]["image_count"] is None
+    assert data["etoile"]["image_count"] is None
+
+
+def test_image_count_null_when_store_not_registered(auth_client, db):
+    """Unregistered stores keep the same response shape — image_count present and null."""
+    inven = Inven.objects.create(
+        inven_SKU="ISBN-IMGCOUNT-005", vendor="v", store="s", status_of_shopify=100
+    )
+
+    url = URL_TEMPLATE.format(pk=inven.pk)
+    response = auth_client.get(url)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["booxen"]["registered"] is False
+    assert data["booxen"]["image_count"] is None
+    assert data["etoile"]["registered"] is False
+    assert data["etoile"]["image_count"] is None

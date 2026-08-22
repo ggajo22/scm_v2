@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
@@ -7,7 +7,7 @@ import { BookDetailPage } from './BookDetailPage'
 import { useBookDetail } from '@/features/book/hooks/useBookDetail'
 import { useShopifyLiveInfo } from '@/features/book/hooks/useShopifyLiveInfo'
 import { server } from '@/test/server'
-import type { BookDetail, BookInfo } from '@/types/book'
+import type { BookDetail, BookInfo, ShopifyStoreInfo } from '@/types/book'
 
 vi.mock('@/features/book/hooks/useBookDetail', () => ({
   useBookDetail: vi.fn(),
@@ -138,5 +138,63 @@ describe('BookDetailPage - WeightSection 교보 무게 동기화', () => {
     // useEffect가 kyobo_weight를 누락하면 이 input은 undefined로 빠지며
     // 최신 값(777)을 반영하지 못한다.
     expect(screen.getByDisplayValue('777')).toBeInTheDocument()
+  })
+})
+
+// REQ-SHPINFO-016: 이미지 수는 두 스토어 응답에 모두 담기지만 화면에는 ETOILE에만 나온다.
+describe('BookDetailPage - Shopify 이미지 수 표시', () => {
+  function mockLiveInfo(booxenImages: number | null, etoileImages: number | null) {
+    const store = (registered: boolean, image_count: number | null): ShopifyStoreInfo => ({
+      registered,
+      product_id: registered ? '111' : null,
+      variant_id: registered ? '222' : null,
+      status: registered ? 'active' : null,
+      weight: registered ? 500 : null,
+      weight_unit: registered ? 'g' : null,
+      price: registered ? '13.00' : null,
+      image_count,
+      error: null,
+    })
+    mockUseShopifyLiveInfo.mockReturnValue({
+      isPending: false,
+      isError: false,
+      data: { booxen: store(true, booxenImages), etoile: store(true, etoileImages) },
+    } as unknown as ReturnType<typeof useShopifyLiveInfo>)
+
+    mockUseBookDetail.mockReturnValue({
+      isPending: false,
+      isError: false,
+      error: null,
+      data: buildBookDetail(),
+    } as unknown as ReturnType<typeof useBookDetail>)
+  }
+
+  beforeEach(() => {
+    server.use(
+      http.get('http://localhost:8000/api/book/booxen-categories/', () => HttpResponse.json([]))
+    )
+  })
+
+  it('ETOILE 섹션에 이미지 수를 표시한다', () => {
+    mockLiveInfo(7, 4)
+    renderPage()
+
+    // ETOILE의 4장만 나오고, GIMSSINE의 7장은 나오지 않아야 한다
+    expect(screen.getByText('이미지 4장')).toBeInTheDocument()
+    expect(screen.queryByText('이미지 7장')).not.toBeInTheDocument()
+  })
+
+  it('image_count가 null이면 아무것도 표시하지 않는다', () => {
+    mockLiveInfo(3, null)
+    renderPage()
+
+    expect(screen.queryByText(/이미지 \d+장/)).not.toBeInTheDocument()
+  })
+
+  it('이미지가 0장이면 0장으로 표시한다 (null과 구분)', () => {
+    mockLiveInfo(3, 0)
+    renderPage()
+
+    expect(screen.getByText('이미지 0장')).toBeInTheDocument()
   })
 })

@@ -153,6 +153,8 @@ export interface ShopifyStoreInfo {
   weight_unit: 'g' | 'kg' | 'lb' | 'oz' | null
   /** Current Shopify selling price — decimal string in the store's own currency */
   price: string | null
+  /** Number of images on the Shopify product; null when the API did not return the array */
+  image_count: number | null
   error: string | null
 }
 

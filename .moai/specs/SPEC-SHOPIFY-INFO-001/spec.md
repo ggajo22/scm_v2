@@ -1,9 +1,9 @@
 ---
 id: SPEC-SHOPIFY-INFO-001
-version: 1.1.0
+version: 1.2.0
 status: Completed
 created: 2026-06-20
-updated: 2026-08-21
+updated: 2026-08-22
 author: ggajo
 priority: Medium
 issue_number: ~
@@ -17,6 +17,7 @@ issue_number: ~
 |---------|------|--------|-------------|
 | 1.0.0 | 2026-06-20 | ggajo | Initial SPEC creation |
 | 1.1.0 | 2026-08-21 | ggajo | 현재 판매가(`price`) 응답 필드 및 표시 요구사항 추가 (REQ-SHPINFO-015). 구현과 어긋나 있던 Shopify API 서술(버전 2024-01 → 2024-10, 무게를 별도 `variants` 호출로 기술 → `products` 단일 호출) 정정 |
+| 1.2.0 | 2026-08-22 | ggajo | Shopify 상품 이미지 수(`image_count`) 응답 필드 및 ETOILE 한정 표시 요구사항 추가 (REQ-SHPINFO-016). 폐기된 SPEC-SHOPIFY-INFO-002(PR #4, 판매가+이미지 수)의 이미지 수 부분을 이 SPEC으로 편입 — 판매가는 v1.1.0에서 이미 반영됐고, 두 요구사항 모두 동일한 `shopify-live-info` 엔드포인트를 다루므로 SPEC을 하나로 유지한다 |
 
 ---
 
@@ -70,6 +71,7 @@ issue_number: ~
   - 상태: `product.status` (`active` | `draft` | `archived`)
   - 무게: `product.variants[].weight`, `product.variants[].weight_unit`
   - 판매가: `product.variants[].price` (스토어 통화 기준 decimal 문자열)
+  - 이미지 수: `len(product.images)` — `images` 키가 없으면 `null`
   - variant 선택: `variant_id` 일치 항목, 없거나 `"0"`이면 첫 번째 variant
 
 API 버전은 `book/shopify_client.py`의 `SHOPIFY_API_VERSION` 상수 한 곳에서 관리한다.
@@ -100,7 +102,7 @@ The system **shall** provide a dedicated endpoint `GET /api/book/{inven_id}/shop
 
 ### REQ-SHPINFO-006 (Unwanted Behavior — API 오류)
 
-**If** the Shopify Admin API call fails (network error, HTTP 4xx/5xx), **then** the system **shall** return `{"status": null, "weight": null, "weight_unit": null, "price": null, "error": "<reason>"}` for the affected store and **shall not** raise an unhandled exception.
+**If** the Shopify Admin API call fails (network error, HTTP 4xx/5xx), **then** the system **shall** return `{"status": null, "weight": null, "weight_unit": null, "price": null, "image_count": null, "error": "<reason>"}` for the affected store and **shall not** raise an unhandled exception.
 
 ### REQ-SHPINFO-007 (Unwanted Behavior — 인증)
 
@@ -120,6 +122,7 @@ The system **shall** return the following JSON structure for the endpoint:
     "weight": "number | null",
     "weight_unit": "g | kg | lb | oz | null",
     "price": "string | null",
+    "image_count": "number | null",
     "error": "string | null"
   },
   "etoile": {
@@ -130,6 +133,7 @@ The system **shall** return the following JSON structure for the endpoint:
     "weight": "number | null",
     "weight_unit": "g | kg | lb | oz | null",
     "price": "string | null",
+    "image_count": "number | null",
     "error": "string | null"
   }
 }
@@ -172,6 +176,16 @@ The system **shall** display the store's current selling price, sourced from the
 - 두 스토어(Booksen, Etoile) 모두 USD로 판매하므로 통화 기호는 `$`로 고정한다.
 - `price`가 `null`이면 "판매가 없음"을 표시한다.
 - 판매가 조회를 위해 추가 API 호출을 하지 않는다 (REQ-SHPINFO-002/003의 단일 `products` 호출 응답을 재사용).
+
+### REQ-SHPINFO-016 (Ubiquitous — Shopify 상품 이미지 수)
+
+The system **shall** include `image_count` in the endpoint response for both stores, computed as the length of `product.images` from the same `products` response, and **shall** display it in the ETOILE section only.
+
+- 응답 필드는 두 스토어 모두에 포함한다 (응답 구조 일관성). 표시는 ETOILE 섹션에 한정한다 — GIMSSINE 리스팅은 이미지 수를 기준으로 관리하지 않는다.
+- `images` 배열이 **비어 있으면 `0`**, `images` 키가 **응답에 없으면 `null`** 이다. 두 값은 다른 사실이며(이미지가 실제로 없음 vs 데이터를 받지 못함) 화면에서도 다르게 처리한다 — `0`은 "이미지 0장"으로 표시하고, `null`은 아무것도 표시하지 않는다.
+- 스토어 미등록·API 오류 시에도 `image_count`는 `null`로 응답에 포함한다 (REQ-SHPINFO-004/005/006과 동일한 구조 유지).
+- 이미지 수 조회를 위해 추가 API 호출을 하지 않는다 (단일 `products` 호출 응답을 재사용).
+- 데이터 소스는 Shopify API의 `product.images`이며, DB의 `EtoileBookInfo.preview_urls`가 아니다 — 스토어의 현재 상태를 보여주는 것이 이 엔드포인트의 목적이기 때문이다.
 
 ---
 

@@ -810,6 +810,13 @@ function ShopifyLiveInfoSection({
                   {info.price != null ? formatShopifyPrice(info.price) : '판매가 없음'}
                 </span>
               )}
+              {/* REQ-SHPINFO-016: image count is served for both stores but shown for
+                  ETOILE only — GIMSSINE listings are not curated on image count. */}
+              {info.registered && label === 'ETOILE' && info.image_count != null && (
+                <span className="text-sm text-muted-foreground">
+                  이미지 {info.image_count}장
+                </span>
+              )}
               {info.registered && (
                 <div className="ml-auto flex gap-2">
                   <Button
