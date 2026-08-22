@@ -2130,9 +2130,18 @@ class UploadDailyReviewView(APIView):
                         # the warehouse branch do — appended to
                         # `pending_notes`, never a per-row create().
                         # assignee="발주" follows ConfirmOrderView's precedent
-                        # and is what routes the note to the frontend's 발주
-                        # tab; leaving it to the model default ("CS") would
-                        # file purchasing memos into the CS queue.
+                        # and labels the memo as a purchasing one; leaving it
+                        # to the model default ("CS") would mislabel it.
+                        # is_resolved=True is what keeps it OUT of the CS and
+                        # 발주 tabs: LineItemNoteUnresolvedListView filters on
+                        # is_resolved=False, and the frontend's three tabs read
+                        # only from that endpoint (LineItemNotesPage
+                        # filterNotes). The memo is a record of why the row was
+                        # confirmed, not a task anyone must act on — the
+                        # unresolved queue is for the latter. It stays visible
+                        # in the line item's note history on the order detail
+                        # page, which serializes notes unfiltered
+                        # (LineItemSerializer.notes).
                         # `note_type` is deliberately NOT copied from the CS
                         # branch: the 타출판사 Excel export selects purely on
                         # note_type, so any value set here can leak a
@@ -2154,6 +2163,7 @@ class UploadDailyReviewView(APIView):
                                         content=note,
                                         author=None,
                                         assignee="발주",
+                                        is_resolved=True,
                                     )
                                 )
 

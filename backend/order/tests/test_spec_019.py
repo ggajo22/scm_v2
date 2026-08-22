@@ -154,8 +154,9 @@ class TestDistributorRowMemoBecomesPurchasingNote:
         assert note.note_type == ""
         # (e)
         assert note.author is None
-        # (f)
-        assert note.is_resolved is False
+        # (f) recorded as already-resolved — the memo is a record of why the row
+        # was confirmed, not a task, so it must not enter the unresolved queue
+        assert note.is_resolved is True
 
 
 # ---------------------------------------------------------------------------
@@ -710,10 +711,10 @@ def _excel_strings(file_bytes: bytes) -> set[str]:
 
 
 @pytest.mark.django_db
-class TestNewNoteIsVisibleButNeverExported:
+class TestNewNoteIsRecordedButNeverQueuedOrExported:
     """T9 (AC-MEMO-009) — REQ-MEMO-017/018."""
 
-    def test_note_appears_in_unresolved_list_and_not_in_publisher_export(
+    def test_note_is_recorded_but_absent_from_unresolved_list_and_publisher_export(
         self, auth_client
     ):
         order = _make_order(shopify_order_id=190009, name="#M009")
@@ -740,24 +741,35 @@ class TestNewNoteIsVisibleButNeverExported:
         ])
         assert _post_file(auth_client, file_bytes).status_code == 201
 
-        # (1) unresolved list
+        # (a) the memo IS recorded, attached to the right line item
+        note = LineItemNote.objects.get(line_item=li, content="표시 확인 메모")
+        assert note.assignee == "발주"
+        assert note.is_resolved is True
+
+        # (b) ...and precisely because it is already resolved it never enters the
+        # unresolved queue, which is the sole data source for the CS / 발주 /
+        # 타출판사 tabs. A memo explaining why a row was confirmed is a record,
+        # not a task for someone to work off.
         res_list = auth_client.get(NOTES_UNRESOLVED_URL)
         assert res_list.status_code == 200
         matching = [
             row for row in res_list.data if row["content"] == "표시 확인 메모"
         ]
-        # (a)
-        assert len(matching) == 1, (
-            f"expected the new note in the unresolved list, found {len(matching)}"
+        assert matching == [], (
+            f"the memo must not reach the unresolved queue, found {len(matching)}"
         )
-        item = matching[0]
-        assert item["assignee"] == "발주"
-        assert item["is_resolved"] is False
-        # (b)
-        assert item["order_name"] == "#M009"
-        assert item["line_item_sku"] == "S19-SHOW"
-        assert item["line_item_title"] == "표시 확인용 도서"
-        assert item["line_item_id"] == li.pk
+
+        # ...while the endpoint demonstrably works — the control note is returned,
+        # so an empty result above cannot be a broken query masquerading as a pass.
+        assert any(row["content"] == "아가페" for row in res_list.data)
+
+        # (c) it stays readable in the line item's own note history, which the
+        # order detail page serializes without an is_resolved filter
+        res_history = auth_client.get(f"/api/orders/line-items/{li.pk}/notes/")
+        assert res_history.status_code == 200
+        history = [row for row in res_history.data if row["content"] == "표시 확인 메모"]
+        assert len(history) == 1
+        assert history[0]["assignee"] == "발주"
 
         # (2) 타출판사 export — publisher=other is the bucket a leaked note
         # (note_type="타출판사", content not 아가페/성서유니온) would land in.

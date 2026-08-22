@@ -1,9 +1,9 @@
 ---
 id: SPEC-ORDER-019
-version: 1.0.2
+version: 1.1.0
 status: completed
 created_at: 2026-08-13
-updated: 2026-08-13
+updated: 2026-08-22
 author: ggajo
 priority: High
 issue_number: 0
@@ -18,6 +18,7 @@ labels: [order, daily-review, upload, line-item-note, data-loss]
 |------|------|--------|-----------|
 | 1.0.0 | 2026-08-13 | ggajo | 최초 작성. `UploadDailyReviewView`의 세 행 처리 분기 중 배포처(비창고) 분기만 행의 메모를 `LineItemNote`로 남기지 않는 결함을 다룬다. 운영 DB 실측(`research.md` §2): 이 분기를 통과한 LineItem 9,963건 중 어떤 노트든 가진 것은 12건. 확정한 설계 결정 5건 — assignee는 `발주`(`ConfirmOrderView:1144` 선례이자 프론트엔드 무변경 조건), `note_type`은 모델 기본값 `""`(전수 조사 결과 `LineItemNote.note_type`을 읽어 `purchase_status`를 유도하는 경로가 **없음**), 공백 가드는 CS 분기의 `if note is not None`(`:1650`) 그대로, 쓰기는 기존 `pending_notes`(`:1595`) → 단일 `bulk_create`(`:1806-1807`)에 편입, 멱등성은 `_reorder_candidate_filter`(`:107-110`)로부터 **상속**(신규 dedup 없음). 모든 `file:line` 인용은 `research.md`가 이 세션에서 직접 재검증했다 — SPEC-ORDER-016 v1.0.5 / SPEC-ORDER-018 v1.0.3이 기록한 허구 인용·줄 표류 사고를 반복하지 않기 위해 선행 SPEC의 인용을 재사용하지 않았다. 미해결 조사 1건(과거 템플릿 파일의 배포처 행 메모 기재율)은 `research.md` §9에 방법과 판정 기준까지 명시해 등록했다. |
 | 1.0.1 | 2026-08-13 | ggajo | v1.0.0이 남긴 **미해결 조사 1건을 해소**했다. `G:\내 드라이브\...\02_최종공유\`의 2026년 `Daily Order Review Template` **198개 파일**을 `parse_daily_review_excel`로 직접 스캔한 결과(`research.md` §9.0): 배포처 분기 대상 행 **56,637건 중 메모 보유 1,172건(2.1%), 228종**. 판정은 **"자유 텍스트 지배 → 설계 그대로 배포"**이며 상투어 필터링 요구사항은 추가하지 않는다. §8.1이 제기했던 "실제 파일도 `\"정상\"` 같은 상투어를 담아 저가치 노트가 대량 생성된다"는 우려는 **전수 검색 결과 출현 0건으로 기각**됐다(§9.0.1) — 픽스처만의 관행이었다. 상위 값은 `품절이지만 북센 시도`(464) / `주문판매`(280) / `품절이지만 교보 시도`(132)로, 발주 담당자의 판단 근거 기록이다. 유실 규모는 2026년분만 1,172건으로 현존 `LineItemNote` 총계 355건의 **3.3배**다. 요구사항·인수 기준·설계 결정은 **변경 없음**(스캔 결과가 기존 설계를 확인했을 뿐이다). 배포 전 게이트는 이로써 남아 있지 않다. |
+| 1.1.0 | 2026-08-22 | ggajo | **사용자 지시로 표시 요구사항 반전.** 배포처 메모를 `is_resolved=True`로 생성해 CS·발주 어느 탭에도 노출하지 않는다 — 이 메모는 행이 왜 그렇게 확정됐는지에 대한 **기록**이지 처리해야 할 **작업**이 아니기 때문이다. 기록 자체는 그대로 남으며 주문 상세의 품목 노트 이력에서 `assignee="발주"` 라벨과 함께 확인된다 (`LineItemSerializer.notes`는 `is_resolved` 필터 없이 직렬화). REQ-MEMO-006(미해결 → 해결), REQ-MEMO-017(표시 → 미표시로 반전), REQ-MEMO-017a(이력 표시) 신설, AC-MEMO-009 재작성. 부수효과로 v1.0.0이 "수용"으로 기록했던 **CS 탭 마스킹 위험이 소멸**한다 — 탭에 오르지 않는 노트는 다른 노트를 가릴 수 없다. 2026년분 실측 1,172건이 발주 큐를 덮는 문제도 함께 사라진다. |
 | 1.0.2 | 2026-08-13 | ggajo | **구현 완료**(커밋 `7b9f494`). 프로덕션 변경은 계획대로 배포처 분기 1곳 — `purchase_order_views.py:1775-1784`의 10줄과 배치 주석 갱신(`:1839-1842`)뿐이며, 쿼리 증가는 0(기존 `pending_notes` → 단일 `bulk_create` `:1843-1844`에 편입). 부수적으로 **frontmatter 정정**: v1.0.1 행을 추가할 때 frontmatter의 `version`이 `1.0.0`에 머물러 HISTORY와 어긋나 있던 것을 이 행에서 `1.0.2`로 일괄 정합화했다. **계획 대비 발산 6건.** (1) **T3를 단일 테스트 메서드로 병합** — 초안은 AC-MEMO-003을 두 메서드로 쪼갰는데 그중 하나가 RED에서 **통과**했다. `acceptance.md:122-127`이 이미 명시하듯 (a)/(b)는 되돌린 코드에서도 성립하고 반전 판별력은 (c)에만 있다. 두 절반을 한 시나리오로 묶어야 RED가 단위로 성립하므로 `test_spec_019.py:238`의 `test_absent_memo_column_is_inert_while_a_present_one_still_creates_the_note` 하나로 합쳤다 — 세 절 (a)/(b)/(c)는 전부 그대로 단정한다. (2) **AC-MEMO-009 (c)의 대조군 단정 조정** — AC 문언 그대로면 `content="아가페"`, `note_type="타출판사"`인 대조군 노트가 `?publisher=other` 응답에도 남아 있어야 하는데 이는 **충족 불가능**하다: `views.py:324`의 `other` 분기가 `.exclude(content__in=["아가페", "성서유니온"])`이므로 아가페 노트는 그 버킷에 애초에 들어가지 않는다. 구현은 대조군을 AC대로 만들되, **누출 부재는 `?publisher=other`에**(`test_spec_019.py:764-769`), **대조군 존재는 `?publisher=agape`에**(`:773-777`) 단정한다 — "내보내기가 늘 빈 응답"이라는 가짜 통과를 막는다는 AC의 의도는 그대로 지킨다. (3) **(c)를 원시 응답 바이트 검색이 아니라 xlsx 셀 파싱으로 검증** — `.xlsx`는 deflate 압축 zip이라 원시 substring 검색은 **실제 누출에서도 통과**한다. `_excel_strings`(`test_spec_019.py:701-709`)로 워크북을 열어 셀 값 집합을 만들어 대조한다. (4) **T7 대조군에 별도 SKU 사용** — 같은 SKU를 재사용하면 두 번째 `PurchaseOrder`가 생겨 AC (d)의 "PO 정확히 1건" 단정이 이 SPEC과 무관한 이유로 깨진다. 대조군은 `S19-MULTIN`/`#M007N`(`:565-571`)으로 분리했다. (5) **테스트 픽스처 네임스페이스화** — 공유 원격 MySQL 테스트 DB에서 `test_daily_review_upload.py`와 충돌하지 않도록 SKU는 `S19-` 접두, 주문명은 `#M0xx` 대역을 쓴다. AC의 리터럴 `sku="SKU-BLANK"`는 `"S19-BLANK"`(`:174`)가 됐고 **단정 내용은 무변경**이다. (6) **REFACTOR는 의도적 무변경** — `plan.md` 리스크 R1의 판단대로다. 공통 노트 생성 헬퍼를 추출하려면 CS·창고 분기를 손대야 해 REQ-MEMO-013과 Exclusions를 위반한다. **줄 번호 표류 없음** — 이 SPEC의 인용은 기준 커밋 `9f1f82b`에서 채취했고 구현 직전 파일과 **정확히 일치**했다(`:93` `_reorder_candidate_filter`, `:107-110` 본체, `:1144` `ConfirmOrderView`의 `assignee="발주"`, `:1370` `UploadDailyReviewView`, `:1595` `pending_notes`, `:1632` `note = item.get("note")`, `:1650` CS 공백 가드, `:1708` 창고 assignee 유도, `:1719`/`:1756` 배포처 분기 양끝, `:1804-1807` 배치 주석·`bulk_create` 전량 재확인). SPEC-ORDER-018 v1.0.3이 겪은 표류가 이번에는 발생하지 않았다. 구현으로 삽입점(`:1751`) 아래가 **+37줄** 밀렸으므로, 이 문서의 인용은 **구현 이전 좌표**로 읽어야 한다. |
 
 ---
@@ -220,10 +221,9 @@ LineItem 단위로 조회되는 품목 노트 화면(`views.py:259-261`이
 → `LineItemNotesPage`(`LineItemNotesPage.tsx:306`)가 수신(`:309`)
 → `filterNotes`(`:35-49`)가 `:48`의 `assignee === tab`으로 발주 탭에 배치.
 
-`is_resolved`는 모델 기본값 `False`(`models.py:273`)이므로 새 노트는 미해결로 생성되어
-그 목록에 들어간다.
+**v1.1.0 정정**: 이 경로는 더 이상 타지 않는다. 노트를 `is_resolved=True`로 생성하므로 `filter(is_resolved=False)`에서 걸러져 위 체인 전체(직렬화 → 페이지 → `filterNotes`)에 도달하지 않는다. 표시는 주문 상세의 품목 노트 이력이 담당하며, 그쪽은 `LineItemSerializer.notes`가 `is_resolved` 필터 없이 전량 직렬화한다.
 
-**알려진 부수효과(수용, 기존 특성)**: `filterNotes`는 CS/발주 탭에 대해 LineItem당 **가장
+**알려진 부수효과 — v1.1.0에서 해소됨**: 아래는 미해결로 생성할 때의 위험이었고, `is_resolved=True`로 바뀌면서 성립하지 않는다(이 노트는 애초에 탭에 오르지 않는다). 기록으로 남긴다. `filterNotes`는 CS/발주 탭에 대해 LineItem당 **가장
 최신 노트 1건만** 보여준다(`:38-46`, tie-break는 `:43`의 `note.id > existing.id`). 따라서 새
 발주 노트가 같은 LineItem의 기존 미해결 CS 노트를 CS 탭에서 가릴 수 있다.
 
@@ -288,7 +288,9 @@ empty value, and shall introduce no distributor-specific note-type value.
 **REQ-MEMO-005** (Ubiquitous): The system shall record no author on such a note, matching the
 two branches that already create notes during this upload.
 
-**REQ-MEMO-006** (Ubiquitous): The system shall create such a note in the unresolved state.
+**REQ-MEMO-006** (Ubiquitous): The system shall create such a note in the **resolved** state (`is_resolved=True`).
+
+> v1.1.0 변경. 이 메모는 행이 왜 그렇게 확정됐는지를 남기는 **기록**이지 누군가 처리해야 할 **작업**이 아니다. 미해결 큐는 후자를 위한 것이므로 여기 들어가면 안 된다. 2026년분 실측만 1,172건으로 현존 `LineItemNote` 총계(355건)의 3.3배이며, 미해결로 생성하면 발주 담당자의 큐가 기록성 메모로 덮인다.
 
 ### 모듈 2 — 메모가 없는 경우 (빈 노트 방지)
 
@@ -338,9 +340,9 @@ migration, purchase-status value, note-type value, or assignee value shall be in
 
 ### 모듈 6 — 표시 경로
 
-**REQ-MEMO-017** (Ubiquitous): A note created by this branch shall appear in the existing
-unresolved line-item note listing, carrying enough context for the operator to identify the
-order and the item, without any change to the frontend.
+**REQ-MEMO-017** (Unwanted): If a note is created by this branch, then it shall **not** appear in the unresolved line-item note listing, and therefore in none of the CS / 발주 / 타출판사 tabs.
+
+**REQ-MEMO-017a** (Ubiquitous): Such a note shall remain readable in that line item's own note history on the order detail page, carrying its `assignee` label, without any change to the frontend.
 
 **REQ-MEMO-018** (Unwanted): If a note is created by this branch, then it shall not appear in
 the other-publisher Excel export.
@@ -419,12 +421,8 @@ migration state of the project shall report no pending changes.
 short-circuiting the row before its purchase-order group is accumulated. Also breaks under
 reversion — the memo-bearing run produces no notes.
 
-**AC-MEMO-009** (Ubiquitous) — Traces: REQ-MEMO-017, REQ-MEMO-018. After an upload creates a
-note for a distributor row, the unresolved line-item note listing shall include that note with
-its order name, SKU, item title, assignee and resolved flag, and the other-publisher Excel
-export shall not include it.
-*Mutation that breaks it*: setting the note type to the other-publisher value — the note leaks
-into the export. Also breaks under reversion — the note is absent from the listing.
+**AC-MEMO-009** (Ubiquitous) — Traces: REQ-MEMO-017, REQ-MEMO-017a, REQ-MEMO-018. After an upload creates a note for a distributor row, that note shall be absent from the unresolved line-item note listing while a control note on another line item is still returned by it, shall be present in the line item's own note history with `assignee="발주"`, and shall not appear in the other-publisher Excel export.
+*Mutation that breaks it*: dropping `is_resolved=True` — the note surfaces in the 발주 tab. Setting the note type to the other-publisher value — the note leaks into the export. Also breaks under reversion — the note is absent from the history too.
 
 ### Traceability 검증표
 
