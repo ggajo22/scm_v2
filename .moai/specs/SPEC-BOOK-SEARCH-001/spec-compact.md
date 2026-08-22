@@ -16,7 +16,7 @@
 
 **REQ-SEARCH-007**: 시스템은 검색 결과 응답에 `count`, `next`, `previous`, `results` 필드를 포함한 표준 DRF 페이지네이션 구조를 반환하여야 한다.
 
-**REQ-SEARCH-008**: 시스템은 `Inven.objects.select_related('info')` 쿼리를 사용하여 N+1 쿼리 문제를 방지하여야 한다.
+**REQ-SEARCH-008**: 시스템은 `Inven.objects.select_related('info', 'etoile_inven')` 쿼리를 사용하여 N+1 쿼리 문제를 방지하여야 한다.
 
 **REQ-SEARCH-009**: `WHEN` 사용자가 검색 입력란에 2자 이상을 입력하는 경우, 시스템은 디바운스 후 검색 API를 호출하여야 한다 (숫자만: 250ms, 텍스트: 300ms).
 
@@ -26,7 +26,11 @@
 
 **REQ-SEARCH-010**: `WHEN` 사용자가 검색 입력란에 1자 이하를 입력하는 경우, 시스템은 API 호출을 수행하지 않아야 한다.
 
-**REQ-SEARCH-011**: 시스템은 검색 결과 테이블에 ISBN(`inven_SKU`), 도서 제목(`name`), 판매가(`price_sale`), Shopify 상태(`status_of_shopify`) 열을 표시하여야 한다.
+**REQ-SEARCH-011**: 시스템은 검색 결과 테이블에 표지 썸네일(`cover_image_url`), ISBN(`inven_SKU`), 도서 제목(`name`), ETOILE 리스팅 상태(`etoile_status_label`), Shopify 상태(`status_of_shopify`) 열을 표시하여야 한다. 판매가(`price_sale`)는 표시하지 않으며 검색 응답 필드에도 포함하지 않는다.
+
+**REQ-SEARCH-018**: 시스템은 `etoile_book_inven.status_of_shopify` 가 `80`(리스팅 완료)인 경우에만 ETOILE 리스팅됨(`etoile_listed: true`)으로 판정하여야 한다. 레코드 없음 → `"미등록"`, `NULL` → `"상태 없음"`, 미정의 코드 → `"정의되지 않은 상태"`.
+
+**REQ-SEARCH-019**: `WHEN` 표지 이미지 URL이 비어 있거나 로드에 실패하는 경우, 시스템은 중립 플레이스홀더를 표시하여야 한다.
 
 **REQ-SEARCH-012**: `WHEN` API 응답이 로딩 중인 경우, 시스템은 로딩 상태 UI를 표시하여야 한다.
 

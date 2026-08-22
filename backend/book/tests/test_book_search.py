@@ -8,7 +8,7 @@ from django.contrib.auth import get_user_model
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from book.models import Info, Inven
+from book.models import EtoileBookInven, Info, Inven
 
 User = get_user_model()
 
@@ -28,7 +28,13 @@ def auth_client(user):
     return client
 
 
-def make_book(sku: str, title: str, price_sale: float = 10000.0, status_of_shopify: int = 100) -> Inven:
+def make_book(
+    sku: str,
+    title: str,
+    price_sale: float = 10000.0,
+    status_of_shopify: int = 100,
+    cover_image_url: str = "",
+) -> Inven:
     """Helper: create Inven + Info pair."""
     inven = Inven.objects.create(
         inven_SKU=sku,
@@ -44,6 +50,7 @@ def make_book(sku: str, title: str, price_sale: float = 10000.0, status_of_shopi
         useruse1="",
         useruse2="",
         retyn="N",
+        cover_image_url=cover_image_url,
     )
     return inven
 
@@ -90,8 +97,100 @@ class TestBookSearchResponseShape:
         book = results[0]
         assert "inven_SKU" in book
         assert "name" in book
-        assert "price_sale" in book
         assert "status_of_shopify" in book
+        assert "cover_image_url" in book
+        assert "etoile_listed" in book
+        assert "etoile_status_label" in book
+
+
+# ---------------------------------------------------------------------------
+# Search result display fields: cover image + ETOILE listing, price_sale dropped
+# ---------------------------------------------------------------------------
+
+@pytest.mark.django_db
+class TestBookSearchDisplayFields:
+    """Search results expose the cover image URL and ETOILE listing state, not the sale price."""
+
+    def test_price_sale_is_not_exposed(self, auth_client, db):
+        make_book("ISBN-001", "테스트 도서", price_sale=15000.0)
+
+        book = auth_client.get(SEARCH_URL).json()["results"][0]
+        assert "price_sale" not in book
+
+    def test_cover_image_url_is_returned(self, auth_client, db):
+        make_book("ISBN-001", "테스트 도서", cover_image_url="https://cdn.example.com/a.jpg")
+
+        book = auth_client.get(SEARCH_URL).json()["results"][0]
+        assert book["cover_image_url"] == "https://cdn.example.com/a.jpg"
+
+    def test_cover_image_url_is_empty_string_when_missing(self, auth_client, db):
+        make_book("ISBN-001", "테스트 도서")
+
+        book = auth_client.get(SEARCH_URL).json()["results"][0]
+        assert book["cover_image_url"] == ""
+
+    def test_no_etoile_record_is_not_listed(self, auth_client, db):
+        make_book("ISBN-001", "테스트 도서")
+
+        book = auth_client.get(SEARCH_URL).json()["results"][0]
+        assert book["etoile_listed"] is False
+        assert book["etoile_status_label"] == "미등록"
+
+    def test_etoile_status_80_is_listed(self, auth_client, db):
+        inven = make_book("ISBN-001", "테스트 도서")
+        EtoileBookInven.objects.create(inven=inven, status_of_shopify=80)
+
+        book = auth_client.get(SEARCH_URL).json()["results"][0]
+        assert book["etoile_listed"] is True
+        assert book["etoile_status_label"] == "리스팅 완료"
+
+    @pytest.mark.parametrize(
+        ("status", "label"),
+        [
+            (-1, "gimssine 등록 대기"),
+            (0, "리스팅 준비"),
+            (12, "리스팅 제외 - 컨셉"),
+        ],
+    )
+    def test_etoile_non_80_status_is_not_listed_but_labelled(self, auth_client, db, status, label):
+        """A book registered on ETOILE but not yet live must not read as listed."""
+        inven = make_book("ISBN-001", "테스트 도서")
+        EtoileBookInven.objects.create(inven=inven, status_of_shopify=status)
+
+        book = auth_client.get(SEARCH_URL).json()["results"][0]
+        assert book["etoile_listed"] is False
+        assert book["etoile_status_label"] == label
+
+    def test_etoile_null_status(self, auth_client, db):
+        inven = make_book("ISBN-001", "테스트 도서")
+        EtoileBookInven.objects.create(inven=inven, status_of_shopify=None)
+
+        book = auth_client.get(SEARCH_URL).json()["results"][0]
+        assert book["etoile_listed"] is False
+        assert book["etoile_status_label"] == "상태 없음"
+
+    def test_etoile_unknown_status(self, auth_client, db):
+        inven = make_book("ISBN-001", "테스트 도서")
+        EtoileBookInven.objects.create(inven=inven, status_of_shopify=999)
+
+        book = auth_client.get(SEARCH_URL).json()["results"][0]
+        assert book["etoile_listed"] is False
+        assert book["etoile_status_label"] == "정의되지 않은 상태"
+
+    def test_etoile_state_is_joined_not_lazy_loaded(
+        self, auth_client, db, django_assert_max_num_queries
+    ):
+        """Remote DB costs ~130 ms per round trip — a per-row etoile lookup is a regression."""
+        for i in range(10):
+            inven = make_book(f"ISBN-{i:03d}", f"도서 {i:03d}")
+            EtoileBookInven.objects.create(inven=inven, status_of_shopify=80)
+
+        # auth + count + page query; ten extra lookups would blow this budget
+        with django_assert_max_num_queries(6):
+            resp = auth_client.get(SEARCH_URL)
+
+        assert resp.status_code == 200
+        assert all(row["etoile_listed"] is True for row in resp.json()["results"])
 
 
 # ---------------------------------------------------------------------------

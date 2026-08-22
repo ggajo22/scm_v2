@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
   Table,
@@ -11,12 +12,41 @@ import {
 } from '@/components/ui/table'
 import { useBookSearch } from '@/features/book/hooks/useBookSearch'
 
+/**
+ * Cover thumbnail. Falls back to a neutral block for books with no cover URL and
+ * for URLs that 404 — a broken-image icon in every other row reads as a page error.
+ */
+function CoverThumbnail({ url, name }: { url: string; name: string }) {
+  const [failed, setFailed] = useState(false)
+
+  if (!url || failed) {
+    return <div className="h-12 w-9 rounded-sm bg-muted" role="img" aria-label="표지 이미지 없음" />
+  }
+  return (
+    <img
+      src={url}
+      alt={`${name} 표지`}
+      title={url}
+      loading="lazy"
+      className="h-12 w-9 rounded-sm object-cover"
+      onError={() => setFailed(true)}
+    />
+  )
+}
+
 export function BookSearchPage() {
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
   const query = searchParams.get('q') ?? ''
   const [page, setPage] = useState(1)
-  useEffect(() => { setPage(1) }, [query])
+  // A new search must land on page 1. Adjusting state during render — React's
+  // documented alternative to a reset effect — applies the reset in the same pass,
+  // so useBookSearch below is never called with the previous query's page number.
+  const [pagedQuery, setPagedQuery] = useState(query)
+  if (pagedQuery !== query) {
+    setPagedQuery(query)
+    setPage(1)
+  }
   const { data, isPending, isFetching, isError } = useBookSearch(query, page)
 
   // isPending  = no cache at all (very first search)
@@ -72,9 +102,10 @@ export function BookSearchPage() {
           <Table>
             <TableHeader>
               <TableRow>
+                <TableHead className="w-16">표지</TableHead>
                 <TableHead>ISBN</TableHead>
                 <TableHead>도서명</TableHead>
-                <TableHead className="text-right">판매가</TableHead>
+                <TableHead>ETOILE</TableHead>
                 <TableHead className="text-right">Shopify 상태</TableHead>
               </TableRow>
             </TableHeader>
@@ -85,10 +116,15 @@ export function BookSearchPage() {
                   className="cursor-pointer hover:bg-muted/50"
                   onClick={() => navigate(`/books/${book.id}`)}
                 >
+                  <TableCell>
+                    <CoverThumbnail url={book.cover_image_url} name={book.name} />
+                  </TableCell>
                   <TableCell className="font-mono text-sm">{book.inven_SKU}</TableCell>
                   <TableCell>{book.name}</TableCell>
-                  <TableCell className="text-right">
-                    {book.price_sale.toLocaleString()}원
+                  <TableCell>
+                    <Badge variant={book.etoile_listed ? 'default' : 'secondary'}>
+                      {book.etoile_status_label}
+                    </Badge>
                   </TableCell>
                   <TableCell className="text-right">{book.status_of_shopify}</TableCell>
                 </TableRow>
