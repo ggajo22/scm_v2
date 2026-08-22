@@ -1,9 +1,9 @@
 ---
 id: SPEC-BOOK-SEARCH-001
-version: "1.0.3"
+version: "1.1.0"
 status: completed
 created: "2026-06-19"
-updated: "2026-06-20"
+updated: "2026-08-21"
 author: ggajo
 priority: medium
 issue_number: 0
@@ -17,6 +17,8 @@ issue_number: 0
 | 1.0.1 | 2026-06-19 | ggajo | 구현 완료 — TDD 방식으로 백엔드/프론트엔드 전체 구현, 18/18 테스트 통과 |
 | 1.0.2 | 2026-06-19 | ggajo | 레이아웃 개선 — BookLayout 도입, 도서 관련 URL 상단 고정 검색바, Sidebar 도서 관리 메뉴 추가 |
 | 1.0.3 | 2026-06-20 | ggajo | UX 개선 — FULLTEXT AND 검색(정확도), ISBN 즉시검색, 검색 후 입력창 초기화, 검색결과 헤더 표시 |
+| 1.0.4 | 2026-08-21 | ggajo | 성능 수정 — ISBN 즉시검색(0ms) 철회하고 250ms 디바운스 적용, 요청 취소(AbortSignal) 연결, `__startswith`(LIKE BINARY, 인덱스 미사용) → `__istartswith`. REQ-SEARCH-009 본문을 실제 동작과 일치시킴(1.0.3에서 HISTORY만 갱신되고 요구사항 본문은 300ms로 남아 있던 불일치 해소) |
+| 1.1.0 | 2026-08-21 | ggajo | 결과 표시 항목 변경 — 판매가 제거(응답 필드 포함), 표지 썸네일 및 ETOILE 리스팅 상태 추가 (REQ-SEARCH-011 개정, REQ-SEARCH-018·019 신설, REQ-SEARCH-008 확장) |
 
 ---
 
@@ -50,11 +52,15 @@ SCM v2 어드민 앱에서 도서 검색 기능을 제공한다. 관리자는 IS
 
 **REQ-SEARCH-007**: 시스템은 검색 결과 응답에 `count`, `next`, `previous`, `results` 필드를 포함한 표준 DRF 페이지네이션 구조를 반환하여야 한다.
 
-**REQ-SEARCH-008**: 시스템은 `Inven.objects.select_related('info')` 쿼리를 사용하여 N+1 쿼리 문제를 방지하여야 한다.
+**REQ-SEARCH-008**: 시스템은 `Inven.objects.select_related('info', 'etoile_inven')` 쿼리를 사용하여 N+1 쿼리 문제를 방지하여야 한다.
 
 ### 프론트엔드 요구사항
 
-**REQ-SEARCH-009**: `WHEN` 사용자가 검색 입력란에 2자 이상을 입력하는 경우, 시스템은 300ms 디바운스 후 검색 API를 호출하여야 한다.
+**REQ-SEARCH-009**: `WHEN` 사용자가 검색 입력란에 2자 이상을 입력하는 경우, 시스템은 디바운스 후 검색 API를 호출하여야 한다. 디바운스 시간은 입력이 숫자만으로 구성된 경우(ISBN 경로) 250ms, 그 외(텍스트 경로) 300ms로 한다.
+
+**REQ-SEARCH-009a**: `WHEN` 디바운스 대기 중 새 검색어가 확정되는 경우, 시스템은 직전에 전송된 검색 요청을 취소하여야 한다 (`AbortSignal`).
+
+**REQ-SEARCH-009b**: `WHEN` 완성된 검색어가 이미 확정된 상태로 컴포넌트에 전달되는 경우(URL 직접 진입, 붙여넣기, 바코드 스캐너), 시스템은 디바운스 대기 없이 즉시 검색 API를 호출하여야 한다.
 
 **REQ-SEARCH-016**: 시스템은 `/books` 경로 및 모든 하위 도서 관련 URL에서 검색 입력란을 페이지 상단에 항상 표시하여야 한다 (`BookLayout` 공유 레이아웃).
 
@@ -62,7 +68,11 @@ SCM v2 어드민 앱에서 도서 검색 기능을 제공한다. 관리자는 IS
 
 **REQ-SEARCH-010**: `WHEN` 사용자가 검색 입력란에 1자 이하를 입력하는 경우, 시스템은 API 호출을 수행하지 않아야 한다.
 
-**REQ-SEARCH-011**: 시스템은 검색 결과 테이블에 ISBN(`inven_SKU`), 도서 제목(`name`), 판매가(`price_sale`), Shopify 상태(`status_of_shopify`) 열을 표시하여야 한다.
+**REQ-SEARCH-011**: 시스템은 검색 결과 테이블에 표지 썸네일(`cover_image_url`), ISBN(`inven_SKU`), 도서 제목(`name`), ETOILE 리스팅 상태(`etoile_status_label`), Shopify 상태(`status_of_shopify`) 열을 표시하여야 한다. 판매가(`price_sale`)는 표시하지 않으며 검색 응답 필드에도 포함하지 않는다.
+
+**REQ-SEARCH-018**: 시스템은 `etoile_book_inven.status_of_shopify` 가 `80`(리스팅 완료)인 경우에만 ETOILE 리스팅됨(`etoile_listed: true`)으로 판정하여야 한다. ETOILE 레코드가 없으면 `"미등록"`, 상태값이 `NULL`이면 `"상태 없음"`, 그 외 정의되지 않은 코드는 `"정의되지 않은 상태"`를 상태 문구로 반환한다.
+
+**REQ-SEARCH-019**: `WHEN` 표지 이미지 URL이 비어 있거나 이미지 로드에 실패하는 경우, 시스템은 깨진 이미지 대신 중립 플레이스홀더를 표시하여야 한다.
 
 **REQ-SEARCH-012**: `WHEN` API 응답이 로딩 중인 경우, 시스템은 로딩 상태 UI를 표시하여야 한다.
 
@@ -97,8 +107,11 @@ SCM v2 어드민 앱에서 도서 검색 기능을 제공한다. 관리자는 IS
 ## 비기능 요구사항
 
 - **성능**: 검색 응답 시간 P95 < 500ms (인덱스 추가 후 기준)
+  - 실측 (2026-08-21, 운영 DB 63만 행, 13자리 ISBN, best-of-3): 요청 1건 **295ms** — 충족
+  - `__startswith`는 MySQL에서 `LIKE BINARY`로 컴파일되어 `inven_SKU` 인덱스를 사용할 수 없다 (EXPLAIN `key=PRIMARY`). ISBN 경로는 반드시 `__istartswith`를 사용한다 — `backend/book/views.py` `BookListViewSet.get_queryset`
+  - 디바운스 없이 매 키 입력마다 요청하면 13자리 ISBN 입력 시 요청 12건 / 약 5.5초의 서버 작업이 발생한다. REQ-SEARCH-009의 디바운스는 UX가 아니라 성능 요구사항이다
 - **인증**: 모든 엔드포인트 IsAuthenticated 적용 — SPEC-AUTH-001 패턴 준수
-- **N+1 방지**: select_related('info') 필수 사용
+- **N+1 방지**: select_related('info', 'etoile_inven') 필수 사용 — ETOILE 상태를 행마다 조회하면 50건 페이지에서 왕복 50회가 추가된다
 - **DB 마이그레이션**: Info.name 인덱스 추가는 데이터 락 최소화 방식 적용 권장
 
 ---
@@ -121,7 +134,7 @@ SCM v2 어드민 앱에서 도서 검색 기능을 제공한다. 관리자는 IS
 - 개발 방법론: TDD (RED-GREEN-REFACTOR)
 - 백엔드: DRF `SearchFilter` (내장, 추가 의존성 없음)
 - 검색 필드: `['inven_SKU', 'info__name']` — OR 조건 자동 처리
-- 쿼리 최적화: `select_related('info')` — N+1 방지 확인
+- 쿼리 최적화: `select_related('info', 'etoile_inven')` — N+1 방지 확인 (v1.1.0에서 `etoile_inven` 추가)
 - 페이지네이션: `PageNumberPagination`, PAGE_SIZE=50
 
 ### 구현된 파일

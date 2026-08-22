@@ -28,6 +28,7 @@ from book.serializers import (
     BookNoteSerializer,
     DashboardMetricsSerializer,
     EtoileBookInfoSerializer,
+    EtoileInvenSkuBulkAddSerializer,
     EtoileBookInvenSerializer,
     EtoileShopifyProductSerializer,
     FastListingSkuBulkSerializer,
@@ -58,7 +59,7 @@ class BookListViewSet(viewsets.ReadOnlyModelViewSet):
     """
     GET /api/book/search/?search=<query>
     Two-path search:
-      - digits only → inven_SKU startswith (index scan, fast)
+      - digits only → inven_SKU prefix match (index range scan, fast)
       - text        → FULLTEXT MATCH AGAINST ngram on info.name (Korean-aware)
     REQ-SEARCH-001 to REQ-SEARCH-008
     """
@@ -67,15 +68,23 @@ class BookListViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = BookDetailSerializer
 
     def get_queryset(self):
-        # REQ-SEARCH-008: select_related avoids N+1 on info fields
-        qs = Inven.objects.select_related("info")
+        # REQ-SEARCH-008: select_related avoids N+1 on info fields.
+        # etoile_inven is joined for the same reason — BookDetailSerializer reads its
+        # status_of_shopify per row, and the remote DB costs ~130 ms per round trip.
+        qs = Inven.objects.select_related("info", "etoile_inven")
         search = self.request.query_params.get("search", "").strip()
         if not search:
             return qs.order_by("id")
 
-        # ISBN path: digits only → startswith uses the inven_SKU index
+        # ISBN path: digits only → prefix match on the inven_SKU index.
+        # istartswith, not startswith: Django compiles __startswith to LIKE BINARY
+        # on MySQL, which cannot use the (non-binary collation) inven_SKU index —
+        # EXPLAIN falls back to key=PRIMARY and walks all 631k rows in id order to
+        # fill ORDER BY id LIMIT 50. __istartswith emits a plain LIKE and hits the
+        # index (rows=1 for a full ISBN). Identical results here because the branch
+        # is gated on search.isdigit() and digits have no case to fold.
         if search.isdigit():
-            return qs.filter(inven_SKU__startswith=search).order_by("id")
+            return qs.filter(inven_SKU__istartswith=search).order_by("id")
 
         # Text path: annotate relevance score so DRF paginator gets the full result set
         # (avoids the 50-item LIMIT that broke pagination)
@@ -542,6 +551,128 @@ class InvenSkuBulkAddView(APIView):
         })
 
 
+# SPEC-ETOILE-INVEN-ADD-001: Etoile inventory bulk add
+class EtoileInvenSkuBulkAddView(APIView):
+    """
+    POST /api/book/etoile-inven-skus/
+    Bulk-add EtoileBookInven records. If the main-store Inven row is missing,
+    create it first — Etoile registration requires it (REQ-EIA-015).
+    REQ-EIA-001 through REQ-EIA-015
+    """
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        from django.db import transaction
+
+        serializer = EtoileInvenSkuBulkAddSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=400)
+
+        # REQ-EIA-005: strip, remove empty, deduplicate preserving order
+        seen: set = set()
+        unique_skus: list = []
+        for sku in serializer.validated_data["skus"]:
+            s = sku.strip()
+            if s and s not in seen:
+                seen.add(s)
+                unique_skus.append(s)
+
+        if not unique_skus:
+            return Response({"skus": ["This field may not be blank."]}, status=400)
+
+        # REQ-EIA-011/012: one atomic transaction; any DB error rolls everything back
+        try:
+            with transaction.atomic():
+                result = self._process_etoile_inven_skus(unique_skus)
+        except Exception:
+            return Response({"error": "Database error during bulk insert."}, status=500)
+
+        return Response({
+            **result,
+            "book_created_count": len(result["book_created_skus"]),
+            "etoile_created_new_book_count": len(result["etoile_created_new_book_skus"]),
+            "etoile_created_existing_book_count": len(result["etoile_created_existing_book_skus"]),
+            "etoile_existing_count": len(result["etoile_existing_skus"]),
+        })
+
+    # @MX:ANCHOR: [AUTO] EtoileInvenSkuBulkAddView._process_etoile_inven_skus — core business logic
+    # @MX:REASON: REQ-EIA-006 through REQ-EIA-015 all execute here; the invariant
+    # "Inven must exist before EtoileBookInven" is enforced by this ordering alone
+    def _process_etoile_inven_skus(self, skus: list) -> dict:
+        # Batched lookups only — the remote DB costs ~130 ms per round trip, so
+        # a per-SKU query would make a 200-line paste unusable.
+        existing_book_invens = {
+            inven.inven_SKU: inven
+            for inven in Inven.objects.filter(inven_SKU__in=skus)
+        }
+        # REQ-EIA-006: SKUs already registered on Etoile are skipped entirely.
+        # Only SKUs present in Inven can have an EtoileBookInven (OneToOne on Inven).
+        existing_etoile_skus = set(
+            EtoileBookInven.objects
+            .filter(inven__in=existing_book_invens.values())
+            .values_list("inven__inven_SKU", flat=True)
+        )
+
+        # REQ-EIA-007: SKUs absent from the main store
+        missing_book_skus = [sku for sku in skus if sku not in existing_book_invens]
+
+        # REQ-EIA-008: create the main-store rows first, then re-read to get their PKs
+        if missing_book_skus:
+            Inven.objects.bulk_create([
+                Inven(
+                    inven_SKU=sku,
+                    vendor="북센",
+                    store="책방",
+                    is_prepared=0,
+                    status_of_shopify=0,
+                    is_use=1,
+                )
+                for sku in missing_book_skus
+            ], ignore_conflicts=True)
+            existing_book_invens.update({
+                inven.inven_SKU: inven
+                for inven in Inven.objects.filter(inven_SKU__in=missing_book_skus)
+            })
+
+        # REQ-EIA-009: main store newly created → Etoile status -1 (gimssine 등록 대기)
+        new_book_inven_list = [
+            existing_book_invens[sku]
+            for sku in missing_book_skus
+            if sku in existing_book_invens
+        ]
+
+        # REQ-EIA-010: main store already had it → Etoile status 0 (리스팅 준비)
+        existing_book_only_inven_list = [
+            existing_book_invens[sku]
+            for sku in skus
+            if (
+                sku in existing_book_invens
+                and sku not in missing_book_skus
+                and sku not in existing_etoile_skus
+            )
+        ]
+
+        etoile_objects = [
+            EtoileBookInven(inven=inven, status_of_shopify=-1)
+            for inven in new_book_inven_list
+        ] + [
+            EtoileBookInven(inven=inven, status_of_shopify=0)
+            for inven in existing_book_only_inven_list
+        ]
+        if etoile_objects:
+            EtoileBookInven.objects.bulk_create(etoile_objects, ignore_conflicts=True)
+
+        return {
+            "book_created_skus": [inven.inven_SKU for inven in new_book_inven_list],
+            "etoile_created_new_book_skus": [inven.inven_SKU for inven in new_book_inven_list],
+            "etoile_created_existing_book_skus": [
+                inven.inven_SKU for inven in existing_book_only_inven_list
+            ],
+            "etoile_existing_skus": [sku for sku in skus if sku in existing_etoile_skus],
+        }
+
+
 # SPEC-FAST-LISTING-ADD-001: fast listing bulk add
 class FastListingSkuView(APIView):
     """
@@ -665,6 +796,8 @@ class ShopifyLiveInfoView(APIView):
                     "status": None,
                     "weight": None,
                     "weight_unit": None,
+                    "price": None,
+                    "image_count": None,
                     "error": None,
                 }
             info = shopify_client.fetch_store_live_info(
@@ -689,6 +822,8 @@ class ShopifyLiveInfoView(APIView):
                     "status": None,
                     "weight": None,
                     "weight_unit": None,
+                    "price": None,
+                    "image_count": None,
                     "error": None,
                 }
             info = shopify_client.fetch_store_live_info(

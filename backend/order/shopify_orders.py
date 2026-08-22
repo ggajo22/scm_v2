@@ -2,8 +2,12 @@ import json
 import re
 import urllib.error
 import urllib.request
+from datetime import timedelta
 
 from django.conf import settings
+from django.db.utils import OperationalError
+from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 
 from book.models import Inven
 
@@ -204,6 +208,23 @@ def _sync_single_order(order_data, store_type, location_code="", line_item_locat
             relevant_member_isbns.update(member_isbns)
     title_map = _build_title_map(list(relevant_member_isbns))
 
+    # SPEC-ORDER-025 M2: rows whose sku was manually corrected at
+    # 발주처리(confirm) time (LineItem.original_sku set) must never have that
+    # correction silently reverted by the next Shopify sync. One query for
+    # the whole order (never per line item — this project's remote DB costs
+    # ~130ms/query), keyed by (shopify_line_item_id, original_sku) so the
+    # bundle branch below can resolve a corrected member row by its ORIGINAL
+    # isbn, and the non-bundle branch by the row's own single sku value.
+    incoming_line_item_ids = [li["id"] for li in order_data.get("line_items", [])]
+    protected_sku_by_key: dict[tuple[int, str], str] = {
+        (row["shopify_line_item_id"], row["original_sku"]): row["sku"]
+        for row in LineItem.objects.filter(
+            order=order_obj,
+            shopify_line_item_id__in=incoming_line_item_ids,
+            original_sku__isnull=False,
+        ).values("shopify_line_item_id", "original_sku", "sku")
+    }
+
     incoming_shopify_ids = set()
     for li in order_data.get("line_items", []):
         incoming_shopify_ids.add(li["id"])
@@ -234,18 +255,35 @@ def _sync_single_order(order_data, store_type, location_code="", line_item_locat
                 # Shopify-reported title. LineItem.title is nullable and
                 # downstream code already has title-or-fallback handling.
                 member_defaults = {**common_defaults, "title": title_map.get(member_isbn)}
+                # SPEC-ORDER-025 M2: `sku=member_isbn` is part of the LOOKUP
+                # key here, not `defaults` — if this member row was
+                # corrected, its actual current sku no longer equals
+                # member_isbn, so looking it up by member_isbn would miss it
+                # and create a stray duplicate, orphaning the corrected row.
+                # Resolve to the corrected row's own sku when one exists for
+                # this (shopify_line_item_id, original_sku=member_isbn) pair;
+                # otherwise fall back to member_isbn exactly as before.
+                lookup_sku = protected_sku_by_key.get((li["id"], member_isbn), member_isbn)
                 LineItem.objects.update_or_create(
                     order=order_obj,
                     shopify_line_item_id=li["id"],
-                    sku=member_isbn,
+                    sku=lookup_sku,
                     defaults=member_defaults,
                 )
         else:
-            # No bundle mapping: single-row update_or_create, 100% unchanged.
+            # No bundle mapping: single-row update_or_create.
+            shopify_sku = li.get("sku")
+            defaults = {**common_defaults, "sku": shopify_sku}
+            # SPEC-ORDER-025 M2: unlike the bundle branch above, `sku` here
+            # sits in `defaults` (the lookup is order+shopify_line_item_id
+            # only), so an unconditional write silently reverts a manual
+            # correction on every sync. Omit it when this row is protected.
+            if (li["id"], shopify_sku) in protected_sku_by_key:
+                defaults.pop("sku")
             LineItem.objects.update_or_create(
                 order=order_obj,
                 shopify_line_item_id=li["id"],
-                defaults={**common_defaults, "sku": li.get("sku")},
+                defaults=defaults,
             )
     # Remove line items that Shopify no longer reports, but only if not purchase-ordered
     order_obj.line_items.filter(purchase_orders__isnull=True).exclude(
@@ -317,7 +355,7 @@ def sync_single_order_from_shopify(shopify_order_id: int, store_type: str) -> di
 
 
 def sync_store(store_type):
-    from .models import LineItem, Order
+    from .models import LineItem, Order, StoreSyncWatermark
 
     if store_type == "gimssine":
         domain = settings.SHOPIFY_GIMSSINE_DOMAIN
@@ -326,16 +364,37 @@ def sync_store(store_type):
         domain = settings.SHOPIFY_ETOILE_DOMAIN
         token = settings.SHOPIFY_ETOILE_TOKEN
 
-    last_updated = (
-        Order.objects.filter(store_type=store_type)
-        .order_by("-shopify_updated_at")
-        .values_list("shopify_updated_at", flat=True)
-        .first()
-    )
+    # Watermark lives in its own table, NOT derived from
+    # Order.shopify_updated_at — that column is also written by the
+    # single-order resync path (sync_single_order_from_shopify), which can
+    # bump one old order's shopify_updated_at far ahead of the rest of the
+    # store and silently skip everything in between on the next sync.
+    watermark, _ = StoreSyncWatermark.objects.get_or_create(store_type=store_type)
+    last_updated = watermark.last_synced_updated_at
+    if last_updated is None:
+        # First run after deploy (or a brand-new store): seed from the
+        # current Order MAX so day-one behaviour is unchanged and we don't
+        # re-pull the store's entire history.
+        last_updated = (
+            Order.objects.filter(store_type=store_type)
+            .order_by("-shopify_updated_at")
+            .values_list("shopify_updated_at", flat=True)
+            .first()
+        )
+        if last_updated is not None:
+            watermark.last_synced_updated_at = last_updated
+            watermark.save(update_fields=["last_synced_updated_at"])
+
     updated_at_min = last_updated.strftime("%Y-%m-%dT%H:%M:%SZ") if last_updated else None
 
     orders = fetch_all_open_orders(domain, token, updated_at_min=updated_at_min)
     if not orders:
+        # Zero orders fetched: leave last_synced_updated_at (the fetch cursor)
+        # untouched, but last_run_at MUST still advance — a quiet cycle with
+        # no new Shopify activity is a healthy run, not a stopped one, and
+        # this is the field the staleness indicator reads.
+        watermark.last_run_at = timezone.now()
+        watermark.save(update_fields=["last_run_at"])
         return {"synced_count": 0, "updated_count": 0, "error": None, "updated_at_min": updated_at_min}
 
     shopify_ids = [o["id"] for o in orders]
@@ -375,9 +434,246 @@ def sync_store(store_type):
             synced_count += 1
         else:
             updated_count += 1
+
+    # Advance the watermark to MAX(updated_at) of the orders actually
+    # returned in THIS batch — never a global MAX over the Order table
+    # (that is exactly the bug this rewrite fixes). Monotonic: never move
+    # the watermark backwards.
+    batch_max = None
+    for order_data in orders:
+        parsed = parse_datetime(order_data["updated_at"]) if order_data.get("updated_at") else None
+        if parsed is not None and (batch_max is None or parsed > batch_max):
+            batch_max = parsed
+
+    # last_run_at MUST advance here too even when the watermark itself does
+    # not (batch_max <= last_updated) — a single save covers both fields so
+    # neither update_fields list can silently drop the other.
+    watermark.last_run_at = timezone.now()
+    update_fields = ["last_run_at"]
+    if batch_max is not None and (last_updated is None or batch_max > last_updated):
+        watermark.last_synced_updated_at = batch_max
+        update_fields.append("last_synced_updated_at")
+    watermark.save(update_fields=update_fields)
+
     return {
         "synced_count": synced_count,
         "updated_count": updated_count,
         "error": None,
         "updated_at_min": updated_at_min,
+    }
+
+
+# ---------------------------------------------------------------------------
+# SPEC-ORDER-029: order cancellation/closure detection & backfill
+# ---------------------------------------------------------------------------
+
+SHOPIFY_ORDER_STATUS_FIELDS = "id,cancelled_at,closed_at"
+IDS_CHUNK_SIZE = 250
+
+
+def _chunked(seq, size):
+    """Pure helper: split seq into consecutive slices of at most `size`.
+    No I/O, no Django imports — trivially unit-testable on a plain list.
+    """
+    seq = list(seq)
+    for i in range(0, len(seq), size):
+        yield seq[i : i + size]
+
+
+def fetch_order_status_by_ids(domain, token, shopify_order_ids, fields=SHOPIFY_ORDER_STATUS_FIELDS):
+    """Query orders.json?ids=<up to 250 comma-separated>&status=any&fields=...
+    &limit=250 for an EXPLICIT list of Shopify order IDs (<=250), returning
+    their CURRENT cancelled_at/closed_at values regardless of status.
+
+    SPEC-ORDER-029 REQ-CANC-001/002: verified in production 2026-08-19 that a
+    request for exactly 250 ids returns exactly 250 records, both timestamp
+    fields populated, and NO Link header. This function still defensively
+    follows a Link header if one unexpectedly appears (REQ-CANC-003), reusing
+    the existing _parse_next_page_info() helper — but the expected path
+    issues exactly one HTTP call.
+
+    Caller MUST pass <=250 ids (REQ-CANC-002) — chunking is the caller's
+    responsibility, see reconcile_order_status_for_ids() below.
+    """
+    if not shopify_order_ids:
+        return []
+    ids_param = ",".join(str(i) for i in shopify_order_ids)
+    path = f"orders.json?ids={ids_param}&status=any&limit=250&fields={fields}"
+    records = []
+    while path:
+        body, headers = _get_with_headers(domain, token, path)
+        records.extend(body.get("orders", []))
+        link = headers.get("Link") or headers.get("link")
+        page_info = _parse_next_page_info(link)
+        path = (
+            f"orders.json?limit=250&page_info={page_info}&fields={fields}"
+            if page_info
+            else None
+        )
+    return records
+
+
+def open_candidate_order_ids(store_type, closed_grace_days=None):
+    """SPEC-ORDER-029 REQ-CANC-004/005: the reconciliation candidate set —
+    local Order rows whose cancellation state is not yet known, scoped to
+    one store.
+
+    Asymmetric definition: cancellation is treated as terminal (Shopify has
+    no public un-cancel API, spec.md Assumption A6) but closure is NOT — an
+    order can be archived (closed_at set) and cancelled afterwards. So:
+
+        cancelled_at IS NULL
+        AND (closed_at IS NULL OR closed_at >= now - closed_grace_days)
+
+    closed_grace_days=None (default) means the closed_at condition is not
+    applied at all — every non-cancelled order is a candidate, regardless of
+    how long ago it closed. This is what backfill_order_cancellations uses
+    (REQ-CANC-019): unbounded, because it runs once/occasionally, not every
+    5 minutes.
+
+    closed_grace_days=30 is what sync_order_cancellations uses
+    (REQ-CANC-014): bounds recurring cost while keeping recently-closed
+    orders under observation for the realistic window where a
+    closure-then-cancellation could still arrive.
+
+    .order_by("shopify_order_id") makes chunk composition deterministic
+    across repeated calls (REQ-CANC-012 / spec.md §8 C6).
+    """
+    from django.db.models import Q
+
+    from .models import Order
+
+    qs = Order.objects.filter(store_type=store_type, cancelled_at__isnull=True)
+    if closed_grace_days is not None:
+        threshold = timezone.now() - timedelta(days=closed_grace_days)
+        qs = qs.filter(Q(closed_at__isnull=True) | Q(closed_at__gte=threshold))
+    return list(qs.order_by("shopify_order_id").values_list("shopify_order_id", flat=True))
+
+
+# @MX:NOTE: [AUTO] SPEC-ORDER-029 REQ-CANC-025: string-matches MySQL error
+# 1205 ("Lock wait timeout exceeded") rather than a driver exception class
+# because this failure originates entirely from sync_orders' long-held row
+# locks (sync_orders.py sync_store(), transaction.atomic() wraps a Shopify
+# HTTP round-trip) — this function's own lock hold is milliseconds
+# (bulk_update on 2 columns). See spec.md §1.2 for the full analysis.
+def _is_lock_wait_timeout(exc):
+    """SPEC-ORDER-029 REQ-CANC-025: identify a MySQL "Lock wait timeout
+    exceeded" failure (InnoDB error 1205) so the caller can classify it
+    separately from other chunk failures.
+
+    Gates on exception TYPE first (django.db.utils.OperationalError) —
+    matching "1205" against str(exc) alone is type-blind and would
+    misclassify any unrelated exception (KeyError, ValueError, ...) whose
+    message happens to contain that digit sequence as a self-healing lock
+    wait, silently suppressing a real failure from the caller's `failed`
+    list (evaluator-active finding, 2026-08-19). Only once the type is
+    confirmed do we check the error code: numerically against args[0] when
+    it is an int (mysqlclient/PyMySQL both surface this as
+    django.db.utils.OperationalError wrapping a DB-API error whose first arg
+    is (1205, "Lock wait timeout exceeded; try restarting transaction")),
+    falling back to a message substring match only within that type — never
+    outside it.
+    """
+    if not isinstance(exc, OperationalError):
+        return False
+    args = getattr(exc, "args", ())
+    if args and isinstance(args[0], int):
+        return args[0] == 1205
+    return "1205" in str(exc) or "Lock wait timeout exceeded" in str(exc)
+
+
+# @MX:NOTE: [AUTO] SPEC-ORDER-029 REQ-CANC-007/008: writes ONLY
+# cancelled_at/closed_at via bulk_update(), never via _sync_single_order()
+# or update_or_create(defaults=...). The ids=/fields= payload this function
+# consumes lacks every other Order field AND lacks "line_items"/
+# "shipping_lines"/"refunds", so routing through _sync_single_order() would
+# null those fields out AND unconditionally delete PurchaseOrder-unlinked
+# LineItems, all ShippingLine rows, and all Refund rows on the order.
+def reconcile_order_status_for_ids(
+    store_type, domain, token, shopify_order_ids, dry_run=False, chunk_size=IDS_CHUNK_SIZE
+):
+    """Narrow-write Order.cancelled_at/closed_at for the given LOCAL
+    shopify_order_ids, chunked at `chunk_size` (default 250, REQ-CANC-002).
+    Every chunk is attempted even if an earlier one raises (REQ-CANC-011/
+    016 — per-chunk isolation). Never routes through _sync_single_order()
+    or a broad update_or_create(defaults=...) (REQ-CANC-007/008).
+
+    Returns {
+        "scanned": int,               # records actually returned by Shopify
+        "changed": list[dict],        # {"shopify_order_id", "cancelled_at", "closed_at"}
+        "chunk_failures": list[dict], # {"ids": list[int], "error": str, "lock_timeout": bool}
+        "missing_ids": list[int],     # requested but not returned by Shopify
+    }
+    When dry_run=True, `changed` is still populated (diff computed) but no
+    bulk_update() call happens — same "changed" key in both modes; the
+    caller chooses its own display label ("would_change" vs "changed") for
+    stdout only.
+    """
+    from django.db import transaction
+
+    from .models import Order
+
+    scanned = 0
+    changed: list[dict] = []
+    chunk_failures: list[dict] = []
+    missing_ids: list[int] = []
+
+    for chunk in _chunked(shopify_order_ids, chunk_size):
+        try:
+            # HTTP fetch happens OUTSIDE the DB transaction — a slow
+            # Shopify round-trip must not hold a DB transaction/lock open.
+            records = fetch_order_status_by_ids(domain, token, chunk)
+            scanned += len(records)
+
+            returned_ids = {r["id"] for r in records}
+            missing_ids.extend(i for i in chunk if i not in returned_ids)
+
+            with transaction.atomic():
+                existing = {
+                    o.shopify_order_id: o
+                    for o in Order.objects.filter(
+                        store_type=store_type, shopify_order_id__in=chunk
+                    ).only("id", "shopify_order_id", "cancelled_at", "closed_at")
+                }
+
+                to_update = []
+                for r in records:
+                    order = existing.get(r["id"])
+                    if order is None:
+                        continue  # REQ-CANC-009: not locally matched — skip
+
+                    new_cancelled = (
+                        parse_datetime(r["cancelled_at"]) if r.get("cancelled_at") else None
+                    )
+                    new_closed = parse_datetime(r["closed_at"]) if r.get("closed_at") else None
+                    if order.cancelled_at != new_cancelled or order.closed_at != new_closed:
+                        changed.append(
+                            {
+                                "shopify_order_id": order.shopify_order_id,
+                                "cancelled_at": new_cancelled,
+                                "closed_at": new_closed,
+                            }
+                        )
+                        if not dry_run:
+                            order.cancelled_at = new_cancelled
+                            order.closed_at = new_closed
+                            to_update.append(order)
+
+                if to_update:
+                    Order.objects.bulk_update(to_update, ["cancelled_at", "closed_at"])
+        except Exception as exc:  # noqa: BLE001 - one chunk must not abort the rest
+            chunk_failures.append(
+                {
+                    "ids": list(chunk),
+                    "error": str(exc),
+                    "lock_timeout": _is_lock_wait_timeout(exc),
+                }
+            )
+            continue
+
+    return {
+        "scanned": scanned,
+        "changed": changed,
+        "chunk_failures": chunk_failures,
+        "missing_ids": missing_ids,
     }

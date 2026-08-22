@@ -1092,15 +1092,106 @@ class TestUploadCsNoteTypeViaNewTemplate:
 
 
 # ---------------------------------------------------------------------------
+# SPEC-ORDER-025 REQ-LCONF-309: 타출판사 Daily Review row always gets a note
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestUploadOtherPublisherAlwaysGetsNote:
+    """AC-LCONF-308a/308b/308c: a '타출판사' selection always creates a
+    LineItemNote, even when the 메모 cell is blank — the other three CS
+    types (주문취소/주문보류/CS필요) keep their pre-existing conditional
+    behaviour (no note when the 메모 cell is blank)."""
+
+    def test_blank_memo_creates_default_note(self, auth_client):
+        """AC-LCONF-308a: '타출판사' + blank 메모 -> purchase_status is set to
+        "other_publisher" and a LineItemNote with the fixed default content
+        is created (REQ-LCONF-309)."""
+        from order.models import LineItemNote
+
+        sku = "9791100000301"
+        order = _make_order(shopify_order_id=90301)
+        li = _make_line_item(order, sku=sku, quantity=1, shopify_line_item_id=1)
+
+        file_bytes = _make_daily_review_excel([
+            {"isbn": sku, "selected": "타출판사"},
+        ])
+        file_obj = io.BytesIO(file_bytes)
+        file_obj.name = "daily_review.xlsx"
+        res = auth_client.post(UPLOAD_DAILY_URL, data={"file": file_obj}, format="multipart")
+        assert res.status_code == 201
+
+        li.refresh_from_db()
+        assert li.purchase_status == "other_publisher"
+
+        notes = LineItemNote.objects.filter(line_item=li, note_type="타출판사")
+        assert notes.count() == 1
+        note = notes.get()
+        assert note.content == "타출판사 확정 처리 (Daily Review 업로드, 메모 없음)"
+        assert note.assignee == "CS"
+
+    def test_filled_memo_uses_cell_value(self, auth_client):
+        """AC-LCONF-308b: '타출판사' + non-blank 메모 -> LineItemNote uses the
+        cell value as-is (regression — pre-existing behaviour, unchanged)."""
+        from order.models import LineItemNote
+
+        sku = "9791100000302"
+        order = _make_order(shopify_order_id=90302)
+        li = _make_line_item(order, sku=sku, quantity=1, shopify_line_item_id=1)
+
+        file_bytes = _make_daily_review_excel([
+            {"isbn": sku, "selected": "타출판사", "note": "아가페"},
+        ])
+        file_obj = io.BytesIO(file_bytes)
+        file_obj.name = "daily_review.xlsx"
+        res = auth_client.post(UPLOAD_DAILY_URL, data={"file": file_obj}, format="multipart")
+        assert res.status_code == 201
+
+        li.refresh_from_db()
+        assert li.purchase_status == "other_publisher"
+
+        note = LineItemNote.objects.get(line_item=li, note_type="타출판사")
+        assert note.content == "아가페"
+
+    def test_other_cs_type_blank_memo_still_creates_no_note(self, auth_client):
+        """AC-LCONF-308c (control group): '주문취소' + blank 메모 still
+        creates no LineItemNote — REQ-LCONF-309 is scoped to
+        note_type == "타출판사" only; the other three CS types keep the
+        pre-existing conditional behaviour untouched."""
+        from order.models import LineItemNote
+
+        sku = "9791100000303"
+        order = _make_order(shopify_order_id=90303)
+        li = _make_line_item(order, sku=sku, quantity=1, shopify_line_item_id=1)
+
+        file_bytes = _make_daily_review_excel([
+            {"isbn": sku, "selected": "주문취소"},
+        ])
+        file_obj = io.BytesIO(file_bytes)
+        file_obj.name = "daily_review.xlsx"
+        res = auth_client.post(UPLOAD_DAILY_URL, data={"file": file_obj}, format="multipart")
+        assert res.status_code == 201
+
+        li.refresh_from_db()
+        assert li.purchase_status == "order_cancelled"
+        assert not LineItemNote.objects.filter(line_item=li).exists()
+
+
+# ---------------------------------------------------------------------------
 # SPEC-PURCHASE-ORDER-010 (T2): _NOTE_TYPE_STATUS_MAP damaged_exchange entry
 # ---------------------------------------------------------------------------
 
 
-class TestParseDailyReviewDamagedExchangeRecognized:
-    def test_damaged_exchange_label_recognized_as_note_type(self):
-        """REQ-DMG-003: '파손/교환' in the 선택 column is recognized as a
-        CS-type note_type (not a distributor), same mechanism as the
-        existing four CS-type labels."""
+class TestParseDailyReviewDamagedExchangeBlocked:
+    def test_damaged_exchange_label_no_longer_recognized_as_note_type(self):
+        """SPEC-PURCHASE-ORDER-011: '파손/교환' in the 선택 column is no
+        longer recognized as a CS-type note_type — damage/exchange intake
+        is now exclusive to DamagedExchangeSubmitView. Inverted from
+        REQ-DMG-003's original "recognized as CS-type note_type"
+        expectation (test_daily_review_upload.py history). The parser now
+        flags it via `blocked_reason` instead (see
+        excel_utils._BLOCKED_SELECTED_LABELS), distinct from a genuinely
+        unrecognized/blank '선택' value."""
         from order.excel_utils import parse_daily_review_excel
 
         file_bytes = _make_daily_review_excel([
@@ -1109,17 +1200,21 @@ class TestParseDailyReviewDamagedExchangeRecognized:
         results = parse_daily_review_excel(file_bytes)
         assert len(results) == 1
         assert results[0]["distributor"] is None
-        assert results[0]["note_type"] == "파손/교환"
-        assert results[0]["note"] == "박스 파손 확인"
+        assert results[0]["note_type"] is None
+        assert results[0]["blocked_reason"] == "damaged_exchange_requires_dedicated_page"
 
 
 @pytest.mark.django_db
-class TestUploadDamagedExchangeNoteTypeAutoApplies:
-    """AC-DMG-003: Daily Review upload's CS branch auto-applies
-    damaged_exchange via the existing map-lookup code path — no production
-    code change needed in the branch itself, only the map entry (T2)."""
+class TestUploadDamagedExchangeSelectionRejected:
+    """SPEC-PURCHASE-ORDER-011: Daily Review upload's '파손/교환' 선택 is
+    now rejected rather than auto-applying damaged_exchange. Inverted from
+    AC-DMG-003's original "CS branch auto-applies damaged_exchange"
+    expectation — this SPEC narrows write access to
+    DamagedExchangeSubmitView only (REQ-DEX-009/009b always pairs the
+    status with damaged_quantity >= 1, which this upload format has no
+    column for)."""
 
-    def test_damaged_exchange_selection_sets_status_and_creates_note(self, auth_client):
+    def test_damaged_exchange_selection_rejected_status_unchanged_and_reported(self, auth_client):
         sku = "9791100000198"
         order = _make_order(shopify_order_id=90098)
         li = _make_line_item(order, sku=sku, quantity=1, shopify_line_item_id=1)
@@ -1131,20 +1226,22 @@ class TestUploadDamagedExchangeNoteTypeAutoApplies:
         file_obj.name = "daily_review.xlsx"
         res = auth_client.post(UPLOAD_DAILY_URL, data={"file": file_obj}, format="multipart")
         assert res.status_code == 201
+        assert res.data["skipped_count"] == 1
+        assert res.data["errors"] == [
+            {"name": "#8001", "sku": sku, "reason": "damaged_exchange_requires_dedicated_page"}
+        ]
 
         li.refresh_from_db()
-        assert li.purchase_status == "damaged_exchange"
+        assert li.purchase_status == "unordered"
 
         from order.models import LineItemNote
 
-        note = LineItemNote.objects.get(line_item=li)
-        assert note.content == "박스 파손, 교환 요청"
-        assert note.assignee == "CS"
-        assert note.note_type == "파손/교환"
+        assert not LineItemNote.objects.filter(line_item=li).exists()
 
     def test_damaged_exchange_selection_does_not_create_purchase_order(self, auth_client):
-        """CS-type selections never create a PurchaseOrder (same as the
-        other four CS labels)."""
+        """Rejected selections never create a PurchaseOrder either (same
+        outcome as before this SPEC, though now via explicit rejection
+        rather than CS-type handling)."""
         sku = "9791100000197"
         order = _make_order(shopify_order_id=90097)
         _make_line_item(order, sku=sku, quantity=1, shopify_line_item_id=1)

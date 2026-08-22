@@ -40,6 +40,9 @@ function buildOrder(overrides: Partial<Order> = {}): Order {
     customer: null,
     has_refund: false,
     line_items_count: 2,
+    margin_rate: null,
+    logistics_display: null,
+    purchase_display: null,
     ...overrides,
   }
 }
@@ -74,6 +77,12 @@ function buildOrderDetail(overrides: Partial<OrderDetail> = {}): OrderDetail {
     has_refund: false,
     margin_amount: null,
     margin_rate: null,
+    shipping_cost: null,
+    korea_warehouse_cost: null,
+    confirmed_cost: null,
+    total_cost: null,
+    exchange_rate: null,
+    exchange_rate_date: null,
     customer: null,
     shipping_address: null,
     line_items: [
@@ -122,6 +131,8 @@ function buildOrderDetail(overrides: Partial<OrderDetail> = {}): OrderDetail {
     refunds: [],
     status: 'not_shipped',
     ready_to_ship: null,
+    logistics_display: 'not_shipped',
+    purchase_display: 'unordered',
     ...overrides,
   }
 }

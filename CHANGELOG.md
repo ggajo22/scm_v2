@@ -7,6 +7,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+#### SPEC-PURCHASE-ORDER-011: 파손 접수 시 입고 상태를 미입고로 되돌림
+
+- 파손 교환 페이지에서 접수하면 해당 `LineItem`의 `logistics_status`를 `not_shipped`(미입고)로 되돌리고 `received_quantity`에서 파손 수량을 차감 (REQ-DEX-011 반전)
+  - 파손된 책은 사용 가능한 재고가 아니므로 물류 파이프라인 처음으로 되돌아간다
+  - `received_quantity` 동반 차감이 필수: `_process_warehouse_receipt_rows`가 `received_quantity + 입고건수 > quantity`를 `quantity_exceeded`로 거부하므로, 상태만 되돌리면 교환본 입고가 영구 거부되어 그 행이 다시 입고로 돌아갈 수 없음
+  - 재접수는 직전 차감분을 복원한 뒤 새 값을 차감 — 3→2 정정 시 1 복원 (REQ-DEX-009b 덮어쓰기 시맨틱의 확장)
+  - 결과는 `[0, quantity]`로 클램프 — 결정 G 이전 생성된 `damaged_quantity=0` 레거시 행 방어
+  - `shipped_quantity`/`shipped_at`/`received_at`은 변경하지 않음
+  - `_recompute_order_aggregates`는 수정하지 않음 — 파손 주문의 `ready_to_ship=False` 전환은 특수 분기가 아니라 미입고라는 데이터 사실의 귀결
+- 신규 마이그레이션 `0045_backfill_damaged_exchange_logistics`: 기존 `damaged_exchange` 행 소급 보정 + 부모 Order 집계 재계산
+  - `0040`은 v1.6.0에서 삭제된 단락 규칙을 담고 있어 선례로 재사용하지 않고, 현행 규칙(환불 차감 포함, 단락 없음)을 역사적 모델로 재구현
+- 테스트 46건 통과 (신규 10건), 뮤테이션 2종으로 판별력 확인
+  - `received_quantity` 차감 제거 → 4건 실패, `logistics_status` 리셋 제거 → 5건 실패
+- 문서: `spec.md`/`plan.md`/`acceptance.md`/`spec-compact.md` v1.7.0 동기화, v1.6.0(집계 단락 삭제) 드리프트 SUPERSEDED 표기
+
+#### SPEC-ORDER-029: 주문 취소·종료 감지 및 반영
+
+- 취소·종료된 Shopify 주문을 자동으로 감지해 로컬 `Order` 레코드에 반영하는 기능 추가
+  - 신규 관리 커맨드 2개: `sync_order_cancellations`(감지, 5분 주기) + `backfill_order_cancellations`(백필, 저빈도)
+  - Shopify `orders.json?ids=<최대 250개>&status=any` 파라미터로 상태와 무관하게 현재 `cancelled_at`/`closed_at` 조회
+  - 비대칭 후보 집합: 취소는 영구 제외, 종료는 30일 유예 창 적용 (감지), 무제한 (백필)
+  - 스토어별 청킹으로 조회 비용 유계화: 감지 10회/사이클, 백필 17회/실행 (현재 규모)
+  - `cancelled_at`/`closed_at` 두 필드만 갱신 — 다른 필드·관계 데이터는 보존
+  - 한 스토어·청크 실패가 다른 처리를 막지 않음 (격리된 실패 처리)
+  - 동시성 완화: `sync_orders`(`:X4:05`)와 최소 2분 스태거링 (REQ-CANC-027)
+  - 잠금 대기 시간 초과를 연성 실패로 계상 (경보 피로 방지, 정보는 유지)
+- 테스트 커버리지: 28개 AC, 33개 테스트 신규 추가
+  - 공유 코어 13개 AC (취소·종료 반영, 필드 매핑, 청킹, 페이지네이션)
+  - 감지 커맨드 6개 AC (스토어·청크 격리, 파라미터 전달, 종료 코드, 필드 보존, 연성/경성 실패)
+  - 백필 커맨드 5개 AC (무제한 창, 기존 미반영 반영, --dry-run, 필드 보존, 멱등성)
+  - 동시성 4개 AC (잠금 분류, 연성/경성 대조, 스토어 격리, 청크 격리)
+- Windows Task Scheduler 작업 등록:
+  - `sync_order_cancellations`: 5분 주기, `:X1:30` 정렬 (`:X4:05` 대비 스태거링 적용)
+  - `backfill_order_cancellations`: 주간 일요일 04:02:45
+  - 스태거 검증: 실행 로그 기준 2m33~2m35초 전후 (설정값 기준이 아님)
+- 프로덕션 측정:
+  - 초기 백필: 3,919건 조회, 3,094건 변경(52건 취소 + 3,042건 종료), 27초 소요
+  - 멱등성: 즉시 재실행 → changed=0 (중복 행 생성 무함)
+  - 감지 사이클: gimssine 2,188건 + etoile 47건 = 2,235건 → 10회 API 호출/사이클
+  - 첫 예약 실행(2026-08-19 23:26:32) ~ 야간 실행(2026-08-20 08:21): exit 0 확인
+- SPEC 버전: 0.5.0 → **0.6.0**
+  - REQ: 27개 (불변)
+  - AC: 25개 → **28개** (AC-CANC-026/027/028 신규)
+  - 변이: M25 → **M28** (M26/027/028 신규)
+
+#### SPEC-ORDER-023: 주문목록 표시 컬럼 개편
+
+- 주문목록 테이블 열 구성 변경: 8개 → 9개
+  - 제거: 결제상태(financial_status) 열 및 필터 드롭다운
+  - 제거: 출고상태(fulfillment_status) 열 및 필터 드롭다운
+  - 추가: 물류상태(한국창고 기준, `LineItem`에서 직접 파생) 열 및 필터 드롭다운
+  - 추가: 발주상태(미발주/발주완료) 열
+  - 추가: 마진율(표시 전용) 열
+- 취소/부분취소 배지: 전용 열에서 → 주문번호 옆으로 축소
+- `OrderListSerializer` 신규 3개 SerializerMethodField 추가: `margin_rate`, `logistics_display`, `purchase_display`
+- `OrderListView` 배치 환율 로드 최적화: 페이지당 `ExchangeRate` 조회 1회로 제한(O(1))
+- 물류상태 필터 쿼리 파라미터 지원: `logistics_display` 6개 값(미입고/입고예정/출고예정/부분출고/출고/부분입고) 화이트리스트
+- Backend 스위트 1204개 테스트 통과, Frontend 304개 테스트 통과
+- 독립 평가: evaluator-active PASS (Functionality 93, Security 96, Craft 88, Consistency 88)
+- plan-auditor 3라운드 검증 완료 (FAIL 0.61 → FAIL 0.76 → **PASS 0.87**)
+
 ### Added
 
 #### SPEC-AUTO-DIST-001: 발주처 자동 선택 로직 고도화

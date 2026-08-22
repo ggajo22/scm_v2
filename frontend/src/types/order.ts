@@ -20,6 +20,19 @@ export interface Order {
   has_refund: boolean
   line_items_count: number
   location?: string
+  // SPEC-ORDER-023 REQ-OLIST-016~018: list-endpoint margin rate, derived
+  // server-side from the same cost breakdown as OrderDetail.margin_rate.
+  // Null when exchange rate is unavailable, no confirmed purchase cost
+  // exists, or total_price is zero (REQ-OLIST-017).
+  margin_rate: string | null
+  // SPEC-ORDER-023 REQ-OLIST-007~011a: one of 'shipped' | 'partial_shipped'
+  // | 'outbound_scheduled' | 'not_shipped' | 'shipment_confirmed' |
+  // 'partial', or null when the order has no trackable line items. Note:
+  // 'received' is never emitted as a display value.
+  logistics_display: string | null
+  // SPEC-ORDER-023 REQ-OLIST-013~015: 'unordered' | 'ordered', or null when
+  // the order has no trackable line items.
+  purchase_display: string | null
 }
 
 export interface OrderListResponse {
@@ -45,6 +58,22 @@ export interface OrderSyncResponse {
   total_updated: number
 }
 
+// SPEC-ORDER-SYNC-HEALTH: super_admin-only sync health indicator (GET
+// /api/orders/sync-status/, 403 for admin). `last_run_at` is the MIN across
+// stores and null when any store has never run — treat null as
+// unknown/stopped, never as fresh. `last_synced_updated_at` is a Shopify
+// cursor, not a run time — do not present it as "last sync".
+export interface OrderSyncStatusStore {
+  store_type: 'gimssine' | 'etoile'
+  last_run_at: string | null
+  last_synced_updated_at: string | null
+}
+
+export interface OrderSyncStatus {
+  last_run_at: string | null
+  stores: OrderSyncStatusStore[]
+}
+
 export interface OrderListParams {
   page?: number
   store_type?: 'gimssine' | 'etoile' | ''
@@ -54,6 +83,10 @@ export interface OrderListParams {
   date_from?: string
   date_to?: string
   search?: string
+  // SPEC-ORDER-023 REQ-OLIST-023~025: one of the 6 accepted
+  // logistics_display values (see Order.logistics_display). Unrecognized
+  // values are ignored server-side (fail-open, REQ-OLIST-024a).
+  logistics_display?: string
 }
 
 // SPEC-ORDER-003: Order Detail types
@@ -195,6 +228,25 @@ export interface OrderDetail {
   has_refund: boolean
   margin_amount: string | null
   margin_rate: string | null
+  // SPEC-ORDER-021 REQ-COST-017: cost breakdown backing the margin fields
+  // above — shipping cost (weight-based) and Korea-warehouse handling fee,
+  // both USD, same null gate as margin_amount/margin_rate.
+  shipping_cost: string | null
+  korea_warehouse_cost: string | null
+  // SPEC-ORDER-021 extension: confirmed purchase cost (confirmed_cost_usd)
+  // and total_cost (confirmed_cost + shipping_cost + korea_warehouse_cost,
+  // summed server-side from unrounded values — do not re-derive this by
+  // summing the three fields above on the frontend). Same null gate.
+  confirmed_cost: string | null
+  total_cost: string | null
+  // SPEC-ORDER-021 extension (v1.4.0): the ExchangeRate record actually
+  // applied by the backend's _get_exchange_rate() fallback lookup — surfaces
+  // the applied rate and its effective_date (which may be earlier than the
+  // order date when the fallback kicked in). NOT gated by has_any_confirmed
+  // like the fields above — non-null whenever a rate record was found, even
+  // if margin_amount is null because nothing is confirmed yet.
+  exchange_rate: string | null
+  exchange_rate_date: string | null
   customer: OrderCustomerDetail | null
   shipping_address: ShippingAddress | null
   line_items: LineItemDetail[]
@@ -206,4 +258,9 @@ export interface OrderDetail {
   // SPEC-ORDER-012 REQ-RTS-001/002: computed "ready to ship" aggregate,
   // fully independent of `status` above. True/False/null.
   ready_to_ship: boolean | null
+  // 주문상세/주문목록 표시 일원화: derived live from LineItem rows by the
+  // backend (LineItemStateDerivationMixin), identical to the 주문목록 field
+  // of the same name. The 입고출고 현황 badge reads this, not `status`.
+  logistics_display: string | null
+  purchase_display: string | null
 }

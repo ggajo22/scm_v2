@@ -1,0 +1,274 @@
+---
+id: SPEC-PURCHASE-ORDER-011
+document: plan
+version: 1.7.0
+status: completed
+updated: 2026-08-20
+---
+
+# 구현 계획 — SPEC-PURCHASE-ORDER-011 파손 교환 신청 페이지
+
+`spec.md`의 요구사항(REQ-DEX-001~018, 하위 항목 포함, v1.7.0 기준 총 35개 REQ 항목)을 구현하기 위한 파일별 변경 계획, 기술적 접근, 마일스톤, 리스크, 실행 제약사항을 정리한다.
+
+**v1.4.0/v1.5.0 참고**: 이 개정 시점에 SPEC의 코드는 이미 구현·커밋되어 있다 — 이하 마일스톤/파일 표는 실제로 수행된 작업을 문서화한 것이며, 신규 구현을 지시하는 것이 아니다(v1.4.0은 결정 G — Run 단계에서 발견된 결함 대응, v1.5.0은 결정 H — PR 오픈 후 사용자가 요청한 소규모 기능 추가).
+
+**v1.6.0 참고 (SUPERSEDED 표기)**: 사용자 지시(2026-08-17)로 `_recompute_order_aggregates`의 `ready_to_ship` 규칙에서 `damaged_exchange` 단락(REQ-DEX-009c)과 `cs_required` 단락(SPEC-ORDER-012 REQ-RTS-002)이 함께 삭제됐다. 아래 M4.5 / "`_recompute_order_aggregates`의 `ready_to_ship` 단락 확장" 절과 M4.6의 백필 규칙은 그 시점 이후로 **더 이상 현행 코드가 아니다** — 이력 보존을 위해 원문을 남기되 각 절 머리에 SUPERSEDED를 명시한다.
+
+**v1.7.0 참고 (현행)**: 사용자 지시(2026-08-20)로 파손 접수가 `logistics_status`를 `not_shipped`로 되돌리고 `received_quantity`에서 파손 수량을 차감하도록 REQ-DEX-011을 반전했다. v1.6.0에서 단락이 사라지며 되살아났던 "입고까지 끝난 파손품이 출고가능으로 남는" 문제가, 특수 분기가 아니라 **데이터 사실(미입고)**로 해소된다 — `_recompute_order_aggregates` 자체는 손대지 않았다. 신규 마일스톤 M4.7(백필 마이그레이션 `0045`)을 추가한다. 이 개정 역시 이미 구현·커밋·머지(PR #46, master `6556ef6`)된 코드를 문서화한 것이다.
+
+## 마일스톤 (우선순위 기반, 시간 추정 없음)
+
+- **M1 (High) — 데이터 모델**: `LineItem.damaged_quantity` 필드 추가 + 마이그레이션 작성. 이후 모든 마일스톤의 선행 조건.
+- **M1.5 (High, v1.3.0에서 D22 반영 재정정) — `_recompute_order_aggregates` 기존 특성화 테스트 확인(신규 작성 아님)**: `backend/order/tests/test_spec_012.py`의 `TestRecomputeOrderAggregatesReadyToShip` 클래스(L168-285, 9개 테스트)가 이미 `ready_to_ship`의 세 가지 기존 분기 — (1) 추적 가능 LineItem 0건→`None`, (2) `cs_required` 단락, (3) `all(received/in_stock)` 판정(`purchase_order_views.py:175-186`) — 전부를 특성화하고 있다. 이 마일스톤은 새 스위트를 작성하지 않고, `damaged_exchange` 단락 분기 추가 전후로 이 9개 테스트가 그대로 통과하는지만 확인한다(사전 확인: 이 파일에 `damaged_exchange` 문자열이 전혀 없어 영향 없음이 예상됨). M4.5의 선행 조건.
+- **M2 (High) — 백엔드: 검색 엔드포인트**: ISBN 정확 일치 검색 뷰 — 미출고 필터 재사용, 부모 Order 집계(전체 출고 수량) 배치 조회.
+- **M3 (High) — 백엔드: 파손 접수 엔드포인트**: 상태 전환(재접수 시 덮어쓰기) + `damaged_quantity` 저장 + `LineItemNote` 자동 생성(`author`=접수자) + `_recompute_order_aggregates` 호출을 단일 트랜잭션으로 처리. **(v1.7.0 개정)** 같은 트랜잭션에서 `logistics_status="not_shipped"` 전환과 `received_quantity` 차감을 함께 수행한다(REQ-DEX-011/011a/011b).
+- **M3.5 (High, v1.4.0 신규, 결정 G) — 파손 접수 경로 배타성**: `LineItemStatusUpdateView`/`LineItemBulkStatusUpdateView`가 `purchase_status="damaged_exchange"`를 HTTP 400으로 거부(REQ-DEX-014/014a) + `excel_utils._NOTE_TYPE_STATUS_MAP`에서 `"파손/교환"` 제거 및 `_BLOCKED_SELECTED_LABELS`로 명시 거부(REQ-DEX-015) + 프론트엔드 `PURCHASE_STATUS_OPTIONS`에서 제외·`PURCHASE_STATUS_LABELS` 신설·`UnorderedItemsTab.tsx` 비활성 옵션 렌더링(REQ-DEX-016/016a). Run 단계에서 `TestUnorderedItemsViewDamagedExchange`의 실패 3건을 발견해 신규로 추가된 마일스톤 — REQ-DEX-012의 무조건 치환 규칙이 성립하려면 이 배타성이 M4보다 먼저(또는 함께) 갖춰져야 한다.
+- **M3.6 (Low, v1.5.0 신규, 결정 H) — 렉번호(rack_number) 읽기 전용 노출**: `DamagedExchangeSearchView`의 행별 응답에 `rack_number` 필드 추가(REQ-DEX-017/017a) + 프론트엔드 `DamagedExchangeSearchResultRow`/결과 테이블에 렉번호 컬럼 및 "미지정" 폴백 렌더링 추가(REQ-DEX-018). PR 오픈 후 사용자 요청으로 추가된 마일스톤 — M2(검색 엔드포인트)가 이미 조회해 둔 LineItem 객체의 기존 필드를 노출할 뿐이므로 신규 쿼리·신규 마이그레이션이 필요 없다.
+- **M4 (High) — 백엔드: 재발주 큐 수량 보정**: `UnorderedItemsView.get()`의 `net_qty` 계산 분기 수정(REQ-DEX-012/012a) — M3.5가 보장하는 `damaged_exchange ⇒ damaged_quantity >= 1` 불변식 위에서 안전하게 무조건 치환.
+- **M4.5 (High, v1.2.0 신규 — v1.6.0에서 SUPERSEDED, 구현 롤백됨) — `_recompute_order_aggregates`의 `ready_to_ship` 단락 확장**: M1.5의 기존 특성화 테스트가 통과하는 상태에서, `damaged_exchange`를 `cs_required`와 동일한 자리에서 단락 처리하는 분기를 추가(REQ-DEX-009c). `status` 계산 규칙이 변경되지 않음을 검증하되, `status`/`ready_to_ship` 두 컬럼이 같은 UPDATE로 함께 쓰인다는 사실 자체는 회귀 대상이 아님에 유의(REQ-DEX-009d, D16). fan-in 8→9(신규 파손 접수 뷰) 반영 — 함수 상단 주석(L113-122) 갱신.
+- **M4.6 (High, v1.3.0 신규, D13 — 적용 완료, 단 그 규칙은 v1.6.0에서 SUPERSEDED) — `ready_to_ship` 백필 마이그레이션**: M4.5로 확정된 새 규칙을 기존 Order 전체에 소급 적용하는 1회성 데이터 마이그레이션 작성(REQ-DEX-013/013a) — `0033_backfill_order_ready_to_ship.py`(SPEC-ORDER-012 REQ-RTS-006)를 선례로 그 형태를 그대로 따른다: 마이그레이션 파일은 `purchase_order_views`를 import하지 않고 규칙을 역사적 모델(historical model)로 재구현하며(0031/0033과 동일한 관례), 단일 SELECT로 모든 추적 가능 LineItem의 `(order_id, purchase_status, logistics_status)`를 가져와 Python에서 Order별로 그룹화한 뒤 `bulk_update()` 1회로 반영한다. M4.5 완료 후 착수(새 규칙이 확정되어야 백필 로직을 작성할 수 있음).
+- **M4.7 (High, v1.7.0 신규) — `damaged_exchange` 물류 상태 백필 마이그레이션**: REQ-DEX-011 반전 이전에 생성된 `damaged_exchange` 행을 새 규칙에 맞게 소급 보정하는 1회성 마이그레이션(`0045_backfill_damaged_exchange_logistics.py`, REQ-DEX-013b). M4.6의 `0040`은 v1.6.0에서 삭제된 단락 규칙을 담고 있으므로 **선례로 재사용하지 않고**, 현행 집계 규칙(환불 차감 포함, 단락 없음)을 역사적 모델로 재구현한다.
+- **M5 (High) — 백엔드 테스트**: 검색/접수/재발주 수량 보정/`ready_to_ship` 단락/백필 마이그레이션 전 REQ에 대한 pytest 작성 — 원격 MySQL 테스트 DB 동시 실행 금지 준수(아래 실행 제약사항 참조).
+- **M6 (Medium) — 프론트엔드**: 서비스 함수 + 훅 + 신규 페이지(ISBN 검색 폼 + 결과 테이블 + 행별 파손 접수 컨트롤) + 사이드바/라우터 등록.
+- **M7 (Medium) — 프론트엔드 테스트 + 회귀 확인**: 신규 페이지 테스트 작성 + `UnorderedItemsView` 소비 화면(발주 관리 페이지), `OrderDetailPage.tsx`(`ready_to_ship` 배지), `OrderResyncView` 소비 경로(v1.3.0 신규, D15) 기존 테스트 재실행으로 무영향/의도된 변경 확인. `test_daily_review_upload.py`(v1.3.0 신규, D17 — `damaged_exchange` 행이 `_recompute_order_aggregates`를 실제로 경유하는 유일한 기존 스위트)도 함께 실행.
+- **M8 (Low) — 문서 동기화**: `product.md` 기능 목록 갱신, SPEC 상태를 `completed`로 전이.
+
+## 파일별 변경 계획
+
+### 백엔드
+
+| 구분 | 파일 | 변경 내용 |
+|---|---|---|
+| MODIFY | `backend/order/models.py` (`LineItem` 클래스, `PURCHASE_STATUS_CHOICES` 및 `purchase_status` 필드 인근, L156~194) | `damaged_quantity = models.IntegerField(default=0)` 추가. SPEC-PURCHASE-ORDER-011 참조 주석 포함, 결정 A(환불 차감 적용)·REQ-DEX-012a(non-damaged_exchange 행에서는 의미 없음) 요지를 주석으로 남긴다. |
+| NEW | `backend/order/migrations/0037_lineitem_damaged_quantity.py` (파일명·번호는 Run 단계에서 최신 상태 재확인 필요 — 2026-08-14 기준 최신 마이그레이션은 `0036_order_name_index.py`) | 위 필드 추가 마이그레이션. 데이터 백필 불필요(기본값 0, 기존 행은 신규 컬럼에 기본값 적용). |
+| MODIFY | `backend/order/purchase_order_views.py` | 신규 뷰 2개 추가: (1) ISBN 검색 뷰(GET, `sku` 쿼리 파라미터, REQ-DEX-004~007) — 부모 Order 집계는 배치 쿼리로 처리(아래 "기술적 접근" 참조), (2) 파손 접수 뷰(POST, `<int:pk>`, REQ-DEX-008~011) — `LineItemStatusUpdateView`(L1863-1900) 구조를 참조하되 `damaged_quantity` 저장(재접수 시 덮어쓰기, REQ-DEX-009b) + `LineItemNote.objects.create(...)`(`author`=요청 사용자, REQ-DEX-010) + `_recompute_order_aggregates([li.order_id])`를 하나의 뷰 안에서 원자적으로 수행. `UnorderedItemsView.get()`(L251-314)의 `net_qty` 계산(L292) 수정 — `damaged_exchange` 행은 `damaged_quantity`를 기준으로, 그 외는 기존대로 `quantity`를 기준으로 사용(REQ-DEX-012/012a). `RunComparisonView`/`DailyReviewExcelView`/`UploadDailyReviewView`/`GenerateOrderFileView`/`VendorComparisonView`는 변경하지 않는다(REQ-DEX-012b, v1.2.0에서 5개 지점으로 정정 — 아래 "재발주 큐 수량 보정" 절 참조). `ConfirmOrderView`도 변경하지 않되 구조적으로 다른 이유(REQ-DEX-012c)다. |
+| **[MODIFY] DELTA** | `backend/order/purchase_order_views.py` — `_recompute_order_aggregates`(L113-195, fan-in 8→9) | **v1.2.0 신규, 범위 확장(결정 E)**: `ready_to_ship` 계산부(L175-186)에 `damaged_exchange` 단락 분기 추가 — 기존 `cs_required` 단락(L179-180) 직후, `all(...)` 판정(L182-185) 이전에 "trackable 비취소 집합에 `damaged_exchange`가 하나라도 있으면 `ready_to_ship=False`"를 삽입(REQ-DEX-009c). `status` 계산부(L167-173)는 손대지 않는다(REQ-DEX-009d). 함수 상단 주석(L113-122, 현재 fan-in 8 호출자 8곳 나열)과 docstring(L124-136, `ready_to_ship` 규칙 서술)을 갱신해 신규 9번째 호출자(파손 접수 뷰)와 새 단락 규칙을 반영한다. **선행 조건**: M1.5 특성화 테스트. |
+| MODIFY | `backend/order/urls.py` (SPEC-ORDER-013/014 블록, L84-106 인근 및 SPEC-PURCHASE-ORDER-004 블록 L70-72 인근) | 검색 엔드포인트(정적 경로, `<int:pk>` 충돌 없음)와 접수 엔드포인트(`<int:pk>/damaged-exchange/` 형태, 기존 `<int:pk>/status/`·`<int:pk>/logistics-status/`·`<int:pk>/rack-number/` 패턴과 동일한 그룹)를 등록. |
+| **NEW (v1.3.0, D13)** | `backend/order/migrations/00XX_backfill_ready_to_ship_damaged_exchange.py`(파일명·번호는 M4.5 완료 후 Run 단계에서 최신 상태 재확인) | REQ-DEX-013/013a 구현. `0033_backfill_order_ready_to_ship.py`를 그대로 선례로 삼는다 — `purchase_order_views`를 import하지 않고 새 규칙(`cs_required` 또는 `damaged_exchange` 중 하나라도 있으면 `False`)을 역사적 모델로 재구현. 스코프는 0033과 동일하게 "추적 가능 LineItem 1건 이상인 Order만" — 0건인 Order는 이미 `null`이므로 갱신 불필요. |
+| **[MODIFY] (v1.4.0 신규, 결정 G)** | `backend/order/purchase_order_views.py` — `LineItemStatusUpdateView`(단건)/`LineItemBulkStatusUpdateView`(일괄) | REQ-DEX-014/014a 구현. 두 뷰 모두 기존 valid-choices 검증 직후 `if purchase_status_value == "damaged_exchange": return Response({"error": _DAMAGED_EXCHANGE_BLOCKED_MESSAGE}, status=400)`를 추가 — 공유 상수 `_DAMAGED_EXCHANGE_BLOCKED_MESSAGE`로 두 엔드포인트가 동일한 안내 문구를 반환한다. 일괄 뷰는 이 검사가 `ids`/`existing`/`_recompute_order_aggregates` 호출보다 먼저 실행되므로 전체 배치가 원자적으로 거부된다(부분 반영 없음). |
+| **[MODIFY] (v1.4.0 신규, 결정 G)** | `backend/order/excel_utils.py` — `_NOTE_TYPE_STATUS_MAP`, `parse_daily_review_excel`, 신규 `_BLOCKED_SELECTED_LABELS` | REQ-DEX-015 구현. `_NOTE_TYPE_STATUS_MAP`에서 `"파손/교환": "damaged_exchange"` 항목 제거(SPEC-PURCHASE-ORDER-010 REQ-DMG-003의 자동 매핑 삭제). 신규 `_BLOCKED_SELECTED_LABELS = {"파손/교환": "damaged_exchange_requires_dedicated_page"}` 추가. `parse_daily_review_excel`의 각 행 파싱 결과에 `"blocked_reason": _BLOCKED_SELECTED_LABELS.get(selected_label)` 키를 추가(기존 REQ-PO8-011의 "인식되지 않는 선택값" 처리와는 구분되는, 명시적으로 인식되었으나 차단된 값임을 나타내는 별도 신호). |
+| **[MODIFY] (v1.4.0 신규, 결정 G)** | `backend/order/purchase_order_views.py` — `UploadDailyReviewView` | REQ-DEX-015 구현(엑셀 업로드 뷰 쪽). `pair_map` 순회 루프에서 `blocked_reason = item.get("blocked_reason")`가 참이면 `errors.append({"name": name, "sku": sku, "reason": blocked_reason})` + `skipped_count += 1` 후 `continue` — 기존 `_process_outbound_rows`/`_process_warehouse_receipt_rows`가 이미 쓰는 `{"name", "sku", "reason"}` 형태를 그대로 재사용. |
+| **[MODIFY] (v1.7.0 신규)** | `backend/order/purchase_order_views.py` — `DamagedExchangeSubmitView.post()` | REQ-DEX-011/011a/011b 구현. 기존 `save(update_fields=["purchase_status", "damaged_quantity"])`를 4개 필드(`+ "logistics_status", "received_quantity"`)로 확장하고, 그 앞에 `previously_applied = li.damaged_quantity if li.purchase_status == "damaged_exchange" else 0` / `li.received_quantity = max(0, min(li.received_quantity + previously_applied - damaged_quantity, max_quantity))` / `li.logistics_status = "not_shipped"`를 추가한다. `li.purchase_status` 대입은 반드시 `previously_applied` 계산 **이후**에 와야 한다(순서 의존 — 먼저 대입하면 첫 접수도 재접수로 오판한다). 응답 딕셔너리에 `logistics_status`/`received_quantity` 두 키를 추가 — 프론트엔드는 이 값을 소비하지 않으므로 순수 가산 변경이다. `shipped_quantity`/`shipped_at`/`received_at`은 이 뷰 어디에서도 참조·수정하지 않는다(REQ-DEX-011b). |
+| **NEW (v1.7.0 신규)** | `backend/order/migrations/0045_backfill_damaged_exchange_logistics.py` | REQ-DEX-013b 구현. 아래 "`damaged_exchange` 물류 상태 백필 마이그레이션" 절 참조. 의존성은 `0044_lineitem_original_sku`. |
+| **[MODIFY] (v1.5.0 신규, 결정 H)** | `backend/order/purchase_order_views.py` — `DamagedExchangeSearchView`(L2479-2547) | REQ-DEX-017/017a 구현. 행별 응답 딕셔너리(L2530-2547)에 `"rack_number": li.rack_number`(L2540) 한 줄 추가 — 이 뷰가 이미 `select_related("order")`로 조회해 둔 `LineItem` 인스턴스의 기존 필드를 그대로 읽을 뿐이므로 쿼리 수는 변하지 않는다(L2510-2515 검색 쿼리 1회 + L2518-2523 집계 쿼리 1회, 그대로 유지). `save()`/`update()` 호출이 이 뷰 어디에도 없으므로 REQ-DEX-017a(쓰기 금지)는 코드에 쓰기 경로 자체가 없다는 사실로 자연히 성립한다. |
+
+### 프론트엔드
+
+| 구분 | 파일 | 변경 내용 |
+|---|---|---|
+| NEW | `frontend/src/pages/DamagedExchangePage/index.tsx` | 독립 페이지 — ISBN 검색 폼 + 결과 테이블(주문번호/주문 수량/오늘 출고 가능 여부/전체 출고 수량 컬럼, 이미 접수된 행은 배지 표시) + 행별 파손 수량 입력(기본값 1) + 접수 버튼. `OutboundPage`/`RackNumberPage`와 완전히 분리, import 없음(REQ-DEX-002). |
+| NEW | `frontend/src/services/damagedExchangeApi.ts` | `searchDamagedExchangeCandidates(sku)`, `submitDamagedExchange(id, damagedQuantity)` — `rackNumberApi.ts`/`outboundApi.ts` 패턴(타입 정의 + `api.get`/`api.post` 호출) 재사용. **[MODIFY] (v1.5.0 신규, 결정 H)**: `DamagedExchangeSearchResultRow` 인터페이스(L11-26)에 `rack_number: string` 필드(L20) 추가. |
+| **[MODIFY] (v1.5.0 신규, 결정 H)** | `frontend/src/pages/DamagedExchangePage/index.tsx` | REQ-DEX-018 구현. 결과 테이블 헤더에 도서명(SKU 다음) 뒤, 주문 수량 앞 위치로 "렉번호" 컬럼 추가(L78). `DamagedExchangeRow`의 셀 렌더링(L131-136)에서 `row.rack_number || <span className="text-muted-foreground">미지정</span>` — 빈 문자열이면 "미지정", 아니면 저장된 값 그대로. |
+| NEW | `frontend/src/hooks/useDamagedExchangeQueries.ts` | `useSearchDamagedExchange()`, `useSubmitDamagedExchange()` — `useRackNumberQueries.ts`/`useOutboundQueries.ts`의 `useQuery`/`useMutation` + `toast` 패턴 재사용. |
+| **[MODIFY] (v1.4.0 신규, 결정 G)** | `frontend/src/services/purchaseOrderApi.ts` | REQ-DEX-016 구현. 기존 `PURCHASE_STATUS_OPTIONS`에서 `damaged_exchange` 항목 제거. 신규 `export const PURCHASE_STATUS_LABELS: Record<string, string>`를 도입해 전체 6+1개(damaged_exchange 포함) 라벨을 보관하고, `PURCHASE_STATUS_OPTIONS`는 그 중 6개만 `PURCHASE_STATUS_LABELS`를 참조해 구성 — 라벨 문자열이 두 곳에 중복되지 않는다. |
+| **[MODIFY] (v1.4.0 신규, 결정 G)** | `frontend/src/pages/PurchaseOrders/tabs/UnorderedItemsTab.tsx` | REQ-DEX-016a 구현. 행별 상태 `<select>`에서 `item.purchase_status === 'damaged_exchange'`일 때만 조건부로 `<option value="damaged_exchange" disabled>{PURCHASE_STATUS_LABELS.damaged_exchange}</option>`를 `PURCHASE_STATUS_OPTIONS.map(...)` 앞에 추가 — 이 옵션이 없으면 브라우저가 첫 옵션("미발주")을 선택된 것처럼 렌더링해 실제 상태를 오도한다. |
+| MODIFY | `frontend/src/router/index.tsx` (`/outbound` 등록 L122-128 인근) | `/damaged-exchange` lazy route 추가(동일 패턴). |
+| MODIFY | `frontend/src/components/Sidebar.tsx` (L3 import, L37-87 `flatNavItems`) | 신규 lucide 아이콘 import 추가(예: `PackageX`), `{ label: '파손 교환', href: '/damaged-exchange', icon: PackageX }` 항목을 '출고 처리'(L68-74) 인근에 배치. |
+
+## 기술적 접근
+
+### 검색 엔드포인트 — 배치 쿼리 설계 (REQ-DEX-004~007, 결정 B)
+
+1. `LineItem.objects.filter(sku=sku).exclude(logistics_status="shipped").exclude(purchase_status="order_cancelled").select_related("order")` — `LineItemRackNumberSummaryView`(L2284-2341)의 미출고 필터를 그대로 재사용(정확 일치이므로 `sku=sku`, `icontains` 사용 안 함, REQ-DEX-004).
+2. **전체 출고 수량(N+1 위험 지점, 결정 B 확정 반영)**: 위 쿼리 결과에서 `order_id` 목록을 추출한 뒤, `LineItem.objects.filter(order_id__in=order_ids, sku__isnull=False).exclude(purchase_status="order_cancelled").values("order_id").annotate(order_total_quantity=Sum("quantity"))`로 **단일 쿼리**를 실행해 `{order_id: 합계}` 딕셔너리를 만든다(REQ-DEX-006/006b — 취소·미추적 행 제외, null `quantity`는 `Sum()`이 자동으로 0 취급하지 않으므로 `Coalesce(Sum("quantity"), 0)`로 감싸 AC-DEX-005c의 null→0 요구를 보장한다). 그 뒤 Python에서 각 결과 행에 딕셔너리 조회로 매핑한다. 검색 결과 행 수와 무관하게 쿼리 수는 고정(검색 쿼리 1회 + 집계 쿼리 1회 + 필요 시 `DistributorVendorRule` 등 부가 조회)이며, 절대 행마다 별도 조회를 하지 않는다 — `_recompute_order_aggregates`(L123-195)가 확립한 "Order 수만큼만 쿼리, LineItem 수와 무관"이라는 배치 원칙을 그대로 적용한다. 이 필터 범위(`sku__isnull=False` AND `purchase_status != "order_cancelled"`)는 `_recompute_order_aggregates`의 `ready_to_ship` 계산이 내부적으로 사용하는 "추적 가능 + 비취소" 집합(L154-158 트랙어블 조회, L176 `non_cancelled` 필터)과 정확히 일치한다.
+3. 응답에는 각 행의 `is_damaged_exchange`(또는 동등한 플래그, `purchase_status == "damaged_exchange"` 여부)를 포함해 프론트엔드가 배지를 렌더링할 수 있게 한다(REQ-DEX-005a).
+
+### 파손 접수 엔드포인트 (REQ-DEX-008~011, REQ-DEX-009b/009c/009d)
+
+1. `pk`로 LineItem을 조회(404 처리는 `LineItemStatusUpdateView` 패턴 재사용).
+2. 요청 바디의 `damaged_quantity`가 정수이고 `1 <= damaged_quantity <= (li.quantity or 0)` 범위인지 검증 — `li.quantity`가 `null`이거나 `0`이면 범위가 공집합이 되어 항상 거부(REQ-DEX-009a). 이 검증은 `li.purchase_status`가 이미 `damaged_exchange`인 재접수 요청에도 동일하게 적용된다.
+3. 통과 시 `li.purchase_status = "damaged_exchange"`, `li.damaged_quantity = damaged_quantity`를 같은 `save(update_fields=[...])` 호출로 반영 — 기존 `damaged_quantity` 값은 단순 대입으로 덮어써진다(REQ-DEX-009b, 누적 아님).
+3a. **(v1.7.0 신규)** 같은 `save()`에 `li.logistics_status = "not_shipped"`와 차감된 `li.received_quantity`를 함께 담는다(REQ-DEX-011). 차감식은 `max(0, min(received + previously_applied - damaged_quantity, quantity))`이고, `previously_applied`는 이 행이 **이미** `damaged_exchange`일 때의 기존 `damaged_quantity`(아니면 `0`)다 — REQ-DEX-009b의 덮어쓰기 시맨틱을 `received_quantity`까지 확장한 것으로, 3→2 정정 시 1을 복원해 이중 차감을 막는다(REQ-DEX-011a). `[0, quantity]` 클램프는 결정 G 이전에 생성된 `damaged_quantity=0` 레거시 행(결정 G의 "알려진 한계")이 범위를 벗어나는 것을 막는 방어선이다.
+4. `LineItemNote.objects.create(line_item=li, content=f"파손 수량 {damaged_quantity}건 접수", author=request.user, note_type="파손/교환", assignee="발주")` — `author=request.user`는 결정 D의 직접 구현이다(REQ-DEX-010). 문구 정확한 표현은 Run 단계에서 확정하되, 반드시 접수 수량 값을 포함해야 한다(AC-DEX-010이 `content`에 수량 문자열 포함을 검증).
+5. `_recompute_order_aggregates([li.order_id])` 호출 — 기존 모든 `purchase_status` 쓰기 경로와 동일한 관례(REQ-DEX-009). **(v1.7.0 개정)** v1.6.0에서 단락이 삭제된 뒤 이 함수의 규칙은 "비취소·비환불 LineItem 전원이 `logistics_status=received` 또는 `purchase_status=in_stock`" 하나뿐이므로, 3a가 `not_shipped`로 되돌린 결과 이 호출만으로 `ready_to_ship`이 `False`로 떨어진다 — 함수 자체에는 어떤 변경도 가하지 않는다.
+6. `shipped_quantity`/`shipped_at`/`received_at` 필드는 어떤 단계에서도 참조·수정하지 않는다(REQ-DEX-011b). **(v1.7.0 개정)** `logistics_status`/`received_quantity`는 3a에서 의도적으로 쓰므로 이 금지 목록에서 빠졌다.
+
+**`received_quantity`를 함께 차감해야 하는 이유 (v1.7.0, AC-DEX-011c)**: `_process_warehouse_receipt_rows`는 (1) `logistics_status IN ("not_shipped", "shipment_confirmed")`로 적격을 판정한 뒤 (2) `received_quantity + 입고건수 > quantity`면 그 행을 `quantity_exceeded`로 거부한다. 상태만 되돌리면 (1)은 다시 열리지만 (2)에서 영구히 막혀, 교환본이 실제로 도착해도 그 행은 결코 `received`로 돌아갈 수 없다. 두 필드는 반드시 함께 움직여야 한다.
+
+### `_recompute_order_aggregates`의 `ready_to_ship` 단락 확장 (REQ-DEX-009c/009d, 결정 E — [MODIFY] DELTA) — **SUPERSEDED v1.6.0**
+
+> **SUPERSEDED (2026-08-17, 사용자 지시)**: 이 절이 지시한 `damaged_exchange` 단락은 `cs_required` 단락과 함께 **삭제**됐다(SPEC-ORDER-012 v1.5.0 REQ-RTS-002). 현행 규칙은 "비취소·비환불 LineItem 전원이 `logistics_status=received` 또는 `purchase_status=in_stock`" 하나뿐이다. 아래 원문은 이력 보존용이며 현행 코드를 서술하지 않는다. 이 절이 해결하려던 문제(파손 접수 후에도 `ready_to_ship=True` 잔존)는 v1.7.0의 REQ-DEX-011 반전이 데이터 레벨에서 해소한다.
+
+기존 코드(`purchase_order_views.py:175-186`):
+
+```python
+non_cancelled = [it for it in (items or []) if it[1] != "order_cancelled"]
+if not non_cancelled:
+    ready_to_ship = None
+elif any(purchase_status == "cs_required" for _, purchase_status in non_cancelled):
+    ready_to_ship = False
+else:
+    ready_to_ship = all(
+        logistics_status == "received" or purchase_status == "in_stock"
+        for logistics_status, purchase_status in non_cancelled
+    )
+```
+
+변경 후(의사코드, 정확한 구현은 Run 단계 — `cs_required`와 `damaged_exchange` 중 하나라도 있으면 `False`, 두 조건 모두 없을 때만 기존 `all(...)` 판정 수행):
+
+```python
+non_cancelled = [it for it in (items or []) if it[1] != "order_cancelled"]
+if not non_cancelled:
+    ready_to_ship = None
+elif any(
+    purchase_status in ("cs_required", "damaged_exchange")
+    for _, purchase_status in non_cancelled
+):
+    ready_to_ship = False
+else:
+    ready_to_ship = all(
+        logistics_status == "received" or purchase_status == "in_stock"
+        for logistics_status, purchase_status in non_cancelled
+    )
+```
+
+`status`(물류 집계, L167-173)를 도출하는 **규칙**은 이 변경에서 완전히 분리되어 있으므로 무수정(REQ-DEX-009d) — 위 diff는 `ready_to_ship` 분기(L175-186)에만 있고 `status` 분기(L167-173)는 건드리지 않는다. 다만 L188-195의 `Order.objects.filter(...).update(status=Case(...), ready_to_ship=Case(...))`는 두 컬럼을 항상 함께 쓰므로(D16), 신규 9번째 호출자도 매번 `status`를 다시 쓰지만 그 값은 L167-173 규칙 그대로다 — "컬럼이 안 쓰인다"가 아니라 "값을 결정하는 규칙이 그대로다"라는 의미로 코드 리뷰 시 확인할 것. M1.5의 기존 특성화 테스트가 이 변경 전 `cs_required`/`received`/`in_stock`/`None` 조합에 대한 기존 동작을 고정해 두므로, 이 diff가 그 9개 테스트를 깨지 않는지 먼저 확인한 뒤 신규 `damaged_exchange` 케이스 테스트를 추가한다.
+
+### `ready_to_ship` 백필 마이그레이션 (REQ-DEX-013/013a, 결정 F — [NEW], D13) — **규칙은 SUPERSEDED v1.6.0**
+
+> **참고**: 마이그레이션 `0040`은 실제로 작성·적용됐고 되돌리지 않는다. 다만 아래 의사코드의 `cs_required`/`damaged_exchange` 단락 분기는 v1.6.0에서 규칙 자체가 삭제되면서 더 이상 현행이 아니며, 그 시점의 전수 백필로 값이 재계산됐다. **신규 백필(`0045`, M4.7)은 이 코드를 선례로 재사용하지 않는다** — 아래 "`damaged_exchange` 물류 상태 백필 마이그레이션" 절 참조.
+
+`0033_backfill_order_ready_to_ship.py`(SPEC-ORDER-012 REQ-RTS-006)를 그대로 선례로 따른다 — 알고리즘 형태(단일 SELECT로 모든 추적 가능 LineItem의 `(order_id, purchase_status, logistics_status)` 조회 → Python에서 order_id별 그룹화 → 규칙 적용 → `bulk_update()` 1회)를 그대로 재사용하고, 규칙 판정부에만 M4.5에서 확정한 `damaged_exchange` 단락을 반영한다(의사코드):
+
+```python
+def backfill_ready_to_ship_damaged_exchange(apps, schema_editor):
+    Order = apps.get_model("order", "Order")
+    LineItem = apps.get_model("order", "LineItem")
+
+    triples = LineItem.objects.filter(sku__isnull=False).values_list(
+        "order_id", "purchase_status", "logistics_status"
+    )
+    items_by_order: dict[int, list[tuple[str, str]]] = {}
+    for order_id, purchase_status, logistics_status in triples:
+        items_by_order.setdefault(order_id, []).append((purchase_status, logistics_status))
+
+    to_update = []
+    for order_id, items in items_by_order.items():
+        non_cancelled = [it for it in items if it[0] != "order_cancelled"]
+        if not non_cancelled:
+            ready_to_ship = None
+        elif any(ps in ("cs_required", "damaged_exchange") for ps, _ in non_cancelled):
+            ready_to_ship = False
+        else:
+            ready_to_ship = all(
+                ls == "received" or ps == "in_stock" for ps, ls in non_cancelled
+            )
+        to_update.append(Order(id=order_id, ready_to_ship=ready_to_ship))
+
+    Order.objects.bulk_update(to_update, ["ready_to_ship"])
+```
+
+0033과 마찬가지로 이 마이그레이션 함수는 `purchase_order_views`를 import하지 않는다 — Django 마이그레이션은 특정 시점의 역사적 모델을 다루므로, 런타임 모듈을 참조하면 향후 그 모듈이 바뀔 때 과거 마이그레이션의 동작까지 조용히 바뀌는 위험이 생긴다(0031/0033이 확립한 관례). `reverse_code`는 0033과 동일하게 `RunPython.noop`(신규 규칙 적용 이전 값으로 되돌릴 근거 데이터가 없음). **원격 DB 실행 제약**: 0033처럼 배치 조회(1 SELECT) + 배치 갱신(1 `bulk_update`)로 설계해 Order 수와 무관하게 고정된 쿼리 수를 유지한다 — 절대 Order별 개별 UPDATE로 구현하지 않는다("실행 제약사항" 절 참조).
+
+### `damaged_exchange` 물류 상태 백필 마이그레이션 (REQ-DEX-013b — [NEW] v1.7.0)
+
+`0045_backfill_damaged_exchange_logistics.py`. REQ-DEX-011 반전 이전에 만들어진 `damaged_exchange` 행은 파손 이전의 `logistics_status`(대개 `received`)와 차감되지 않은 `received_quantity`를 그대로 들고 있어, 화면상 입고로 보이고 부모 Order가 출고가능으로 남는다.
+
+알고리즘:
+
+1. `purchase_status="damaged_exchange"`인 LineItem 전량에 `logistics_status="not_shipped"`, `received_quantity = max(0, received_quantity - damaged_quantity)`를 적용하고 `bulk_update()` 1회로 반영 — 라이브 엔드포인트의 "첫 접수" 규칙과 동일하다(재접수 복원항은 백필에 해당 없음).
+2. 그 부모 Order들에 한해 `status`/`ready_to_ship`을 재계산해 `bulk_update()` 1회로 반영.
+
+2번의 규칙은 **현행** `_recompute_order_aggregates`를 그대로 옮긴 것이다 — 환불 차감(`quantity - refunded_qty <= 0`이면 두 집계 모두에서 제외) 포함, `cs_required`/`damaged_exchange` 단락 없음. `0040`을 선례로 쓰지 않은 이유가 정확히 여기 있다: `0040`은 v1.6.0에서 삭제된 단락을 담고 있어 그대로 베끼면 현행과 어긋난 값을 써 넣는다.
+
+`0031`/`0033`/`0040`이 확립한 관례는 그대로 따른다 — `purchase_order_views`를 import하지 않고 역사적 모델로 재구현하며, `reverse_code`는 `RunPython.noop`(되돌릴 근거 데이터 없음). 쿼리 수는 대상 행/Order 수와 무관하게 고정이며, Order별 개별 UPDATE는 쓰지 않는다.
+
+**적용 이력**: 프로덕션 적용 시점 대상은 1건(LineItem 17142)이었다. 적용 이후·코드 배포 이전에 접수된 3건(17760/#38299, 17101/#38031, 17611/#38194)은 마이그레이션이 1회성이라 소급되지 않으므로 동일 규칙으로 수동 보정했다.
+
+### 파손 접수 경로 배타성 (REQ-DEX-014/014a/015/016/016a, 결정 G — v1.4.0 신규, Run 단계에서 발견)
+
+**배경**: REQ-DEX-012는 `damaged_exchange` 행에 대해 `quantity`를 `damaged_quantity`로 **무조건** 치환한다. 이 규칙이 안전하려면 `damaged_exchange`이면서 `damaged_quantity`가 설정되지 않은(기본값 0) 행이 애초에 존재할 수 없어야 한다. Run 단계에서 그런 행을 만들 수 있는 레거시 경로 3곳이 발견되어(결정 G), 이 세 곳을 전부 차단한다.
+
+1. **`LineItemStatusUpdateView`/`LineItemBulkStatusUpdateView`(REQ-DEX-014/014a)**: 두 뷰 모두 기존 valid-choices 검증(`purchase_status_value not in valid_choices`) 직후 `damaged_exchange` 전용 검사를 추가 — `if purchase_status_value == "damaged_exchange": return Response({"error": _DAMAGED_EXCHANGE_BLOCKED_MESSAGE}, status=400)`. 일괄 뷰는 이 검사가 `ids` 조회/`_recompute_order_aggregates` 호출보다 먼저 실행되므로 전체 요청이 원자적으로 거부된다.
+2. **`UploadDailyReviewView`(REQ-DEX-015)**: `excel_utils._NOTE_TYPE_STATUS_MAP`에서 `"파손/교환": "damaged_exchange"` 항목을 제거해, 이 라벨이 더 이상 CS성 `note_type`으로 인식되지 않게 한다. 신규 `_BLOCKED_SELECTED_LABELS = {"파손/교환": "damaged_exchange_requires_dedicated_page"}`를 두어 `parse_daily_review_excel()`이 각 행에 `blocked_reason` 키를 채우고, `UploadDailyReviewView`의 `pair_map` 순회 루프가 `blocked_reason`이 있으면 `errors.append({"name": name, "sku": sku, "reason": blocked_reason})` + `skipped_count += 1` 후 `continue`한다 — 기존 `_process_outbound_rows`/`_process_warehouse_receipt_rows`가 이미 쓰는 `{"name", "sku", "reason"}` 응답 형태를 그대로 재사용하므로 프론트엔드가 별도 파싱 로직을 두지 않아도 된다. REQ-PO8-011의 "인식되지 않는 선택값" 일반 스킵 경로와는 별개 — `blocked_reason`은 "인식되었지만 이제 이 업로드로는 처리할 수 없다"는 것을 명시적으로 알린다.
+3. **프론트엔드(REQ-DEX-016/016a)**: `purchaseOrderApi.ts`의 `PURCHASE_STATUS_OPTIONS`(수동 선택 가능한 드롭다운 값)에서 `damaged_exchange`를 제거하되, 신규 `PURCHASE_STATUS_LABELS`(전체 라벨 조회 맵, `damaged_exchange` 포함)를 별도로 export해 "이미 그 상태인 행을 표시"하는 소비자(`UnorderedItemsTab.tsx`, SPEC-ORDER-018의 제외 품목 화면 등)가 계속 올바른 한글 라벨을 렌더링할 수 있게 한다. `UnorderedItemsTab.tsx`의 행별 `<select>`는 `item.purchase_status === 'damaged_exchange'`일 때만 조건부로 비활성 `<option>`을 추가로 렌더링 — 그렇지 않으면 이미 `damaged_exchange`인 행의 `<select value="damaged_exchange">`가 옵션 목록에 없는 값을 가리키게 되어, 브라우저가 첫 옵션("미발주")을 선택된 것처럼 표시해 실제 상태를 오도한다.
+
+**공유 상수**: `_DAMAGED_EXCHANGE_BLOCKED_MESSAGE`(백엔드)는 두 상태 변경 엔드포인트가 동일한 안내 문구를 반환하도록 한 곳에 정의한다 — "damaged_exchange는 오직 `POST /api/purchase-orders/line-items/<pk>/damaged-exchange/`를 통해서만 설정 가능하다"는 취지.
+
+### 렉번호(rack_number) 읽기 전용 노출 (REQ-DEX-017/017a/018, 결정 H — v1.5.0 신규, PR 오픈 후 추가 요청)
+
+**배경**: PR이 오픈된 뒤 사용자가 파손 교환 페이지에서 렉번호를 확인할 수 있게 해 달라고 요청했다. `LineItem.rack_number`는 이미 존재하는 필드(SPEC-ORDER-013 REQ-RACK-001, `models.py:189`)이므로 신규 필드나 마이그레이션이 필요 없고, `DamagedExchangeSearchView`가 이미 각 결과 행의 `LineItem` 인스턴스를 완전히 조회해 두고 있으므로(L2510-2515) 신규 쿼리도 필요 없다.
+
+1. **백엔드(REQ-DEX-017/017a)**: `purchase_order_views.py:2530-2547`의 행별 응답 딕셔너리에 `"rack_number": li.rack_number"`(L2540) 한 줄을 추가한다. 이 뷰에는 `save()`/`update()` 호출이 전혀 없으므로(GET 전용 APIView), REQ-DEX-017a의 "쓰기 금지" 요건은 별도 방어 코드 없이 코드 구조 자체로 성립한다 — `TestDamagedExchangeSearch::test_search_does_not_write_rack_number`가 이를 회귀 확인용으로 고정한다.
+2. **프론트엔드(REQ-DEX-018)**: `damagedExchangeApi.ts`의 `DamagedExchangeSearchResultRow` 인터페이스에 `rack_number: string` 필드를 추가하고, `DamagedExchangePage/index.tsx`의 결과 테이블에 "렉번호" 컬럼(도서명 다음 위치, L78)을 추가한다. 셀 렌더링은 `row.rack_number || <span className="text-muted-foreground">미지정</span>`(L134-136) — 빈 문자열이면 SPEC-ORDER-014의 `SummaryTab.tsx:61`(`group.is_unassigned ? '미지정' : group.rack_number`)과 동일한 관례를 재사용한다.
+3. **편집 경로 불변**: SPEC-ORDER-013이 확립한 `rack_number` 편집 엔드포인트(`LineItemRackNumberUpdateView`/`LineItemRackNumberBulkUpdateView`/엑셀 업로드, `purchase_order_views.py:2729-3009` 인근)는 이 SPEC에서 전혀 수정하지 않는다.
+
+### 재발주 큐 수량 보정 (REQ-DEX-012/012a/012b/012c, 결정 A)
+
+`UnorderedItemsView.get()`의 L292 `net_qty = max((li.quantity or 0) - li.refunded_qty, 0)`를 다음과 같이 분기한다(의사코드, 정확한 구현은 Run 단계):
+
+```
+base = li.damaged_quantity if li.purchase_status == "damaged_exchange" else li.quantity
+net_qty = max((base or 0) - li.refunded_qty, 0)
+if net_qty == 0:
+    continue
+```
+
+`_reorder_candidate_filter`(L93-110)는 변경하지 않는다 — 이 SPEC은 재발주 큐에 "무엇이 노출되는가"가 아니라 "노출된 행의 수량이 얼마로 보고되는가"만 다룬다.
+
+**v1.2.0 정정(D3/D11)**: 직접 재확인한 결과, 다음 5개 지점은 `quantity - refunded_qty` 균일 패턴을 공유하지 **않는다**(REQ-DEX-012b) — `RunComparisonView`(L580)와 `GenerateOrderFileView`(L398)만 `max(quantity - refunded_qty, 0)`를 쓰고, `DailyReviewExcelView`(L1084/L1099)는 환불을 제외 필터로만 쓰며 raw `quantity`를 보고하고, `UploadDailyReviewView`(L1451)는 환불 항 자체가 없이 raw `quantity`를 합산하며, `VendorComparisonView`(L744-757, v1.2.0에서 D11로 신규 추가)는 `purchase_orders__isnull=True` 필터(= `_reorder_candidate_filter`와 다른 자격 기준)로 `Sum("quantity")`를 집계한다. 다섯 곳의 공통점은 "quantity를 어떻게 계산하든 `damaged_quantity`는 읽지 않는다"는 것뿐이다. `ConfirmOrderView`(L884-886)는 이 5곳과 별도다(REQ-DEX-012c) — `qty = item.get("quantity")`(L886)로 **요청 바디**에서 수량을 받으며 `LineItem.quantity`를 전혀 읽지 않으므로, "quantity 대신 damaged_quantity를 썼는가" 질문 자체가 성립하지 않는다.
+
+**v1.3.0 정정(D21) — `VendorComparisonView`의 PO-연결 제약**: `VendorComparisonView`의 `total_qty_qs`(L744-750)는 `purchase_orders__isnull=True`(PurchaseOrder에 전혀 연결되지 않은 LineItem)만 대상으로 하며, `GenerateOrderFileView`(L373-381)가 갖는 것과 같은 `damaged_exchange` 링크 예외가 **없다**. `purchase_order_views.py:372-381`의 기존 주석은 "damaged_exchange SKU는 현실적으로 원래 PurchaseOrder에 이미 연결되어 있다"고 명시적으로 기록하고 있으므로, 실무에서 흔할 PO-연결된 `damaged_exchange` 행은 이 뷰의 `qty_by_sku`에서 완전히 빠져 `0`으로 보고된다(`10`도 `damaged_quantity`인 `3`도 아님). AC-DEX-012e는 PO-**미연결** 픽스처(`purchase_orders__isnull=True`)로만 검증한다 — PO-연결 경우는 spec.md Exclusions에 알려진 미검증 공백으로 기록되어 있다.
+
+## 실행 제약사항 (Execution Constraints)
+
+- **원격 공유 MySQL 테스트 DB — pytest 동시 실행 금지**: 이 프로젝트의 테스트는 원격 공유 MySQL 인스턴스를 사용한다. Run 단계에서 pytest를 실행할 때 다른 세션/에이전트와 동시에 실행하면 무관한 테스트가 가짜로 실패할 수 있다 — 반드시 순차 실행한다.
+- **원격 DB 왕복 지연(~130ms/쿼리) — 배치 쿼리 필수**: 검색 엔드포인트는 결과 행 수와 무관하게 고정된 쿼리 수(검색 1회 + 전체 출고 수량 집계 1회)로 설계해야 한다. 절대 Order별로 반복 조회(N+1)하지 않는다 — "기술적 접근 > 검색 엔드포인트" 절의 배치 설계를 그대로 따른다.
+- **기존 배치 선례 준수**: `_recompute_order_aggregates`(L123-195, "Order 수만큼만 쿼리")와 SPEC-ORDER-015 후속 성능 수정(`_process_outbound_rows`, 쿼리 수 3N→3 고정)이 이 프로젝트의 확립된 배치 쿼리 관례다. 신규 코드는 이 관례를 따른다.
+- **공유 함수 수정 시 특성화 테스트 선행(v1.2.0 신규, 결정 E)**: `_recompute_order_aggregates`는 fan-in 8(9로 증가)의 브라운필드 공유 함수다. M4.5(단락 추가) 착수 전 M1.5(기존 특성화 테스트 확인)를 반드시 먼저 완료해, 기존 8개 호출자 경로의 `ready_to_ship`/`status` 산출값이 회귀하지 않았음을 자동 검증한다.
+- **백필 마이그레이션도 배치 쿼리 필수(v1.3.0 신규, D13)**: REQ-DEX-013의 백필은 0033 선례와 동일하게 고정 쿼리 수(1 SELECT + 1 `bulk_update`)로 설계한다 — Order 수만큼 반복 조회/갱신하는 구현은 원격 DB 지연(~130ms/쿼리) 하에서 허용되지 않는다.
+
+## 리스크 및 제약사항
+
+**MySQL 마이그레이션 안전성**: `damaged_quantity`(default=0, NOT NULL)는 기존 행에 안전한 기본값을 가지는 additive 컬럼 추가로, 데이터 백필이나 다운타임이 필요하지 않다 — `0035_lineitem_add_shipped_fields.py`가 이미 동일 패턴의 선례.
+
+**환불 차감 설계 결정(결정 A)**: `damaged_quantity` 기준값에도 기존 환불 차감(`refunded_qty`)을 그대로 적용하기로 한 SPEC 작성자의 판단을 사용자가 2026-08-14에 확정했다(`spec.md` 결정 A 참조). 추가 검증 불필요.
+
+**"전체 출고 수량" 범위(결정 B)**: 취소(`order_cancelled`)·미추적(`sku IS NULL`) LineItem을 제외하고 합산하는 것으로 사용자가 2026-08-14에 확정했다(`spec.md` 결정 B 참조, `_recompute_order_aggregates`의 "추적 가능" 관례와 정합). 위 "기술적 접근 > 검색 엔드포인트" 절의 쿼리 설계에 반영 완료.
+
+**동시성**: 파손 접수 엔드포인트는 `LineItemStatusUpdateView`와 동일하게 `select_for_update()` 없이 처리한다 — 두 사용자가 동시에 같은 LineItem을 접수하는 race condition은 기존 관례와 동일하게 이번 SPEC에서 다루지 않는다.
+
+**REQ-DEX-012b/012c가 남기는 잠재적 결함**: `RunComparisonView`/`DailyReviewExcelView`/`UploadDailyReviewView`/`GenerateOrderFileView`/`VendorComparisonView` 5곳(v1.2.0에서 `VendorComparisonView` 추가, `ConfirmOrderView` 제외 — D3/D11)도 논리적으로 동일한 "damaged_exchange 행에 quantity 전체를 사용" 결함을 잠재적으로 가지고 있으나, 사용자가 이번 SPEC의 범위를 `UnorderedItemsView` 한 곳으로 명시적으로 확정했다(2026-08-14). `spec.md`의 `Exclusions` 섹션에 "알려진 의도적 공백(known, deliberate gap)"으로 명시 기록되어 있으며, 후속 SPEC 후보다.
+
+**공유 함수 범위 확장 리스크(v1.2.0 신규, 결정 E; v1.3.0에서 D15 보강)**: `_recompute_order_aggregates`의 `ready_to_ship` 단락 변경은 이번 신규 페이지와 무관한 기존 8개 호출자·`OrderDetailPage.tsx`의 3-state 배지·`OrderResyncView`(재동기화 응답)에도 영향을 준다 — `damaged_exchange` LineItem을 포함한 Order라면 이 SPEC 적용 이후 이 화면들 밖에서도 배지/응답값이 "출고가능"에서 "출고불가"로 바뀔 수 있다. 이는 의도된 동작(D1 대응)이지만, Run 단계에서 `OrderDetailPage.test.tsx`/`test_spec_012.py`/`test_order_resync.py`(SPEC-ORDER-012·리싱크 기존 테스트)에 회귀가 아니라 "의도된 변경"으로 반영해야 한다 — 세 테스트 스위트 모두 실행해 예상치 못한 부작용이 없는지 확인.
+
+**백필 이후 데이터 정합성 리스크(v1.3.0 신규, D13)**: 백필 마이그레이션(REQ-DEX-013)은 배포 시점의 스냅샷을 1회 반영할 뿐이다 — 배포 이후 새로 `damaged_exchange`로 접수되는 LineItem은 REQ-DEX-009의 실시간 재계산 경로로 이미 정확히 반영되므로 별도 조치가 필요 없다. 배포 "이전"에 이미 `damaged_exchange`였던 Order만 백필 대상이며, 마이그레이션은 배포 파이프라인에서 정확히 한 번만 실행된다(Django 마이그레이션의 기본 보장) — 재실행 시에도 멱등(같은 입력에 같은 규칙을 다시 적용할 뿐이므로 결과가 달라지지 않음).
+
+**`VendorComparisonView`의 PO-연결 공백은 이번 SPEC이 닫지 않는다(v1.3.0 신규, D21)**: `_reorder_candidate_filter`류의 링크 예외를 이 뷰에 추가하는 것은 REQ-DEX-012b의 "5곳 무변경" 확정 범위를 벗어난다 — PO-연결된 `damaged_exchange` SKU가 이 뷰에서 `0`으로 보고되는 문제는 후속 SPEC 후보로 남긴다(spec.md Exclusions).
+
+**REQ-DEX-012의 무조건 치환 규칙은 M3.5(경로 배타성)에 의존한다(v1.4.0 신규, 결정 G)**: REQ-DEX-012는 "damaged_exchange 행이면 damaged_quantity를 쓴다"고 무조건 서술하며, `damaged_quantity`가 0인 damaged_exchange 행을 별도로 방어하지 않는다. 이 설계가 안전한 것은 오직 M3.5가 그런 행이 존재할 수 없게 만들기 때문이다 — REQ-DEX-014/014a/015가 셋 중 하나라도 회귀하면(예: 리팩터링 중 검사 순서가 바뀌어 valid-choices 검증보다 뒤로 밀리거나, excel_utils의 `_BLOCKED_SELECTED_LABELS` 매핑이 실수로 삭제되면), REQ-DEX-012는 다시 조용히 재발주 큐에서 행이 사라지는 결함을 재현한다. Run 단계 테스트는 이 세 경로의 회귀를 반드시 커버해야 한다.
+
+**모델 레벨 불변식 미강제(v1.4.0 신규, 결정 G, 알려진 한계)**: `damaged_exchange ⇒ damaged_quantity >= 1` 불변식은 REQ-DEX-014/015가 차단하는 3개 엔드포인트에서만 강제되며, `LineItem` 모델 자체(`clean()`/`save()` 오버라이드, DB CHECK 제약 등)에는 승격되지 않았다. Django 관리자 액션, management command, 스크립트를 통한 직접 ORM 조작(`LineItem.objects.filter(...).update(purchase_status="damaged_exchange")` 형태 등)은 이 3곳 밖의 4번째 쓰기 경로이므로 여전히 결함을 재현할 수 있다 — spec.md Exclusions에 기록된 후속 SPEC 후보.
+
+**렉번호 노출은 저위험 변경(v1.5.0 신규, 결정 H)**: 이 변경은 기존 필드를 읽기 전용으로 노출할 뿐이므로 데이터 정합성·마이그레이션·쿼리 수 리스크가 없다. 유일하게 주목할 점은 `DamagedExchangeSearchView`에 `save()`/`update()` 호출이 전혀 없다는 사실 자체가 REQ-DEX-017a(쓰기 금지)의 유일한 보장 수단이라는 것 — 향후 이 뷰에 다른 목적의 PATCH 로직이 추가되면서 실수로 `rack_number`가 함께 갱신되지 않도록, 리뷰 시 이 뷰가 여전히 순수 조회 전용(GET-only)인지 확인해야 한다.
+
+## MX 태그 계획 (mx_plan)
+
+- **`backend/order/purchase_order_views.py`의 `_recompute_order_aggregates`(L113-195, v1.2.0 [MODIFY])**: 함수 상단의 fan-in 강등 주석(L113-122, 현재 "Fan-in == 8"과 8개 호출자 나열)을 "Fan-in == 9"로 갱신하고 신규 파손 접수 뷰를 호출자 목록에 추가한다. `@MX:NOTE` 갱신 대상 — 기존 강등 사유(이 파일이 이미 `anchor_per_file` 한도 3에 도달, ANCHOR 4개 보유)는 그대로 유효하므로 `@MX:ANCHOR`로 승격하지 않는다. docstring(L124-136)의 `ready_to_ship` 규칙 서술에 `damaged_exchange` 단락을 추가 반영.
+- **`UnorderedItemsView.get()` 내 `net_qty` 계산 분기(REQ-DEX-012)**: 비자명한 비즈니스 규칙(damaged_exchange 행만 기준값이 달라짐 + 환불 차감은 공통 적용)이므로 `@MX:NOTE`로 그 근거(REQ-DEX-012/012a, 결정 A)를 명시한다. 이 분기 자체는 `UnorderedItemsView.get()` 내부에서만 사용되어 fan_in=1이므로 `@MX:ANCHOR` 대상은 아니다.
+- **신규 검색 뷰 / 접수 뷰**: 둘 다 URL 라우팅을 통해서만 호출되는 최상위 APIView이며 다른 Python 코드에서 임포트되어 호출되지 않으므로 fan_in 기준으로 `@MX:ANCHOR` 대상이 아니다. 새로운 fan_in≥3 지점이 이번 SPEC으로 발생하면, 이 파일이 이미 anchor_per_file 한도(3)에 도달해 있다는 사유로 `@MX:ANCHOR` 대신 `@MX:NOTE` + 강등 사유를 기록한다(L86-92, L113-122의 선례를 그대로 따름).
+- **`LineItem.damaged_quantity` 필드(models.py)**: `@MX:NOTE`로 SPEC-PURCHASE-ORDER-011 도입 배경(파손 수량과 원 주문 수량을 분리 기록해 재발주 큐 정확도를 보장하기 위함)과, `purchase_status != "damaged_exchange"`인 행에서는 이 값이 의미를 가지지 않는다는 점, 재접수 시 덮어쓰기(REQ-DEX-009b)임을 남긴다.
+- **백필 마이그레이션(v1.3.0 신규)**: `0033_backfill_order_ready_to_ship.py`에 MX 태그가 없는 것과 동일하게, 신규 백필 마이그레이션에도 MX 태그를 부여하지 않는다 — Django 마이그레이션 파일은 이 프로젝트에서 MX 태깅 대상으로 다뤄진 전례가 없으며, 대신 파일 상단에 0033처럼 알고리즘·스코프·비가역성(reverse_code)을 설명하는 상세 주석을 남긴다(코드가 아니라 문서 주석 관례).
+- **`_DAMAGED_EXCHANGE_BLOCKED_MESSAGE` 상수와 두 차단 검사(v1.4.0 신규, 결정 G)**: `@MX:NOTE`로 "REQ-DEX-012의 무조건 치환 규칙이 이 차단에 의존한다"는 비자명한 불변식 근거를 남긴다(이미 구현에 `@MX:NOTE: SPEC-PURCHASE-ORDER-011 coordinator decision...` 형태로 반영되어 있음, `purchase_order_views.py:2338-2346`). `excel_utils._BLOCKED_SELECTED_LABELS`도 동일하게 `@MX:NOTE`로 REQ-PO8-011의 일반 스킵 경로와의 구분 이유를 남긴다(이미 구현에 반영, `excel_utils.py:629-636`).
+- **`DamagedExchangeSearchView`의 `rack_number` 응답 필드(v1.5.0 신규, 결정 H)**: 이 필드는 단순 필드 노출이며 비자명한 비즈니스 규칙이나 fan_in 대상이 아니므로 별도 `@MX:NOTE`/`@MX:ANCHOR` 태깅은 필요 없다 — 이미 구현에 일반 코드 주석(SPEC-ORDER-013 REQ-RACK-001 참조, `purchase_order_views.py:2536-2539`)으로 출처와 읽기 전용 취지가 남아 있다.
+- 구현(run) 단계에서 위 태그를 실제 코드에 부여하고, 필요 시 이 목록을 갱신한다.
+
+## 관련 참조 구현
+
+- `backend/order/purchase_order_views.py:251-314` `UnorderedItemsView` — 수정 대상 뷰, 환불 차감/0-스킵 패턴의 원본.
+- `backend/order/purchase_order_views.py:1863-1900` `LineItemStatusUpdateView` — 단건 상태 변경 + `_recompute_order_aggregates` 호출 구조의 직접적 선례.
+- `backend/order/purchase_order_views.py:2284-2341` `LineItemRackNumberSummaryView` — 미출고(unshipped) 필터 정의의 출처(`.exclude(logistics_status="shipped").exclude(purchase_status="order_cancelled")`).
+- `backend/order/purchase_order_views.py:113-195` `_recompute_order_aggregates` — Order 집계 재계산 관례, 배치 쿼리(Order 수만큼만) 설계 선례. `ready_to_ship` 판정은 L175-186(`cs_required` 단락 L179-180, `damaged_exchange` 신규 단락 삽입 지점), `status` 판정은 L167-173(무수정 대상).
+- `backend/order/purchase_order_views.py:86-110` `_reorder_candidate_filter` — SPEC-PURCHASE-ORDER-010이 확립한 `damaged_exchange` 읽기측 예외 처리(이번 SPEC은 이 필터를 변경하지 않음).
+- `backend/order/purchase_order_views.py:544-590` `RunComparisonView`, `:322-420`(정확히는 L398) `GenerateOrderFileView`, `:1048-` `DailyReviewExcelView`(L1084/L1099), `:1229-` `UploadDailyReviewView`(L1451), `:714-` `VendorComparisonView`(L744-757, PO-연결 예외 없음 — L744-750), `:841-` `ConfirmOrderView`(L884-886) — REQ-DEX-012b/012c가 "변경하지 않는다"고 명시하는 6개 지점의 정확한 위치(v1.2.0/v1.3.0에서 전량 재검증). `:373-381`(`GenerateOrderFileView` 내부의 `damaged_exchange` 링크 예외 주석) — `VendorComparisonView`에는 없는 예외의 대조 사례(D21).
+- `backend/order/serializers.py:141-171` `OrderDetailSerializer`(`ready_to_ship` 노출 L170), `backend/order/serializers.py:14-36` `OrderListSerializer`(노출 안 함, 확인됨) — REQ-DEX-009c의 다운스트림 소비자 조사 결과.
+- `backend/order/views.py:188` `OrderResyncView`(`POST /api/orders/<pk>/sync/`, `urls.py:58`, `OrderDetailSerializer` 재사용은 `views.py:229`) — v1.3.0에서 D15로 추가된 두 번째 `ready_to_ship` 소비 엔드포인트.
+- `backend/order/migrations/0033_backfill_order_ready_to_ship.py` — REQ-DEX-013 백필 마이그레이션의 직접적 선례(알고리즘·배치 설계·`reverse_code=noop` 관례 전부 재사용). `backend/order/tests/test_backfill_order_ready_to_ship_migration.py` — 그 마이그레이션의 기존 테스트 스위트, 신규 백필 테스트 작성 시 구조 참고.
+- `backend/order/tests/test_spec_012.py:168-285` `TestRecomputeOrderAggregatesReadyToShip`(9개 테스트) — REQ-DEX-009c 착수 전 확인해야 할 기존 특성화 스위트(M1.5, D22). `test_spec_012.py:609` `test_resync_does_not_change_ready_to_ship` — `OrderResyncView` 회귀 확인용 기존 테스트.
+- `frontend/src/pages/OrderDetailPage.tsx:240-260` — `Order.ready_to_ship` 3-state 배지(SPEC-ORDER-012 결정 F), REQ-DEX-009c의 프론트엔드 소비자.
+- `frontend/src/pages/OutboundPage/index.tsx`, `frontend/src/router/index.tsx:122-128`, `frontend/src/components/Sidebar.tsx` — 독립 페이지 + 라우트 + 사이드바 등록 패턴의 직접적 선례(SPEC-ORDER-015).
+- **(v1.4.0 신규, 결정 G)** `backend/order/purchase_order_views.py:2338-2352`(`_DAMAGED_EXCHANGE_BLOCKED_MESSAGE` 정의), `:2360-2405`(`LineItemStatusUpdateView`, 거부 검사는 L2389-2393), `:2413-2464`(`LineItemBulkStatusUpdateView`, 거부 검사는 L2446-2450) — REQ-DEX-014/014a 구현 위치.
+- **(v1.4.0 신규, 결정 G)** `backend/order/excel_utils.py:613-627`(`_NOTE_TYPE_STATUS_MAP`, `"파손/교환"` 항목 제거된 상태), `:629-639`(`_BLOCKED_SELECTED_LABELS` 신규), `:889-900`(`parse_daily_review_excel`의 `blocked_reason` 산출), `:929-939`(결과 dict에 `blocked_reason` 키 포함) — REQ-DEX-015 파서 쪽 구현 위치. `backend/order/purchase_order_views.py:1659-1674`(`UploadDailyReviewView`의 `blocked_reason` 처리, `errors.append`/`skipped_count` 반영) — REQ-DEX-015 업로드 뷰 쪽 구현 위치.
+- **(v1.4.0 신규, 결정 G)** `frontend/src/services/purchaseOrderApi.ts:31-67`(`PURCHASE_STATUS_LABELS` 신규 L36-50, `PURCHASE_STATUS_OPTIONS`에서 `damaged_exchange` 제외 L58-65) — REQ-DEX-016 구현 위치. `frontend/src/pages/PurchaseOrders/tabs/UnorderedItemsTab.tsx:472-499`(비활성 옵션 조건부 렌더링은 L480-494) — REQ-DEX-016a 구현 위치.
+- **(v1.4.0 신규, 결정 G)** `backend/order/tests/test_spec_purchase_order_011.py:683-756` `TestDamagedExchangeLegacyWritePathsBlocked`(3개 테스트: 단건/일괄/엑셀 차단) — REQ-DEX-014/014a/015의 1차 테스트 스위트. `backend/order/tests/test_purchase_orders.py:2262-`(`TestLineItemStatusUpdateView`, `test_patch_damaged_exchange_rejected` at L2321), `:453-533`(`TestUnorderedItemsViewDamagedExchange`, Run 단계에서 이 결함을 처음 드러낸 3개 테스트가 있던 클래스, `damaged_quantity` 픽스처로 갱신됨) — 회귀 확인용. `backend/order/tests/test_daily_review_upload.py:1099-1118`(`TestParseDailyReviewDamagedExchangeBlocked`), `:1121-1169`(`TestUploadDamagedExchangeSelectionRejected`, SPEC-PURCHASE-ORDER-010 REQ-DMG-003의 원래 기대를 뒤집은 inverted 테스트) — REQ-DEX-015의 2차 테스트 스위트.
+- **(v1.5.0 신규, 결정 H)** `backend/order/models.py:183-189`(`LineItem.rack_number` 필드 정의, SPEC-ORDER-013 REQ-RACK-001, 이 SPEC에서는 수정하지 않음) — REQ-DEX-017의 소스 필드. `backend/order/purchase_order_views.py:2479-2547`(`DamagedExchangeSearchView` 전체, `rack_number` 응답 필드는 L2536-2540) — REQ-DEX-017/017a 구현 위치. `frontend/src/services/damagedExchangeApi.ts:11-26`(`DamagedExchangeSearchResultRow` 인터페이스, `rack_number: string` 필드는 L20) · `frontend/src/pages/DamagedExchangePage/index.tsx:78`(렉번호 컬럼 헤더), `:131-136`(셀 렌더링, "미지정" 폴백) — REQ-DEX-018 구현 위치. `frontend/src/pages/RackNumberPage/tabs/SummaryTab.tsx:61`(`group.is_unassigned ? '미지정' : group.rack_number`) — REQ-DEX-018이 재사용하는 SPEC-ORDER-014의 표시 관례 선례. `backend/order/purchase_order_views.py:2729-3009`(SPEC-ORDER-013 `rack_number` 편집 엔드포인트 블록, 이 SPEC에서는 수정하지 않음) — REQ-DEX-017a가 "쓰기는 여기서만" 이라고 가리키는 대상. `backend/order/tests/test_spec_purchase_order_011.py:162`(`class TestDamagedExchangeSearch`), `:216-241`(`test_search_response_exposes_stored_rack_number`), `:243-254`(`test_search_does_not_write_rack_number`) — REQ-DEX-017/017a의 백엔드 테스트. `frontend/src/pages/DamagedExchangePage/index.test.tsx:65-81`("렉번호 컬럼: renders the stored rack_number for a matched row"), `:83-97`("렉번호 컬럼: renders 미지정 when rack_number is the empty unassigned value") — REQ-DEX-018의 프론트엔드 테스트.

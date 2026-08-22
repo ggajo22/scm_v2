@@ -1,34 +1,106 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { RefreshCw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useOrders } from '@/features/order/hooks/useOrders'
 import { useOrderSync } from '@/features/order/hooks/useOrderSync'
+import { useOrderSyncStatus } from '@/features/order/hooks/useOrderSyncStatus'
+import { useAuthStore } from '@/store/authStore'
+import { ORDER_LOGISTICS_DISPLAY_LABELS } from '@/features/order/logisticsDisplayLabels'
 import type { Order, OrderListParams } from '@/types/order'
 
-function getDisplayStatus(order: Order): string {
+// SPEC-ORDER-023 REQ-OLIST-024: the 6 accepted logistics_display values, in
+// display order, mirrored from backend/order/views.py's
+// LOGISTICS_DISPLAY_FILTER_VALUES whitelist.
+const LOGISTICS_DISPLAY_FILTER_OPTIONS: readonly string[] = [
+  'not_shipped',
+  'shipment_confirmed',
+  'outbound_scheduled',
+  'partial_shipped',
+  'shipped',
+  'partial',
+]
+
+// SPEC-ORDER-SYNC-HEALTH: thresholds for the sync-health indicator below.
+// The point is not decoration — a stopped 5-minute scheduled sync has cost
+// 102 lost orders before, so a stale value must visually intrude while a
+// fresh one stays quiet.
+const SYNC_WARN_THRESHOLD_MIN = 15
+const SYNC_ALERT_THRESHOLD_MIN = 60
+
+type SyncLevel = 'fresh' | 'warn' | 'alert'
+
+function getSyncLevel(minutesAgo: number | null): SyncLevel {
+  if (minutesAgo === null || minutesAgo >= SYNC_ALERT_THRESHOLD_MIN) return 'alert'
+  if (minutesAgo >= SYNC_WARN_THRESHOLD_MIN) return 'warn'
+  return 'fresh'
+}
+
+const SYNC_LEVEL_STYLES: Record<SyncLevel, string> = {
+  fresh: 'text-xs text-muted-foreground',
+  warn: 'text-xs font-medium text-amber-700 bg-amber-100 px-2 py-1 rounded',
+  alert: 'text-xs font-bold text-red-700 bg-red-100 px-2 py-1 rounded animate-pulse',
+}
+
+function formatMinutesAgo(minutes: number): string {
+  if (minutes < 1) return '방금 전'
+  if (minutes < 60) return `${minutes}분 전`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}시간 전`
+  return `${Math.floor(hours / 24)}일 전`
+}
+
+// react-hooks/purity: Date.now() is impure and must not be called directly
+// in a render body — track it as state, ticked on an interval, so the
+// "n분 전" label also keeps advancing while the page sits open between the
+// hook's own 60s refetches.
+function useNow(intervalMs: number): number {
+  const [now, setNow] = useState<number>(() => Date.now())
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), intervalMs)
+    return () => clearInterval(id)
+  }, [intervalMs])
+  return now
+}
+
+// REQ-SYNC-HEALTH: only ever mounted for super_admin (see role gate in
+// OrdersPage below) — mounting is what keeps useOrderSyncStatus from firing
+// a request at all for admin, not a client-side no-render check.
+function SyncStatusIndicator() {
+  const { data } = useOrderSyncStatus()
+  const now = useNow(30_000)
+  if (!data) return null
+
+  const lastRunAt = data.last_run_at
+  const minutesAgo = lastRunAt ? Math.floor((now - new Date(lastRunAt).getTime()) / 60000) : null
+  const level = getSyncLevel(minutesAgo)
+
+  const title = lastRunAt ? new Date(lastRunAt).toLocaleString('ko-KR') : '동기화 기록 없음'
+
+  const text =
+    level === 'alert'
+      ? minutesAgo === null
+        ? '동기화 기록 없음 — 자동 동기화가 중단되었을 수 있습니다'
+        : `마지막 동기화 ${formatMinutesAgo(minutesAgo)} — 자동 동기화가 중단되었을 수 있습니다`
+      : `마지막 동기화 ${formatMinutesAgo(minutesAgo ?? 0)}`
+
+  return (
+    <span className={SYNC_LEVEL_STYLES[level]} title={title} data-testid="sync-status-indicator">
+      {text}
+    </span>
+  )
+}
+
+// SPEC-ORDER-023 REQ-OLIST-004~006 (H6): copies only the 3 refund branches
+// from the removed getDisplayStatus — never the trailing financial_status
+// label map, since a normal 'paid' order must render no badge at all, not a
+// "결제완료" badge (AC-OLIST-004).
+function getCancelBadge(order: Order): '취소' | '부분취소' | null {
   if (order.financial_status === 'refunded') return '취소'
   if (order.financial_status === 'partially_refunded') return '부분취소'
   // paid + has_refund: $0 cancellation — Shopify keeps status 'paid' but refund record exists
   if (order.has_refund) return '부분취소'
-  const map: Record<string, string> = {
-    paid: '결제완료',
-    pending: '결제대기',
-    partially_paid: '부분결제',
-    voided: '무효',
-    authorized: '승인대기',
-  }
-  return map[order.financial_status ?? ''] ?? order.financial_status ?? '-'
-}
-
-function getFulfillmentLabel(status: string | null): string {
-  if (!status) return '미출고'
-  const map: Record<string, string> = {
-    fulfilled: '출고완료',
-    partial: '부분출고',
-    restocked: '재입고',
-  }
-  return map[status] ?? status
+  return null
 }
 
 function StoreLabel({ store }: { store: 'gimssine' | 'etoile' }) {
@@ -51,6 +123,7 @@ export function OrdersPage() {
   const navigate = useNavigate()
   const { data, isPending, isError } = useOrders(params)
   const syncMutation = useOrderSync()
+  const role = useAuthStore((state) => state.user?.role)
 
   const handleSync = () => {
     syncMutation.mutate()
@@ -74,7 +147,10 @@ export function OrdersPage() {
   return (
     <div className="p-6 space-y-4">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">주문관리</h1>
+        <div className="flex items-center gap-3">
+          <h1 className="text-2xl font-bold">주문 목록</h1>
+          {role === 'super_admin' && <SyncStatusIndicator />}
+        </div>
         <Button
           onClick={handleSync}
           disabled={syncMutation.isPending}
@@ -126,19 +202,6 @@ export function OrdersPage() {
 
         <select
           className="border rounded px-2 py-1 text-sm"
-          value={params.financial_status ?? ''}
-          onChange={(e) => setFilter('financial_status', e.target.value)}
-          aria-label="결제 상태 필터"
-        >
-          <option value="">전체 결제상태</option>
-          <option value="paid">결제완료</option>
-          <option value="pending">결제대기</option>
-          <option value="refunded">환불</option>
-          <option value="partially_refunded">부분환불</option>
-        </select>
-
-        <select
-          className="border rounded px-2 py-1 text-sm"
           value={params.location ?? ''}
           onChange={(e) => setFilter('location', e.target.value)}
           aria-label="위치 필터"
@@ -152,14 +215,16 @@ export function OrdersPage() {
 
         <select
           className="border rounded px-2 py-1 text-sm"
-          value={params.fulfillment_status ?? ''}
-          onChange={(e) => setFilter('fulfillment_status', e.target.value)}
-          aria-label="출고 상태 필터"
+          value={params.logistics_display ?? ''}
+          onChange={(e) => setFilter('logistics_display', e.target.value)}
+          aria-label="물류상태 필터"
         >
-          <option value="">전체 출고상태</option>
-          <option value="unfulfilled">미출고</option>
-          <option value="fulfilled">출고완료</option>
-          <option value="partial">부분출고</option>
+          <option value="">전체</option>
+          {LOGISTICS_DISPLAY_FILTER_OPTIONS.map((value) => (
+            <option key={value} value={value}>
+              {ORDER_LOGISTICS_DISPLAY_LABELS[value] ?? value}
+            </option>
+          ))}
         </select>
 
         <div className="flex items-center gap-1">
@@ -205,8 +270,9 @@ export function OrdersPage() {
                   <th className="py-2 px-3 text-left font-medium">스토어</th>
                   <th className="py-2 px-3 text-left font-medium">위치</th>
                   <th className="py-2 px-3 text-left font-medium">고객</th>
-                  <th className="py-2 px-3 text-left font-medium">결제상태</th>
-                  <th className="py-2 px-3 text-left font-medium">출고상태</th>
+                  <th className="py-2 px-3 text-left font-medium">물류상태</th>
+                  <th className="py-2 px-3 text-left font-medium">발주상태</th>
+                  <th className="py-2 px-3 text-left font-medium">마진율</th>
                   <th className="py-2 px-3 text-right font-medium">금액</th>
                   <th className="py-2 px-3 text-left font-medium">주문일</th>
                 </tr>
@@ -214,7 +280,7 @@ export function OrdersPage() {
               <tbody>
                 {data.results.length === 0 && (
                   <tr>
-                    <td colSpan={8} className="py-8 text-center text-muted-foreground">
+                    <td colSpan={9} className="py-8 text-center text-muted-foreground">
                       {params.search
                         ? `"${params.search}"에 해당하는 주문이 없습니다.`
                         : '주문이 없습니다.'}
@@ -229,6 +295,14 @@ export function OrdersPage() {
                   >
                     <td className="py-2 px-3 font-mono text-xs">
                       {order.name ?? `#${order.order_number}`}
+                      {getCancelBadge(order) && (
+                        <span
+                          data-testid="cancel-badge"
+                          className="ml-1.5 text-[10px] font-sans font-medium text-red-600 bg-red-100 px-1.5 py-0.5 rounded"
+                        >
+                          {getCancelBadge(order)}
+                        </span>
+                      )}
                     </td>
                     <td className="py-2 px-3">
                       <StoreLabel store={order.store_type} />
@@ -247,17 +321,20 @@ export function OrdersPage() {
                         : '-'}
                     </td>
                     <td className="py-2 px-3">
-                      <span
-                        className={
-                          order.has_refund || order.financial_status === 'refunded'
-                            ? 'text-red-600 font-medium'
-                            : ''
-                        }
-                      >
-                        {getDisplayStatus(order)}
-                      </span>
+                      {order.logistics_display
+                        ? ORDER_LOGISTICS_DISPLAY_LABELS[order.logistics_display] ?? order.logistics_display
+                        : '-'}
                     </td>
-                    <td className="py-2 px-3">{getFulfillmentLabel(order.fulfillment_status)}</td>
+                    <td className="py-2 px-3">
+                      {order.purchase_display === 'unordered'
+                        ? '미발주'
+                        : order.purchase_display === 'ordered'
+                          ? '발주완료'
+                          : '-'}
+                    </td>
+                    <td className="py-2 px-3">
+                      {order.margin_rate !== null ? `${order.margin_rate}%` : '-'}
+                    </td>
                     <td className="py-2 px-3 text-right">
                       {order.total_price
                         ? `${Number(order.total_price).toLocaleString()} ${order.currency ?? ''}`

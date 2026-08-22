@@ -2,7 +2,7 @@
 TDD tests for SPEC-PURCHASE-ORDER-001 M2~M7 purchase order API endpoints.
 
 Coverage targets:
-  SC-PO-001  unordered aggregation + auto_distributor
+  SC-PO-001  unordered aggregation
   SC-PO-002  generate-order-file normal (Content-Type Excel)
   SC-PO-003  generate-order-file with unknown SKUs
   SC-PO-004  upload vendor file
@@ -101,6 +101,7 @@ def _make_line_item(
     title: str = "테스트 도서",
     vendor: str = "처음교육",
     quantity: int = 2,
+    damaged_quantity: int = 0,
 ) -> LineItem:
     return LineItem.objects.create(
         order=order,
@@ -109,6 +110,7 @@ def _make_line_item(
         title=title,
         vendor=vendor,
         quantity=quantity,
+        damaged_quantity=damaged_quantity,
     )
 
 
@@ -295,8 +297,10 @@ class TestUnorderedItemsView:
         skus = [r["sku"] for r in res.data["results"]]
         assert "SKU-B" not in skus
 
-    def test_auto_distributor_from_vendor_rule(self, auth_client):
-        """SC-PO-001: auto_distributor comes from DistributorVendorRule.publisher_name = vendor."""
+    def test_auto_distributor_key_absent_even_with_matching_vendor_rule(self, auth_client):
+        """SPEC-ORDER-025 REQ-LCONF-201: auto_distributor key is gone from the
+        response entirely, even when a matching DistributorVendorRule exists
+        (regression for test_auto_distributor_from_vendor_rule)."""
         DistributorVendorRule.objects.create(
             publisher_name="처음교육", distributor="choeumgoyuk"
         )
@@ -308,10 +312,12 @@ class TestUnorderedItemsView:
         res = auth_client.get(UNORDERED_URL)
         assert res.status_code == 200
         result = next(r for r in res.data["results"] if r["sku"] == "SKU-C")
-        assert result["auto_distributor"] == "choeumgoyuk"
+        assert "auto_distributor" not in result
 
-    def test_auto_distributor_null_when_no_rule(self, auth_client):
-        """SC-PO-001: auto_distributor is null when no DistributorVendorRule exists."""
+    def test_auto_distributor_key_absent_when_no_rule(self, auth_client):
+        """SPEC-ORDER-025 REQ-LCONF-201: auto_distributor key is gone from the
+        response entirely when no DistributorVendorRule exists either
+        (regression for test_auto_distributor_null_when_no_rule)."""
         order = _make_order(shopify_order_id=91005)
         _make_line_item(
             order, shopify_line_item_id=1, sku="SKU-D", vendor="알수없는출판사"
@@ -320,7 +326,7 @@ class TestUnorderedItemsView:
         res = auth_client.get(UNORDERED_URL)
         assert res.status_code == 200
         result = next(r for r in res.data["results"] if r["sku"] == "SKU-D")
-        assert result["auto_distributor"] is None
+        assert "auto_distributor" not in result
 
     def test_excludes_line_items_with_null_sku(self, auth_client):
         """LineItems with null SKU should be excluded from aggregation."""
@@ -453,8 +459,20 @@ class TestUnorderedItemsViewDamagedExchange:
     reorder-candidate list regardless of existing PurchaseOrder linkage."""
 
     def test_damaged_exchange_linked_line_item_reexposed(self, auth_client):
+        # SPEC-PURCHASE-ORDER-011: damaged_exchange is now only reachable
+        # through DamagedExchangeSubmitView, which always writes
+        # damaged_quantity >= 1 in the same call (REQ-DEX-009/009b) — a
+        # damaged_exchange LineItem with damaged_quantity left at its 0
+        # default is no longer a state production code can produce (the
+        # legacy write paths that could leave it unset are now rejected,
+        # see TestLineItemStatusUpdateView.test_patch_damaged_exchange_rejected).
+        # This fixture sets damaged_quantity to mirror that guarantee so the
+        # test exercises a reachable state; REQ-DEX-012 then uses it (not
+        # quantity) as UnorderedItemsView's reorder-quantity base.
         order = _make_order(shopify_order_id=91030)
-        li = _make_line_item(order, shopify_line_item_id=1, sku="SKU-DMG-UNORD-1", quantity=2)
+        li = _make_line_item(
+            order, shopify_line_item_id=1, sku="SKU-DMG-UNORD-1", quantity=2, damaged_quantity=2
+        )
         po = PurchaseOrder.objects.create(
             sku="SKU-DMG-UNORD-1", title="Book", distributor="booxen", quantity=2
         )
@@ -469,11 +487,12 @@ class TestUnorderedItemsViewDamagedExchange:
 
     def test_damaged_exchange_unlinked_line_item_still_exposed(self, auth_client):
         """Sanity check: an unlinked damaged_exchange LineItem is exposed too
-        (not just the already-linked edge case)."""
+        (not just the already-linked edge case). damaged_quantity set for
+        the same reachability reason as the sibling test above."""
         order = _make_order(shopify_order_id=91031)
         _make_line_item(
             order, shopify_line_item_id=1, sku="SKU-DMG-UNORD-2",
-            quantity=1,
+            quantity=1, damaged_quantity=1,
         )
         li = LineItem.objects.get(sku="SKU-DMG-UNORD-2")
         li.purchase_status = "damaged_exchange"
@@ -501,8 +520,12 @@ class TestUnorderedItemsViewDamagedExchange:
         """T3 .distinct() empirical check: a damaged_exchange LineItem linked
         to 2+ PurchaseOrders via the M2M relation must appear exactly once in
         the result set, not once per PO link."""
+        # damaged_quantity set for the same reachability reason as
+        # test_damaged_exchange_linked_line_item_reexposed above.
         order = _make_order(shopify_order_id=91033)
-        li = _make_line_item(order, shopify_line_item_id=1, sku="SKU-DMG-DISTINCT-1", quantity=1)
+        li = _make_line_item(
+            order, shopify_line_item_id=1, sku="SKU-DMG-DISTINCT-1", quantity=1, damaged_quantity=1
+        )
         po1 = PurchaseOrder.objects.create(
             sku="SKU-DMG-DISTINCT-1", title="Book", distributor="booxen", quantity=1
         )
@@ -2284,11 +2307,16 @@ class TestLineItemStatusUpdateView:
         res = anon_client.patch(url, data={"purchase_status": "on_hold"}, format="json")
         assert res.status_code == 401
 
-    def test_patch_all_six_choices(self, auth_client):
-        """All 6 valid purchase_status choices can be set via PATCH."""
+    def test_patch_all_five_choices(self, auth_client):
+        """All 5 valid purchase_status choices can be set via PATCH.
+
+        SPEC-ORDER-025 REQ-LCONF-306: other_publisher is removed from this
+        list (was 6 choices) — it is now rejected, see
+        test_patch_other_publisher_rejected below.
+        """
         valid_choices = [
             "unordered", "on_hold", "order_cancelled",
-            "other_publisher", "cs_required", "in_stock",
+            "cs_required", "in_stock",
         ]
         order = _make_order(shopify_order_id=95010)
         for i, choice in enumerate(valid_choices):
@@ -2299,18 +2327,34 @@ class TestLineItemStatusUpdateView:
             li.refresh_from_db()
             assert li.purchase_status == choice
 
-    def test_patch_damaged_exchange_accepted(self, auth_client):
-        """REQ-DMG-002/AC-DMG-002 (T2): damaged_exchange is accepted like any
-        other valid purchase_status value — no additional error or side
-        effect, since the view validates dynamically against
-        LineItem.PURCHASE_STATUS_CHOICES."""
+    def test_patch_damaged_exchange_rejected(self, auth_client):
+        """SPEC-PURCHASE-ORDER-011: damage/exchange intake is now exclusive
+        to DamagedExchangeSubmitView (REQ-DEX-009/009b always pairs the
+        status with an explicit damaged_quantity >= 1, which this generic
+        endpoint has no field for). Inverted from
+        REQ-DMG-002/AC-DMG-002 (T2)'s original "accepted like any other
+        valid choice" expectation, which this SPEC deliberately narrows —
+        damaged_exchange remains a valid LineItem.PURCHASE_STATUS_CHOICES
+        member (still readable/displayable everywhere) but can no longer be
+        written through this endpoint."""
         li = self._make_li(shopify_order_id=95011, shopify_line_item_id=11)
         url = LINE_ITEM_STATUS_URL.format(pk=li.pk)
         res = auth_client.patch(url, data={"purchase_status": "damaged_exchange"}, format="json")
-        assert res.status_code == 200
-        assert res.data["purchase_status"] == "damaged_exchange"
+        assert res.status_code == 400
         li.refresh_from_db()
-        assert li.purchase_status == "damaged_exchange"
+        assert li.purchase_status != "damaged_exchange"
+
+    def test_patch_other_publisher_rejected(self, auth_client):
+        """SPEC-ORDER-025 REQ-LCONF-306/AC-LCONF-306: other_publisher can
+        only be produced by the Daily Review upload flow (REQ-LCONF-308/309)
+        — this generic PATCH endpoint rejects it the same way it already
+        rejects damaged_exchange (test_patch_damaged_exchange_rejected)."""
+        li = self._make_li(shopify_order_id=95012, shopify_line_item_id=12)
+        url = LINE_ITEM_STATUS_URL.format(pk=li.pk)
+        res = auth_client.patch(url, data={"purchase_status": "other_publisher"}, format="json")
+        assert res.status_code == 400
+        li.refresh_from_db()
+        assert li.purchase_status != "other_publisher"
 
 
 # ---------------------------------------------------------------------------
@@ -2388,9 +2432,12 @@ class TestLineItemBulkStatusUpdateView:
         )
         assert res.status_code == 401
 
-    def test_bulk_damaged_exchange_accepted(self, auth_client):
-        """REQ-DMG-002/AC-DMG-002 (T2): damaged_exchange is accepted for
-        bulk status updates like any other valid choice."""
+    def test_bulk_damaged_exchange_rejected(self, auth_client):
+        """SPEC-PURCHASE-ORDER-011: same rejection as
+        TestLineItemStatusUpdateView.test_patch_damaged_exchange_rejected,
+        applied to the bulk endpoint. Inverted from
+        REQ-DMG-002/AC-DMG-002 (T2)'s original "accepted like any other
+        valid choice" expectation."""
         lis = self._make_lis(2, shopify_order_id=96010)
         ids = [li.pk for li in lis]
         res = auth_client.patch(
@@ -2398,11 +2445,27 @@ class TestLineItemBulkStatusUpdateView:
             data={"ids": ids, "purchase_status": "damaged_exchange"},
             format="json",
         )
-        assert res.status_code == 200
-        assert res.data["updated_count"] == 2
+        assert res.status_code == 400
         for li in lis:
             li.refresh_from_db()
-            assert li.purchase_status == "damaged_exchange"
+            assert li.purchase_status != "damaged_exchange"
+
+    def test_bulk_other_publisher_rejected(self, auth_client):
+        """SPEC-ORDER-025 REQ-LCONF-307/AC-LCONF-307: same rejection as
+        TestLineItemStatusUpdateView.test_patch_other_publisher_rejected,
+        applied to the bulk endpoint — no partial update (both LineItems
+        stay unchanged)."""
+        lis = self._make_lis(2, shopify_order_id=96011)
+        ids = [li.pk for li in lis]
+        res = auth_client.patch(
+            BULK_STATUS_URL,
+            data={"ids": ids, "purchase_status": "other_publisher"},
+            format="json",
+        )
+        assert res.status_code == 400
+        for li in lis:
+            li.refresh_from_db()
+            assert li.purchase_status != "other_publisher"
 
 
 # ---------------------------------------------------------------------------

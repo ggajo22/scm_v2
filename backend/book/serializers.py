@@ -1,5 +1,6 @@
 from rest_framework import serializers
 
+from book.constants import ETOILE_STATUS_LABELS
 from book.models import (
     BookNote,
     EtoileBookInfo,
@@ -9,16 +10,40 @@ from book.models import (
     Shopify_product,
 )
 
+# Only ETOILE status 80 means the book is actually live on the ETOILE store;
+# -1 / 0 / 12 are registered-but-not-selling states (see ETOILE_STATUS_LABELS).
+ETOILE_LISTED_STATUS = 80
+
 
 # @MX:ANCHOR: [AUTO] BookDetailSerializer — primary read serializer for book search results
 # @MX:REASON: REQ-SEARCH-007/011 define the response contract; callers include BookListViewSet and any future list endpoints
 class BookDetailSerializer(serializers.Serializer):
-    """Flat book representation combining Inven + Info fields (search results + list)."""
+    """Flat book view: Inven + Info + ETOILE listing state (search results + list)."""
     id = serializers.IntegerField()
     inven_SKU = serializers.CharField()
     name = serializers.CharField(source="info.name")
-    price_sale = serializers.FloatField(source="info.price_sale")
+    cover_image_url = serializers.CharField(source="info.cover_image_url")
     status_of_shopify = serializers.IntegerField()
+    etoile_listed = serializers.SerializerMethodField()
+    etoile_status_label = serializers.SerializerMethodField()
+
+    def _etoile(self, obj):
+        # Reverse OneToOne: RelatedObjectDoesNotExist subclasses AttributeError, so the
+        # getattr default covers "no ETOILE record". Requires select_related('etoile_inven')
+        # upstream — without it this is one query per row.
+        return getattr(obj, "etoile_inven", None)
+
+    def get_etoile_listed(self, obj) -> bool:
+        etoile = self._etoile(obj)
+        return etoile is not None and etoile.status_of_shopify == ETOILE_LISTED_STATUS
+
+    def get_etoile_status_label(self, obj) -> str:
+        etoile = self._etoile(obj)
+        if etoile is None:
+            return "미등록"
+        if etoile.status_of_shopify is None:
+            return "상태 없음"
+        return ETOILE_STATUS_LABELS.get(etoile.status_of_shopify, "정의되지 않은 상태")
 
 
 class StatusCountSerializer(serializers.Serializer):
@@ -111,6 +136,15 @@ class FastListingSkuBulkSerializer(serializers.Serializer):
 # SPEC-INVEN-ADD-001 serializer
 class InvenSkuBulkAddSerializer(serializers.Serializer):
     """Validate bulk SKU add request — skus must be a non-empty list."""
+    skus = serializers.ListField(
+        child=serializers.CharField(),
+        allow_empty=False,
+    )
+
+
+# SPEC-ETOILE-INVEN-ADD-001 serializer
+class EtoileInvenSkuBulkAddSerializer(serializers.Serializer):
+    """Validate Etoile bulk SKU add request — skus must be a non-empty list."""
     skus = serializers.ListField(
         child=serializers.CharField(),
         allow_empty=False,

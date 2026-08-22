@@ -4,7 +4,7 @@ version: 1.6.0
 status: completed
 created: 2026-08-07
 created_at: 2026-08-07
-updated: 2026-08-11
+updated: 2026-08-17
 author: ggajo
 priority: High
 issue_number: 8
@@ -24,6 +24,7 @@ labels: [order, logistics, purchase-order]
 | 1.4.0 | 2026-08-07 | ggajo | 검증 재감사(review-4)에서 동일 결함 유형이 REQUIREMENTS 섹션 3곳에 추가로 발견되어(REQ-LOGI-003/005/007) 사용자 승인 하에 오케스트레이터가 동일 패턴으로 마무리: REQ-LOGI-003을 003(Event-Driven, 전이 규칙)/003a(Unwanted, SKU 중복 dedup)/003b(Ubiquitous, 원자적 커밋)로 분리, REQ-LOGI-005에 005a(Ubiquitous, dedup/원자성 규칙 공유) 신설, REQ-LOGI-007을 007(Ubiquitous, 유효값 허용)/007a(Unwanted, 무효값 거부)로 분리(AC-LOGI-007b의 Traces를 REQ-LOGI-007a로 갱신). 새로 분리된 REQ 각각에 대응하는 AC-LOGI-003a/003b/005c 신설 및 acceptance.md에 시나리오 1c/1d/2b2 추가로 1:1 추적성 유지 |
 | 1.5.0 | 2026-08-08 | ggajo | Phase 3 문서 동기화 — Run 단계 구현 완료(commit 9c2fc33) 반영. `status: draft → completed`, 신규 섹션 `## 구현 노트` 추가(실제 구현 범위, plan.md 대비 차이, 인수기준 검증, 테스트 커버리지, 알려진 제약 기술)
 | 1.6.0 | 2026-08-11 | ggajo | 프로덕션 버그 수정 및 문서 동기화 — commit d22818f (cross-order SKU 충돌 안전성 개선). REQ-LOGI-003b/005b의 (Order.name, SKU) 매칭 구현, regression 테스트 추가(test_spec_011.py, test_spec_012.py) |
+| 1.6.0 | 2026-08-17 | ggajo | **환불 차감 도입 — `Order.status` 집계 대상에서 전량 환불된 LineItem 제외(REQ-LOGI-008).** 사용자 보고: 주문 #37830이 19개 품목 중 18개 출고 완료인데 부분입고/부분출고로 표시됐다. 원인은 전량 환불된 19번째 품목이 `not_shipped`로 남아 uniform 판정을 깬 것이며, 그 품목의 `purchase_status`는 `cs_required`(취소 코드가 아님)라 기존 제외 규칙에 걸리지 않았다 — 실제 취소 신호는 Refund 행이다. `UnorderedItemsView`/`_fully_refunded_line_item_ids`가 이미 쓰던 `quantity - Σrefunded ≤ 0` 규칙을 집계에도 적용한다(부분 환불은 제외 사유 아님). 2쿼리 설계는 유지 — 환불 합계는 기존 SELECT에 서브쿼리로 주석 처리(annotate)된다. `UploadWarehouseReceiptView`(REQ-LOGI-015)의 입고 용량 판정은 이 개정 범위 밖으로 변경 없음. **테스트**: `test_spec_011.py`에 `TestRecomputeAggregatesRefundNetting` 4건 추가(전량 환불이 partial을 유발하지 않음 / 부분 환불은 계속 집계 / 전량 취소 주문은 null / 취소 품목이 출고준비를 막지 않음). |
 
 ---
 
@@ -119,7 +120,7 @@ labels: [order, logistics, purchase-order]
 
 ### Order 집계
 
-**REQ-LOGI-008** (Ubiquitous): The system shall define `Order.status` as a computed aggregate over trackable (`sku` not null) child LineItems' `logistics_status`: the shared value when uniform, `partial`(부분입고) when 2+ distinct values are present, unset when no trackable LineItems exist (결정 D).
+**REQ-LOGI-008** (Ubiquitous) `[AMENDED v1.6.0]`: The system shall define `Order.status` as a computed aggregate over trackable (`sku` not null) child LineItems whose ordered quantity is not fully refunded (`quantity - Σrefunded > 0`), using their `logistics_status`: the shared value when uniform, `partial`(부분입고) when 2+ distinct values are present, unset when no such LineItems exist (결정 D). A fully refunded LineItem takes no part in the aggregate — the customer is not owed those copies (v1.6.0, 사용자 보고 주문 #37830).
 
 **REQ-LOGI-009** (Event-Driven): When any LineItem's `logistics_status` is written (single change, batch change, or either upload), the system shall recompute and persist that LineItem's parent Order's `status` per REQ-LOGI-008.
 
@@ -165,7 +166,7 @@ EARS 형식의 인수 기준. 각 항목은 대응하는 REQ-LOGI-XXX 하나 이
 
 **AC-LOGI-007b** (Unwanted) — Traces: REQ-LOGI-007a. If an invalid value is submitted for a manual `logistics_status` change, then the system shall reject the request, leave all targeted LineItems' `logistics_status` unchanged, and return an error identifying the invalid value.
 
-**AC-LOGI-008** (Ubiquitous) — Traces: REQ-LOGI-008. The system shall set `Order.status` to the shared `logistics_status` value of a trackable LineItem set when all values are identical, to `partial` when two or more distinct values are present, and to unset when no trackable LineItems exist.
+**AC-LOGI-008** (Ubiquitous) — Traces: REQ-LOGI-008. The system shall set `Order.status` to the shared `logistics_status` value of a trackable, not-fully-refunded LineItem set when all values are identical, to `partial` when two or more distinct values are present, and to unset when no such LineItems exist.
 
 **AC-LOGI-009** (Event-Driven) — Traces: REQ-LOGI-009. When a single LineItem's `logistics_status` is changed by any of the four write paths (manual single, manual batch, upload 1, upload 2), the system shall recompute that LineItem's parent Order's `status` before the write's response is returned.
 

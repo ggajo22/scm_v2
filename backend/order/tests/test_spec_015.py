@@ -38,7 +38,7 @@ from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from order.excel_utils import parse_outbound_excel
-from order.models import LineItem, Order
+from order.models import LineItem, Order, Refund
 from order.purchase_order_views import _process_outbound_rows
 from order.serializers import LineItemDetailSerializer
 
@@ -1636,3 +1636,62 @@ class TestZeroTotalRequiresAGenuineParsedZero:
         assert li.shipped_quantity == 7
         assert li.logistics_status == "shipped"
         assert result["matched_count"] == 1
+
+
+# ---------------------------------------------------------------------------
+# 환불(취소) 수량 차감 — 출고 용량 판정 (사용자 보고: 주문 #37830)
+#
+# 고객이 환불받은 수량은 출고할 물건이 아니므로 용량에서 빠진다. 표시/집계
+# 경로가 전량 환불 품목을 제외하는 것과 같은 규칙을 수량 축에서 적용한 것.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestOutboundRefundNetting:
+    def _refund(self, line_item, quantity, shopify_refund_id=700001):
+        return Refund.objects.create(
+            order=line_item.order,
+            shopify_refund_id=shopify_refund_id,
+            line_item_id=line_item.shopify_line_item_id,
+            quantity=quantity,
+        )
+
+    def test_partial_refund_reduces_capacity_and_completes_shipment(self):
+        """수량 3 중 1 환불 -> 잔여 2를 출고하면 '출고' 완료다."""
+        order = _make_order(shopify_order_id=700101, name="#700101")
+        li = _make_line_item(order, sku="ISBN-PR", quantity=3)
+        self._refund(li, 1)
+
+        result = _process_outbound_rows([{"name": "#700101", "sku": "ISBN-PR", "total": 2}])
+
+        li.refresh_from_db()
+        assert result["matched_count"] == 1
+        assert result["quantity_exceeded_count"] == 0
+        assert li.shipped_quantity == 2
+        assert li.logistics_status == "shipped"
+
+    def test_fully_refunded_line_item_has_no_capacity(self):
+        """전량 환불 품목은 출고 용량이 0 — 수량초과로 거부되고 무변경."""
+        order = _make_order(shopify_order_id=700102, name="#700102")
+        li = _make_line_item(order, sku="ISBN-FR", quantity=1)
+        self._refund(li, 1, shopify_refund_id=700002)
+
+        result = _process_outbound_rows([{"name": "#700102", "sku": "ISBN-FR", "total": 1}])
+
+        li.refresh_from_db()
+        assert result["matched_count"] == 0
+        assert result["quantity_exceeded_count"] == 1
+        assert li.shipped_quantity == 0
+        assert li.logistics_status == "not_shipped"
+
+    def test_unrefunded_line_item_capacity_unchanged(self):
+        """환불이 없으면 기존 동작 그대로 (회귀 방지)."""
+        order = _make_order(shopify_order_id=700103, name="#700103")
+        li = _make_line_item(order, sku="ISBN-NR", quantity=3)
+
+        result = _process_outbound_rows([{"name": "#700103", "sku": "ISBN-NR", "total": 3}])
+
+        li.refresh_from_db()
+        assert result["matched_count"] == 1
+        assert li.shipped_quantity == 3
+        assert li.logistics_status == "shipped"

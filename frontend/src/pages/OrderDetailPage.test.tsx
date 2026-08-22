@@ -62,6 +62,12 @@ function buildOrderDetail(overrides: Partial<OrderDetail> = {}): OrderDetail {
     has_refund: false,
     margin_amount: null,
     margin_rate: null,
+    shipping_cost: null,
+    korea_warehouse_cost: null,
+    confirmed_cost: null,
+    total_cost: null,
+    exchange_rate: null,
+    exchange_rate_date: null,
     customer: null,
     shipping_address: null,
     line_items: [
@@ -90,6 +96,8 @@ function buildOrderDetail(overrides: Partial<OrderDetail> = {}): OrderDetail {
     refunds: [],
     status: 'shipment_confirmed',
     ready_to_ship: null,
+    logistics_display: 'shipment_confirmed',
+    purchase_display: 'ordered',
     ...overrides,
   }
 }
@@ -121,9 +129,9 @@ describe('OrderDetailPage — SPEC-ORDER-011 logistics status badges (AC-LOGI-01
     expect(screen.getAllByText('입고예정').length).toBeGreaterThanOrEqual(1)
   })
 
-  it('renders the Order.status aggregate badge near the fulfillment_status badge', () => {
+  it('renders the 입고출고 현황 badge from logistics_display near the fulfillment_status badge', () => {
     vi.mocked(useOrderDetail).mockReturnValue({
-      data: buildOrderDetail({ status: 'partial' }),
+      data: buildOrderDetail({ logistics_display: 'partial' }),
       isPending: false,
       isError: false,
       error: null,
@@ -136,9 +144,9 @@ describe('OrderDetailPage — SPEC-ORDER-011 logistics status badges (AC-LOGI-01
     expect(screen.getByText(/출고완료/)).toBeInTheDocument()
   })
 
-  it('does not render the Order.status badge when status is null', () => {
+  it('does not render the 입고출고 현황 badge when logistics_display is null', () => {
     vi.mocked(useOrderDetail).mockReturnValue({
-      data: buildOrderDetail({ status: null }),
+      data: buildOrderDetail({ logistics_display: null }),
       isPending: false,
       isError: false,
       error: null,
@@ -150,9 +158,9 @@ describe('OrderDetailPage — SPEC-ORDER-011 logistics status badges (AC-LOGI-01
     expect(screen.queryByText(/부분입고/)).not.toBeInTheDocument()
   })
 
-  it('AC-LOGI-013: fulfillment_status badge and Order.status badge share no header word and use different background colors', () => {
+  it('AC-LOGI-013: fulfillment_status badge and 입고출고 현황 badge share no header word and use different background colors', () => {
     vi.mocked(useOrderDetail).mockReturnValue({
-      data: buildOrderDetail({ status: 'partial', fulfillment_status: 'fulfilled' }),
+      data: buildOrderDetail({ logistics_display: 'partial', fulfillment_status: 'fulfilled' }),
       isPending: false,
       isError: false,
       error: null,
@@ -257,7 +265,7 @@ describe('OrderDetailPage — SPEC-ORDER-012 ready_to_ship badge (AC-RTS-007/008
     vi.mocked(useOrderDetail).mockReturnValue({
       data: buildOrderDetail({
         ready_to_ship: true,
-        status: 'partial',
+        logistics_display: 'partial',
         fulfillment_status: 'fulfilled',
       }),
       isPending: false,
@@ -296,7 +304,7 @@ describe('OrderDetailPage — SPEC-ORDER-012 ready_to_ship badge (AC-RTS-007/008
     vi.mocked(useOrderDetail).mockReturnValue({
       data: buildOrderDetail({
         ready_to_ship: false,
-        status: 'partial',
+        logistics_display: 'partial',
         fulfillment_status: 'fulfilled',
       }),
       isPending: false,
@@ -386,5 +394,363 @@ describe('OrderDetailPage — SPEC-ORDER-013 rack_number exclusion (REQ-RACK-012
     expect(screen.queryByText('RACK-Z9')).not.toBeInTheDocument()
     expect(screen.queryByText(/렉번호/)).not.toBeInTheDocument()
     expect(screen.queryByDisplayValue('RACK-Z9')).not.toBeInTheDocument()
+  })
+})
+
+describe('OrderDetailPage — SPEC-ORDER-021 shipping/Korea-warehouse cost display (AC-COST-011)', () => {
+  beforeEach(() => {
+    vi.mocked(useCreateLineItemNote).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+    } as unknown as ReturnType<typeof useCreateLineItemNote>)
+    vi.mocked(useResolveLineItemNote).mockReturnValue({
+      mutate: vi.fn(),
+    } as unknown as ReturnType<typeof useResolveLineItemNote>)
+  })
+
+  it('displays shipping_cost and korea_warehouse_cost next to margin_amount/margin_rate', () => {
+    // Values match AC-COST-003's fixture shape. shipping_cost intentionally
+    // uses "8.18" (not "0.00") — Number("0.00").toLocaleString() === "0",
+    // which would render "0 USD" and make this assertion fail even against a
+    // correct implementation (audit D3).
+    vi.mocked(useOrderDetail).mockReturnValue({
+      data: buildOrderDetail({
+        margin_amount: '159.58',
+        margin_rate: '79.79',
+        shipping_cost: '8.18',
+        korea_warehouse_cost: '2.25',
+      }),
+      isPending: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useOrderDetail>)
+
+    renderPage()
+
+    expect(screen.getByText(/8\.18 USD/)).toBeInTheDocument()
+    expect(screen.getByText(/2\.25 USD/)).toBeInTheDocument()
+  })
+
+  it('falls back to "—" when shipping_cost and korea_warehouse_cost are null', () => {
+    vi.mocked(useOrderDetail).mockReturnValue({
+      data: buildOrderDetail({
+        shipping_cost: null,
+        korea_warehouse_cost: null,
+      }),
+      isPending: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useOrderDetail>)
+
+    renderPage()
+
+    // Scope to each label's own row so this does not coincidentally pass
+    // against pre-existing unrelated "—" fallbacks (e.g. confirmed_price).
+    const shippingRow = screen.getByText('배송비').closest('div')
+    const warehouseRow = screen.getByText('한국물류').closest('div')
+    expect(shippingRow?.textContent).toContain('—')
+    expect(warehouseRow?.textContent).toContain('—')
+  })
+})
+
+// SPEC-ORDER-021 extension: restructures 결제 정보 into
+// 최종 결제 금액 -> 비용 합계 -> (원가/배송비/한국물류, indented+de-emphasized)
+// -> 마진 -> 마진율, and adds confirmed_cost/total_cost.
+describe('OrderDetailPage — SPEC-ORDER-021 extension: 결제 정보 restructure (confirmed_cost/total_cost)', () => {
+  beforeEach(() => {
+    vi.mocked(useCreateLineItemNote).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+    } as unknown as ReturnType<typeof useCreateLineItemNote>)
+    vi.mocked(useResolveLineItemNote).mockReturnValue({
+      mutate: vi.fn(),
+    } as unknown as ReturnType<typeof useResolveLineItemNote>)
+  })
+
+  function mockFullBreakdown() {
+    // Reuses AC-COST-003's audited fixture shape (margin_amount/margin_rate/
+    // shipping_cost/korea_warehouse_cost) plus the two new fields.
+    // confirmed_cost="30.00" and total_cost="40.43" are the hand-derived
+    // values for that same fixture (confirmed_cost_usd=10000×3/1000=30.00;
+    // total_cost = quantize(30.00+8.175+2.25) = quantize(40.425) = "40.43").
+    vi.mocked(useOrderDetail).mockReturnValue({
+      data: buildOrderDetail({
+        margin_amount: '159.58',
+        margin_rate: '79.79',
+        shipping_cost: '8.18',
+        korea_warehouse_cost: '2.25',
+        confirmed_cost: '30.00',
+        total_cost: '40.43',
+      }),
+      isPending: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useOrderDetail>)
+  }
+
+  it('renders 비용 합계 (total_cost) and 원가 (확정 단가 합계) (confirmed_cost) with the "{value} USD" convention', () => {
+    mockFullBreakdown()
+    renderPage()
+
+    expect(screen.getByText('비용 합계')).toBeInTheDocument()
+    expect(screen.getByText(/40\.43 USD/)).toBeInTheDocument()
+    expect(screen.getByText('원가 (확정 단가 합계)')).toBeInTheDocument()
+    expect(screen.getByText(/30(\.00)? USD|30 USD/)).toBeInTheDocument()
+  })
+
+  it('renders the 결제 정보 rows in order: 최종 결제 금액, 비용 합계, 원가, 배송비, 한국물류, 마진, 마진율', () => {
+    mockFullBreakdown()
+    renderPage()
+
+    const isBefore = (a: Element, b: Element) =>
+      !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING)
+
+    const netPaid = screen.getByText('최종 결제 금액')
+    const totalCost = screen.getByText('비용 합계')
+    const confirmedCost = screen.getByText('원가 (확정 단가 합계)')
+    const shipping = screen.getByText('배송비')
+    const koreaLogistics = screen.getByText('한국물류')
+    const margin = screen.getByText('마진')
+    const marginRate = screen.getByText('마진율')
+
+    expect(isBefore(netPaid, totalCost)).toBe(true)
+    expect(isBefore(totalCost, confirmedCost)).toBe(true)
+    expect(isBefore(confirmedCost, shipping)).toBe(true)
+    expect(isBefore(shipping, koreaLogistics)).toBe(true)
+    expect(isBefore(koreaLogistics, margin)).toBe(true)
+    expect(isBefore(margin, marginRate)).toBe(true)
+  })
+
+  it('renders 한국물류 instead of the old 한국창고비 label', () => {
+    mockFullBreakdown()
+    renderPage()
+
+    expect(screen.getByText('한국물류')).toBeInTheDocument()
+    expect(screen.queryByText('한국창고비')).not.toBeInTheDocument()
+  })
+
+  it('visually subordinates the 원가/배송비/한국물류 sub-items relative to 비용 합계 (indented + de-emphasized)', () => {
+    mockFullBreakdown()
+    renderPage()
+
+    const totalCostRow = screen.getByText('비용 합계').closest('div')
+    const confirmedCostRow = screen.getByText('원가 (확정 단가 합계)').closest('div')
+    const shippingRow = screen.getByText('배송비').closest('div')
+    const koreaLogisticsRow = screen.getByText('한국물류').closest('div')
+
+    expect(totalCostRow).not.toBeNull()
+    for (const subRow of [confirmedCostRow, shippingRow, koreaLogisticsRow]) {
+      expect(subRow).not.toBeNull()
+      // Sub-items must be visually distinct from (quieter/indented relative
+      // to) the 비용 합계 row that groups them — using the codebase's
+      // existing utility classes rather than inventing new CSS.
+      expect(subRow?.className).not.toEqual(totalCostRow?.className)
+      expect(subRow?.className).toMatch(/pl-\d/)
+    }
+  })
+
+  it('falls back to "—" for 비용 합계 and 원가 when total_cost/confirmed_cost are null', () => {
+    vi.mocked(useOrderDetail).mockReturnValue({
+      data: buildOrderDetail({
+        total_cost: null,
+        confirmed_cost: null,
+      }),
+      isPending: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useOrderDetail>)
+
+    renderPage()
+
+    const totalCostRow = screen.getByText('비용 합계').closest('div')
+    const confirmedCostRow = screen.getByText('원가 (확정 단가 합계)').closest('div')
+    expect(totalCostRow?.textContent).toContain('—')
+    expect(confirmedCostRow?.textContent).toContain('—')
+  })
+})
+
+// SPEC-ORDER-021 extension (v1.4.0, AC-COST-024): surfaces the applied
+// exchange rate + the record's effective_date at the bottom of 결제 정보,
+// after 마진율 and OUTSIDE the pl-3 indented 비용 합계 sub-item group (it is
+// calculation metadata, not a cost component).
+describe('OrderDetailPage — SPEC-ORDER-021 extension: applied exchange rate display (AC-COST-024)', () => {
+  beforeEach(() => {
+    vi.mocked(useCreateLineItemNote).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+    } as unknown as ReturnType<typeof useCreateLineItemNote>)
+    vi.mocked(useResolveLineItemNote).mockReturnValue({
+      mutate: vi.fn(),
+    } as unknown as ReturnType<typeof useResolveLineItemNote>)
+  })
+
+  it('renders 적용 환율 with the formatted rate and date after 마진율', () => {
+    vi.mocked(useOrderDetail).mockReturnValue({
+      data: buildOrderDetail({
+        margin_amount: '159.58',
+        margin_rate: '79.79',
+        exchange_rate: '1427.05',
+        exchange_rate_date: '2026-08-03',
+      }),
+      isPending: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useOrderDetail>)
+
+    renderPage()
+
+    expect(screen.getByText('적용 환율')).toBeInTheDocument()
+    expect(screen.getByText(/1,427\.05 KRW\/USD \(2026-08-03\)/)).toBeInTheDocument()
+
+    const isBefore = (a: Element, b: Element) =>
+      !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING)
+    const marginRate = screen.getByText('마진율')
+    const exchangeRateLabel = screen.getByText('적용 환율')
+    expect(isBefore(marginRate, exchangeRateLabel)).toBe(true)
+  })
+
+  it('falls back to "—" when exchange_rate or exchange_rate_date is null', () => {
+    vi.mocked(useOrderDetail).mockReturnValue({
+      data: buildOrderDetail({
+        exchange_rate: null,
+        exchange_rate_date: null,
+      }),
+      isPending: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useOrderDetail>)
+
+    renderPage()
+
+    const exchangeRateRow = screen.getByText('적용 환율').closest('div')
+    expect(exchangeRateRow?.textContent).toContain('—')
+  })
+
+  it('renders 적용 환율 outside the pl-3 indented cost sub-item group', () => {
+    vi.mocked(useOrderDetail).mockReturnValue({
+      data: buildOrderDetail({
+        exchange_rate: '1427.05',
+        exchange_rate_date: '2026-08-03',
+      }),
+      isPending: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useOrderDetail>)
+
+    renderPage()
+
+    const exchangeRateRow = screen.getByText('적용 환율').closest('div')
+    expect(exchangeRateRow).not.toBeNull()
+    expect(exchangeRateRow?.className).not.toMatch(/pl-\d/)
+  })
+})
+
+describe('OrderDetailPage — 주문상세/주문목록 표시 일원화', () => {
+  beforeEach(() => {
+    vi.mocked(useCreateLineItemNote).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+    } as unknown as ReturnType<typeof useCreateLineItemNote>)
+    vi.mocked(useResolveLineItemNote).mockReturnValue({
+      mutate: vi.fn(),
+    } as unknown as ReturnType<typeof useResolveLineItemNote>)
+  })
+
+  it('입고출고 현황 배지는 저장 컬럼 status가 아니라 logistics_display를 읽는다', () => {
+    // 저장 컬럼이 낡은 값(미입고)을 들고 있어도 파생값(출고)이 표시돼야 한다 —
+    // 출고 처리 경로가 Order.status를 갱신하지 않아 실제로 생기는 상황이다.
+    vi.mocked(useOrderDetail).mockReturnValue({
+      data: buildOrderDetail({ status: 'not_shipped', logistics_display: 'shipped' }),
+      isPending: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useOrderDetail>)
+
+    renderPage()
+
+    const badge = screen.getByTitle('입고출고 현황')
+    expect(badge).toHaveTextContent('출고')
+    expect(badge).not.toHaveTextContent('미입고')
+  })
+
+  it('주문목록에만 있던 partial_shipped 값도 상세에서 부분출고로 표시된다', () => {
+    vi.mocked(useOrderDetail).mockReturnValue({
+      data: buildOrderDetail({ logistics_display: 'partial_shipped' }),
+      isPending: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useOrderDetail>)
+
+    renderPage()
+
+    expect(screen.getByTitle('입고출고 현황')).toHaveTextContent('부분출고')
+  })
+})
+
+describe('OrderDetailPage — 출고 완료 주문의 출고가능/출고불가 배지 숨김', () => {
+  beforeEach(() => {
+    vi.mocked(useCreateLineItemNote).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+    } as unknown as ReturnType<typeof useCreateLineItemNote>)
+    vi.mocked(useResolveLineItemNote).mockReturnValue({
+      mutate: vi.fn(),
+    } as unknown as ReturnType<typeof useResolveLineItemNote>)
+  })
+
+  it('전량 출고된 주문에서는 출고불가 배지를 숨긴다', () => {
+    // 백엔드 규칙상 '출고'는 '입고'가 아니라서 ready_to_ship=false가 되지만,
+    // 이미 나간 주문에 출고불가를 붙이는 건 의미가 없다.
+    vi.mocked(useOrderDetail).mockReturnValue({
+      data: buildOrderDetail({ logistics_display: 'shipped', ready_to_ship: false }),
+      isPending: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useOrderDetail>)
+
+    renderPage()
+
+    expect(screen.queryByTitle('출고불가')).not.toBeInTheDocument()
+    expect(screen.queryByTitle('출고가능')).not.toBeInTheDocument()
+    // 입고출고 현황 배지는 그대로 남는다.
+    expect(screen.getByTitle('입고출고 현황')).toHaveTextContent('출고')
+  })
+
+  it('아직 출고가 남은 주문에서는 배지를 그대로 보여준다', () => {
+    vi.mocked(useOrderDetail).mockReturnValue({
+      data: buildOrderDetail({ logistics_display: 'partial_shipped', ready_to_ship: false }),
+      isPending: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useOrderDetail>)
+
+    renderPage()
+
+    expect(screen.getByTitle('출고불가')).toBeInTheDocument()
+  })
+
+  it('출고가능 배지도 출고 완료 주문에서는 숨긴다', () => {
+    vi.mocked(useOrderDetail).mockReturnValue({
+      data: buildOrderDetail({ logistics_display: 'shipped', ready_to_ship: true }),
+      isPending: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useOrderDetail>)
+
+    renderPage()
+
+    expect(screen.queryByTitle('출고가능')).not.toBeInTheDocument()
   })
 })

@@ -682,6 +682,85 @@ def test_resync_of_multi_item_refund_is_idempotent():
     assert Refund.objects.filter(order__shopify_order_id=920002).count() == 2
 
 
+# ---------------------------------------------------------------------------
+# SPEC-ORDER-025 M2: sync-time protection for operator-corrected SKUs
+# (REQ-*): a LineItem whose sku was manually corrected (original_sku set)
+# must survive a resync that still reports the OLD sku — for both the
+# non-bundle and bundle expansion branches.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_sync_preserves_manually_corrected_sku_non_bundle():
+    """Non-bundle branch: a corrected row's sku must not be reverted to the
+    stale Shopify-reported value on the next sync. This proves the bug
+    exists BEFORE the sync-time guard is implemented — sku currently sits
+    unconditionally in update_or_create's `defaults`."""
+    order = Order.objects.create(
+        shopify_order_id=930001,
+        store_type="gimssine",
+        order_number=43001,
+        name="#43001",
+        shopify_created_at=timezone.now(),
+    )
+    li = LineItem.objects.create(
+        order=order,
+        shopify_line_item_id=9301,
+        sku="ISBN-NEW-EDITION",
+        original_sku="ISBN-OLD-EDITION",
+        quantity=2,
+        purchase_status="unordered",
+    )
+
+    # Shopify still reports the stale (old-edition) sku on this line item.
+    order_data = _make_order_data(930001, [_make_shopify_line_item(9301, sku="ISBN-OLD-EDITION")])
+    _sync_single_order(order_data, "gimssine")
+
+    li.refresh_from_db()
+    assert li.sku == "ISBN-NEW-EDITION"
+    assert li.original_sku == "ISBN-OLD-EDITION"
+    # No duplicate row should have been created for the stale sku either.
+    assert LineItem.objects.filter(order=order, shopify_line_item_id=9301).count() == 1
+
+
+@pytest.mark.django_db
+def test_sync_preserves_manually_corrected_bundle_member_sku_no_duplicate_row():
+    """Bundle branch: a corrected member row (sku=member_isbn originally,
+    now corrected to a new edition ISBN) must survive a resync of the same
+    bundle line item without a duplicate row being created for the stale
+    member ISBN. Row count must stay at 2 (ISBN-A-corrected, ISBN-B), not 3."""
+    _make_bundle_mapping()  # SET -> [ISBN-A, ISBN-B]
+    order = Order.objects.create(
+        shopify_order_id=930002,
+        store_type="gimssine",
+        order_number=43002,
+        name="#43002",
+        shopify_created_at=timezone.now(),
+    )
+    li = _make_shopify_line_item(9302, sku=_BUNDLE_SKU)
+    order_data = _make_order_data(930002, [li])
+    _sync_single_order(order_data, "gimssine")
+
+    rows = LineItem.objects.filter(order=order, shopify_line_item_id=9302)
+    assert rows.count() == 2
+    row_a = rows.get(sku="ISBN-A")
+    row_a.sku = "ISBN-A-NEW-EDITION"
+    row_a.original_sku = "ISBN-A"
+    row_a.save(update_fields=["sku", "original_sku"])
+
+    # Resync the same bundle line item — Shopify still reports member ISBN-A
+    # via the bundle mapping (member_isbn is derived from ShopifySkuSetMapping,
+    # not from Shopify itself, so it is always "ISBN-A" here).
+    _sync_single_order(order_data, "gimssine")
+
+    rows_after = LineItem.objects.filter(order=order, shopify_line_item_id=9302)
+    assert rows_after.count() == 2  # no orphaned duplicate for stale "ISBN-A"
+    row_a.refresh_from_db()
+    assert row_a.sku == "ISBN-A-NEW-EDITION"
+    assert row_a.original_sku == "ISBN-A"
+    assert rows_after.filter(sku="ISBN-B").exists()
+
+
 @pytest.mark.django_db
 def test_sync_keeps_header_only_row_for_refund_without_line_items():
     """A refund carrying no refund_line_items (e.g. a pure shipping refund)

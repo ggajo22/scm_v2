@@ -357,7 +357,6 @@ function KyboCategorySection({ info, bookId }: { info: BookInfo; bookId: number 
       kyobo_category3: info.kyobo_category3,
       kyobo_category4: info.kyobo_category4,
       kyobo_category5: info.kyobo_category5,
-      kyobo_weight: info.kyobo_weight,
     })
   }, [info])
 
@@ -413,6 +412,7 @@ function WeightSection({ info, bookId }: { info: BookInfo; bookId: number }) {
   useEffect(() => {
     setForm({
       weight: info.weight,
+      kyobo_weight: info.kyobo_weight,
       yes24_weight: info.yes24_weight,
       aladin_weight: info.aladin_weight,
       manual_weight: info.manual_weight,
@@ -730,6 +730,16 @@ function ShopifyStoreBadge({ info }: { info: ShopifyStoreInfo }) {
   )
 }
 
+/**
+ * Shopify returns the variant price as a decimal string. Both stores (GIMSSINE, ETOILE)
+ * sell in USD, so the price is rendered with a $ prefix and trailing .00 trimmed.
+ */
+function formatShopifyPrice(price: string): string {
+  const value = Number(price)
+  if (!Number.isFinite(value)) return price
+  return `$${value.toLocaleString('en-US', { maximumFractionDigits: 2 })}`
+}
+
 function ShopifyLiveInfoSection({
   bookId,
   etoileInfo,
@@ -793,6 +803,18 @@ function ShopifyLiveInfoSection({
                   {info.weight != null
                     ? `${info.weight} ${info.weight_unit ?? ''}`
                     : '중량 없음'}
+                </span>
+              )}
+              {info.registered && (
+                <span className="text-sm font-medium">
+                  {info.price != null ? formatShopifyPrice(info.price) : '판매가 없음'}
+                </span>
+              )}
+              {/* REQ-SHPINFO-016: image count is served for both stores but shown for
+                  ETOILE only — GIMSSINE listings are not curated on image count. */}
+              {info.registered && label === 'ETOILE' && info.image_count != null && (
+                <span className="text-sm text-muted-foreground">
+                  이미지 {info.image_count}장
                 </span>
               )}
               {info.registered && (

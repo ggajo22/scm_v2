@@ -52,16 +52,20 @@ LINE_ITEM_STATUS_URL = "/api/purchase-orders/line-items/{pk}/status/"
 BULK_STATUS_URL = "/api/purchase-orders/line-items/bulk-status/"
 UPLOAD_DAILY_URL = "/api/purchase-orders/upload-daily-review/"
 
-# The four purchase_status codes this SPEC makes visible again
-# (models.py PURCHASE_STATUS_CHOICES).
-EXCLUDED_STATUSES = ("on_hold", "order_cancelled", "cs_required", "other_publisher")
+# The three purchase_status codes this SPEC makes visible again
+# (models.py PURCHASE_STATUS_CHOICES). SPEC-ORDER-025 REQ-LCONF-301 removed
+# "other_publisher" from this tuple — it is no longer surfaced in the
+# excluded-items view (it now lives only in the 품목 노트 타출판사 탭).
+EXCLUDED_STATUSES = ("on_hold", "order_cancelled", "cs_required")
 
 # Queries GET /api/purchase-orders/unordered/ issues once the auth machinery
-# is warm: 1 JWT user lookup + the 2 the view already issued before
-# SPEC-ORDER-018. Pinned exactly so that ANY query added to a pre-existing
-# endpoint fails REQ-RESTORE-011 — a with/without comparison alone cannot,
-# because a constant addition lands in both measurements and cancels.
-UNORDERED_ENDPOINT_QUERY_COUNT = 3
+# is warm: 1 JWT user lookup + the 1 the view issues after SPEC-ORDER-025
+# REQ-LCONF-201 removed the DistributorVendorRule rule_map query (was 2
+# pre-SPEC-ORDER-025). Pinned exactly so that ANY query added to a
+# pre-existing endpoint fails REQ-RESTORE-011 — a with/without comparison
+# alone cannot, because a constant addition lands in both measurements and
+# cancels.
+UNORDERED_ENDPOINT_QUERY_COUNT = 2
 
 
 # ---------------------------------------------------------------------------
@@ -171,10 +175,14 @@ def _make_daily_review_excel(rows: list[dict]) -> bytes:
 class TestExcludedItemsViewSelection:
     """AC-RESTORE-001/002/003 — which rows come back."""
 
-    def test_returns_exactly_the_four_excluded_statuses_and_writes_nothing(
+    def test_returns_exactly_the_three_excluded_statuses_and_writes_nothing(
         self, auth_client
     ):
-        """T1 (AC-RESTORE-001) — REQ-RESTORE-001/002."""
+        """T1 (AC-RESTORE-001) — REQ-RESTORE-001/002.
+
+        SPEC-ORDER-025 REQ-LCONF-302: other_publisher is no longer surfaced
+        here — SKU-OTHERPUB is included as a control to prove it is excluded.
+        """
         order = _make_order()
         statuses = [
             ("unordered", "SKU-UNORDERED"),
@@ -205,10 +213,9 @@ class TestExcludedItemsViewSelection:
         assert {row["sku"] for row in res.data["results"]} == {
             "SKU-HOLD",
             "SKU-CANCEL",
-            "SKU-OTHERPUB",
             "SKU-CS",
         }
-        assert len(res.data["results"]) == 4
+        assert len(res.data["results"]) == 3
 
         # No write of any kind (REQ-RESTORE-001).
         assert list(LineItem.objects.order_by("pk").values()) == before
@@ -317,7 +324,7 @@ class TestExcludedItemsViewResponseContract:
                     title=f"도서 {line_no}",
                     vendor="처음교육",
                     quantity=1,
-                    purchase_status=EXCLUDED_STATUSES[line_no % 4],
+                    purchase_status=EXCLUDED_STATUSES[line_no % len(EXCLUDED_STATUSES)],
                 )
         # ... plus 2 items on two DIFFERENT orders sharing one timestamp,
         # which is what makes a single-key ordering non-deterministic.
@@ -513,7 +520,7 @@ class TestExistingReorderPathUnchanged:
                 shopify_line_item_id=100 + idx,
                 sku=f"SKU-X{idx}",
                 quantity=1,
-                purchase_status=EXCLUDED_STATUSES[idx % 4],
+                purchase_status=EXCLUDED_STATUSES[idx % len(EXCLUDED_STATUSES)],
             )
 
         with CaptureQueriesContext(connection) as ctx_b:
@@ -535,8 +542,10 @@ class TestExistingReorderPathUnchanged:
         # issues a different number of database queries as a result of this
         # SPEC" actually asks for.
         #
-        # The 3 are: the JWT user lookup (warmed above, but still one per
-        # request), plus the two this view issued before SPEC-ORDER-018.
+        # The 2 are: the JWT user lookup (warmed above, but still one per
+        # request), plus the one query this view issues after
+        # SPEC-ORDER-025 REQ-LCONF-201 removed the DistributorVendorRule
+        # rule_map query (was two pre-SPEC-ORDER-025).
         # To re-derive after an intentional change, temporarily assert a
         # wrong value and read the reported count.
         assert queries_without_excluded == UNORDERED_ENDPOINT_QUERY_COUNT
@@ -643,10 +652,19 @@ class TestRestoreOrderAggregateSideEffects:
         # purchase_status plays no part in the Order.status computation.
         assert order.status == status_before == "partial"
 
-    def test_on_hold_restore_is_inert_and_cs_required_restore_lifts_ready(
+    def test_on_hold_restore_is_inert_and_in_stock_restore_drops_ready(
         self, auth_client
     ):
-        """T9 (AC-RESTORE-009) — REQ-RESTORE-014."""
+        """T9 (AC-RESTORE-009) — REQ-RESTORE-014 (개정).
+
+        The original pairing was on_hold(무영향) vs cs_required(복원 시 ready
+        상승). 사용자 지시로 cs_required 단축 규칙이 삭제되면서 후자는 성립
+        하지 않는다 — 입고까지 끝난 CS필요 품목은 이제 복원 전후 모두 출고가능
+        이다. 판별력을 유지하기 위해 "복원이 실제로 ready_to_ship을 움직이는"
+        유일하게 남은 경로인 in_stock 복원으로 짝을 교체했다: in_stock은 미입고
+        여도 조건을 만족하므로, unordered로 복원되는 순간 False로 떨어진다.
+        재계산이 호출되지 않으면 이 단언이 깨진다.
+        """
         order_hold = _make_order(shopify_order_id=918201, name="#91821")
         li_hold = _make_line_item(
             order_hold,
@@ -656,17 +674,17 @@ class TestRestoreOrderAggregateSideEffects:
             purchase_status="on_hold",
             logistics_status="received",
         )
-        order_cs = _make_order(shopify_order_id=918202, name="#91822")
-        li_cs = _make_line_item(
-            order_cs,
+        order_stock = _make_order(shopify_order_id=918202, name="#91822")
+        li_stock = _make_line_item(
+            order_stock,
             shopify_line_item_id=1,
-            sku="SKU-CS",
+            sku="SKU-STOCK",
             quantity=1,
-            purchase_status="cs_required",
-            logistics_status="received",
+            purchase_status="in_stock",
+            logistics_status="not_shipped",
         )
         _make_line_item(
-            order_cs,
+            order_stock,
             shopify_line_item_id=2,
             sku="SKU-PLAIN",
             quantity=1,
@@ -674,35 +692,37 @@ class TestRestoreOrderAggregateSideEffects:
             logistics_status="received",
         )
 
-        _recompute_order_aggregates([order_hold.id, order_cs.id])
+        _recompute_order_aggregates([order_hold.id, order_stock.id])
         order_hold.refresh_from_db()
-        order_cs.refresh_from_db()
+        order_stock.refresh_from_db()
         hold_ready_before = order_hold.ready_to_ship
         hold_status_before = order_hold.status
-        cs_status_before = order_cs.status
-        assert order_cs.ready_to_ship is False  # premise: any(cs_required)
+        stock_status_before = order_stock.status
+        # premise: in_stock satisfies the rule even while 미입고.
+        assert order_stock.ready_to_ship is True
 
         res_hold = auth_client.patch(
             LINE_ITEM_STATUS_URL.format(pk=li_hold.pk),
             {"purchase_status": "unordered"},
             format="json",
         )
-        res_cs = auth_client.patch(
-            LINE_ITEM_STATUS_URL.format(pk=li_cs.pk),
+        res_stock = auth_client.patch(
+            LINE_ITEM_STATUS_URL.format(pk=li_stock.pk),
             {"purchase_status": "unordered"},
             format="json",
         )
 
         assert res_hold.status_code == 200
-        assert res_cs.status_code == 200
+        assert res_stock.status_code == 200
         order_hold.refresh_from_db()
-        order_cs.refresh_from_db()
+        order_stock.refresh_from_db()
         # on_hold appears in neither aggregate rule — nothing moves.
         assert order_hold.ready_to_ship == hold_ready_before
         assert order_hold.status == hold_status_before
-        # cs_required's forced-False condition is gone.
-        assert order_cs.ready_to_ship is True
-        assert order_cs.status == cs_status_before
+        # in_stock 복원 -> 미입고 unordered 로 남아 조건 탈락.
+        assert order_stock.ready_to_ship is False
+        # purchase_status plays no part in the Order.status computation.
+        assert order_stock.status == stock_status_before
 
 
 @pytest.mark.django_db

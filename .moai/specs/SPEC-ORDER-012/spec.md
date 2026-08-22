@@ -1,10 +1,10 @@
 ---
 id: SPEC-ORDER-012
-version: 1.4.1
+version: 1.5.0
 status: completed
 created: 2026-08-09
 created_at: 2026-08-09
-updated: 2026-08-09
+updated: 2026-08-17
 author: ggajo
 priority: High
 issue_number: 10
@@ -23,6 +23,7 @@ labels: [order, logistics, purchase-order, ready-to-ship]
 | 1.3.0 | 2026-08-09 | ggajo | Phase 2.3 plan-auditor 검증 재감사(iteration 3/3, FAIL — 4건의 minor 결함, 감사관 자체 평가로도 "설계 문제 아닌 기계적 한 줄 수정") 반영. 사용자 승인 하에 오케스트레이터가 직접 마무리: AC-RTS-004a의 Event-Driven 절 주어를 "the number of SQL queries"(비-system 주어)에서 "the system shall ensure the number of..."로 교정(형제 REQ-RTS-004a는 이미 올바른 형태였음), AC-RTS-001의 둘째 절도 동일한 주어 문제를 "the system shall never infer or synchronize..."로 교정, acceptance.md Definition of Done의 REQ-RTS 범위 표기를 압축형에서 전체 ID 나열로 정정 |
 | 1.4.0 | 2026-08-09 | ggajo | Run 단계 구현 완료 후 evaluator-active Phase 2.8a 검증에서 spec/구현 불일치 발견: 최초 구현이 `ready_to_ship=false`를 `null`과 동일하게 뱃지 미노출로 처리했으나, AC-RTS-008 문언은 `null`의 미노출만 규정하고 `false`의 렌더링 여부는 규정하지 않음(REQ-RTS-007 원문도 3상태 중 `false`를 별도로 다루지 않아 구현이 암묵적으로 과잉 해석됨). 사용자에게 보고 후 결정: CS 대기 등으로 확정된 "출고 불가"(`false`)는 "판정 대상 아님"(`null`)과 시각적으로 구분되어야 하므로 `false` 전용의 독자적 뱃지("출고불가", red 계열)를 신설. 결정 F 신규 추가, REQ-RTS-007을 3상태(true/false 뱃지 렌더링 + 상호 구분) 요구사항으로 재작성, REQ-RTS-008/AC-RTS-008을 "null만 미노출, false는 미노출 대상 아님"으로 명확화, AC-RTS-007을 true/false 두 뱃지 변형 모두를 포괄하도록 확장. 계산 로직(REQ-RTS-002)은 변경 없음 — 순수 프론트엔드 렌더링 규칙 정정. TDD RED-GREEN-REFACTOR로 재구현: `OrderDetailPage.tsx` 3분기 렌더링, `OrderDetailPage.test.tsx` 기존 false-상태 미노출 단언 제거 및 3상태 전체 검증 테스트로 교체 |
 | 1.4.1 | 2026-08-09 | ggajo | Phase 3 문서 동기화 완료. Divergence Analysis 실행: 커밋 6c2653f 검증 완료(M1-M5 모든 마일스톤 반영, 마이그레이션 0032/0033 정확, 테스트 파일 정확). Cross-SPEC 영향도 확인 완료: SPEC-ORDER-011(함수 리네임 _recompute_order_status→_recompute_order_aggregates), SPEC-PURCHASE-ORDER-010(신규 4개 purchase_status write path 연결) 선례 준수. 프로젝트 문서 동기화 불필요 판단: tech.md/structure.md 변경사항 없음(의존성/디렉터리 신규 생성 없음), product.md 고수준 기능 설명으로 구현 세부사항(필드 추가) 미포함 대상. 상태 draft→completed 전환. |
+| 1.5.0 | 2026-08-17 | ggajo | **사용자 지시로 `ready_to_ship` 판정 규칙 단순화 + 환불 차감 도입.** (1) REQ-RTS-002의 `cs_required` 단락 규칙을 삭제 — 남는 조건은 "비취소·비환불 LineItem 전원이 `logistics_status=received` 또는 `purchase_status=in_stock`" 하나뿐이다. SPEC-PURCHASE-ORDER-011 REQ-DEX-009c가 같은 우선순위로 추가했던 `damaged_exchange` 단락도 함께 삭제된다(해당 SPEC v1.6.0 참조). 입고까지 끝난 CS필요/파손교환 품목은 더 이상 출고를 막지 않는다. (2) 집계 대상에서 **전량 환불된 LineItem을 제외** — 사용자 보고(주문 #37830)에서 취소분이 `purchase_status='cs_required'` + Refund 행 형태로 남아 있었고, `order_cancelled` 제외만으로는 걸러지지 않았다. `UnorderedItemsView`/`_fully_refunded_line_item_ids`가 이미 쓰던 `quantity - Σrefunded ≤ 0` 규칙과 동일하며, 부분 환불은 제외 사유가 아니다. **테스트**: `test_spec_012.py` 32개 통과(신규 `test_cs_required_but_received_is_true` — 삭제된 단락 규칙이 되살아나면 깨진다). 기존 `test_cs_required_hard_blocks_to_false`는 근거를 "CS라서"에서 "미입고라서"로 정정, `test_bulk_purchase_status_patch_recomputes_multiple_orders`는 두 주문이 True/False로 갈리도록 재작성(재계산 누락 시 둘 다 None이 되어 판별력 유지). **프로덕션 백필**: 주문 3,703건 재계산(출고가능 101→19, 값없음 105→39). **표시 계층 보정**: 새 규칙은 '출고'를 '입고 아님'으로 읽어 완료 주문 2,203건에 False를 주므로, 주문상세에서 `logistics_display === 'shipped'`일 때 출고가능/출고불가 배지를 숨긴다(`OrderDetailPage.tsx`, 저장 값은 불변 — 사용자 지시로 백엔드가 아닌 프론트에서 처리). |
 
 ---
 
@@ -142,14 +143,18 @@ REQ-LOGI-010 확장).
 independent of `Order.status`, capable of representing three states — ready (`True`), not ready
 (`False`), and not applicable (`null`).
 
-**REQ-RTS-002** (Ubiquitous): The system shall define `Order.ready_to_ship` as a computed
-aggregate over the Order's trackable (`sku` not null) child LineItems, applying the following
-rules in order: a LineItem whose `purchase_status` is `order_cancelled` shall be excluded from
+**REQ-RTS-002** (Ubiquitous) `[AMENDED v1.5.0]`: The system shall define `Order.ready_to_ship`
+as a computed aggregate over the Order's trackable (`sku` not null) child LineItems, applying the
+following rules in order: a LineItem whose `purchase_status` is `order_cancelled` — or whose
+entire ordered quantity has been refunded (`quantity - Σrefunded ≤ 0`) — shall be excluded from
 consideration entirely; if zero non-excluded trackable LineItems remain, `ready_to_ship` shall be
-`null`; otherwise, if one or more non-excluded LineItems has `purchase_status="cs_required"`,
-`ready_to_ship` shall be `False`; otherwise, `ready_to_ship` shall be `True` if and only if every
-non-excluded LineItem satisfies `logistics_status="received"` OR `purchase_status="in_stock"`,
-and `False` otherwise.
+`null`; otherwise, `ready_to_ship` shall be `True` if and only if every non-excluded LineItem
+satisfies `logistics_status="received"` OR `purchase_status="in_stock"`, and `False` otherwise.
+
+That single condition is the entire rule. The `cs_required` short-circuit this requirement
+originally carried — and the `damaged_exchange` short-circuit SPEC-PURCHASE-ORDER-011
+REQ-DEX-009c later added at the same precedence — were both REMOVED on user instruction
+(2026-08-17): a CS필요/파손교환 LineItem that has physically arrived no longer blocks the badge.
 
 ### 재계산 연결
 

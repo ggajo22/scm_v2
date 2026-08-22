@@ -227,6 +227,24 @@ class LineItem(models.Model):
     # received_quantity reaches `quantity` (see _process_warehouse_receipt_rows).
     received_quantity = models.IntegerField(default=0)
     received_at = models.DateTimeField(null=True, blank=True)
+    # SPEC-PURCHASE-ORDER-011 REQ-DEX-001: damage/exchange quantity reported
+    # for this LineItem, distinct from `quantity` (the original order
+    # quantity). Only meaningful when purchase_status == "damaged_exchange"
+    # (REQ-DEX-012a) — it is not read for display or reorder-quantity
+    # purposes on any other row. Resubmission overwrites this value rather
+    # than accumulating it (REQ-DEX-009b). The existing refund-subtraction
+    # convention (결정 A) applies on top of this value the same way it
+    # already applies to `quantity` elsewhere (UnorderedItemsView).
+    damaged_quantity = models.IntegerField(default=0)
+    # SPEC-ORDER-025 M2: manual SKU correction at 발주처리(confirm) time — the
+    # Shopify-reported SKU is sometimes stale (new book edition not reflected
+    # in the Shopify listing), so the operator corrects it when confirming
+    # the purchase order. Non-null means `sku` above was manually corrected;
+    # this field holds the ORIGINAL Shopify-reported value, set once (a
+    # second correction must not overwrite the true original — see
+    # LineItemConfirmView.post()). A single nullable field, not a separate
+    # boolean flag, since non-null already encodes "was corrected".
+    original_sku = models.CharField(max_length=255, null=True, blank=True)
 
     class Meta:
         db_table = "orders_line_item"
@@ -542,3 +560,44 @@ class ShopifySkuSetMapping(models.Model):
 
     def __str__(self) -> str:
         return f"ShopifySkuSetMapping({self.bundle_sku} -> {self.member_isbn})"
+
+
+class StoreSyncWatermark(models.Model):
+    """Per-store incremental-sync cursor for sync_store()'s updated_at_min fetch.
+
+    Deliberately decoupled from Order.shopify_updated_at: that column is also
+    written by the single-order resync path (sync_single_order_from_shopify,
+    used by OrderResyncView), which touches exactly one order and does not
+    sweep the rest of the store. A resync of an OLD order can therefore carry
+    a shopify_updated_at newer than any order actually covered by the last
+    full sync, which — if the store-wide MAX(shopify_updated_at) were used as
+    the watermark — jumps the next sync's fetch window forward and silently
+    skips every order in between. This is not hypothetical: on 2026-08-15 a
+    resync of order #37413 (created 2026-08-03) jumped the gimssine watermark
+    ~28 hours forward and orphaned 102 open orders, #38163 through #38266.
+    One row per store_type.
+    """
+
+    store_type = models.CharField(
+        max_length=20,
+        choices=[("gimssine", "Gimssine"), ("etoile", "Etoile")],
+        unique=True,
+    )
+    last_synced_updated_at = models.DateTimeField(null=True, blank=True)
+    # SPEC: staleness-detection cursor, distinct from last_synced_updated_at.
+    # Written on every successful sync_store() invocation for this store —
+    # including a quiet run that fetches zero orders, and a run whose batch
+    # max does not advance the fetch watermark above — because detecting a
+    # silently-stopped scheduled sync is the entire point of this field.
+    # NULL means "has not run since this deployed", not "never checked".
+    # Never set on a run that raises (the caller wraps sync_store() in
+    # transaction.atomic(), so a failed run rolls back and correctly stays
+    # unset/stale).
+    last_run_at = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "orders_store_sync_watermark"
+
+    def __str__(self) -> str:
+        return f"StoreSyncWatermark({self.store_type}: {self.last_synced_updated_at})"

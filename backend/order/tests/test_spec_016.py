@@ -1138,3 +1138,33 @@ class TestFullyRefundedTargetExclusion:
         refunded.refresh_from_db()
         assert refunded.shipped_quantity == 0
         assert refunded.logistics_status != "shipped"
+
+
+# ---------------------------------------------------------------------------
+# 환불(취소) 수량 차감 — 강제 출고 경로도 일반 경로와 같은 용량을 본다.
+# 두 경로의 수량 계산은 반드시 일치해야 한다 (_fully_refunded_line_item_ids
+# 주석 참조): 한쪽만 차감하면 남은 출고 가능 수량에 대해 서로 다른 답을 낸다.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestForceOutboundRefundNetting:
+    def test_partial_refund_reduces_capacity_on_force_path(self):
+        order = _make_order(shopify_order_id=610101, name="#610101")
+        li = _make_line_item(order, sku="ISBN-FPR", quantity=3)
+        Refund.objects.create(
+            order=order,
+            shopify_refund_id=610901,
+            line_item_id=li.shopify_line_item_id,
+            quantity=1,
+        )
+
+        result = _process_force_outbound_rows(
+            [{"line_item_id": li.id, "name": "#610101", "sku": "ISBN-FPR", "total": 2}]
+        )
+
+        li.refresh_from_db()
+        assert result["matched_count"] == 1
+        assert result["quantity_exceeded_count"] == 0
+        assert li.shipped_quantity == 2
+        assert li.logistics_status == "shipped"

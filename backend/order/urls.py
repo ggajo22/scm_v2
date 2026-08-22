@@ -3,12 +3,15 @@ from django.urls import path
 from .purchase_order_views import (
     ConfirmOrderView,
     DailyReviewExcelView,
+    DamagedExchangeSearchView,
+    DamagedExchangeSubmitView,
     DistributorVendorRuleDeleteView,
     DistributorVendorRuleListCreateView,
     ExcludedItemsView,
     GenerateOrderFileView,
     LineItemBulkRackNumberUpdateView,
     LineItemBulkStatusUpdateView,
+    LineItemConfirmView,
     LineItemLogisticsStatusBulkUpdateView,
     LineItemLogisticsStatusUpdateView,
     LineItemRackNumberSummaryView,
@@ -41,6 +44,7 @@ from .views import (
     OrderNoteListView,
     OrderNoteResolveView,
     OrderResyncView,
+    OrderSyncStatusView,
     OrderSyncView,
 )
 from .warehouse_views import (
@@ -56,6 +60,10 @@ urlpatterns = [
     path("shopify-sku-sets/<str:bundle_sku>/", ShopifySkuSetDetailView.as_view(), name="shopify-sku-set-detail"),
     # Shopify order sync and list
     path("orders/sync/", OrderSyncView.as_view(), name="order-sync"),
+    # SPEC-PURCHASE-ORDER-011: super_admin-only read of last scheduled-sync
+    # run time per store. Static literal segment ("sync-status" is not an
+    # int), so no conflict with orders/<int:pk>/ below.
+    path("orders/sync-status/", OrderSyncStatusView.as_view(), name="order-sync-status"),
     path("orders/notes/", OrderNoteListView.as_view(), name="order-note-list"),
     path("orders/", OrderListView.as_view(), name="order-list"),
     path("orders/<int:pk>/sync/", OrderResyncView.as_view(), name="order-resync"),
@@ -79,6 +87,22 @@ urlpatterns = [
     # SPEC-PURCHASE-ORDER-004: bulk-status must precede <int:pk>/status/ to avoid URL conflict
     path("purchase-orders/line-items/bulk-status/", LineItemBulkStatusUpdateView.as_view(), name="po-line-item-bulk-status"),
     path("purchase-orders/line-items/<int:pk>/status/", LineItemStatusUpdateView.as_view(), name="po-line-item-status"),
+    # SPEC-ORDER-025 M1: LineItem-grain single-row purchase confirmation,
+    # same <int:pk>/<segment>/ group as status/ above ("confirm" is a
+    # distinct literal segment, so no shadowing risk).
+    path(
+        "purchase-orders/line-items/<int:pk>/confirm/",
+        LineItemConfirmView.as_view(),
+        name="po-line-item-confirm",
+    ),
+    # SPEC-PURCHASE-ORDER-011: damaged-exchange row-level submission, same
+    # <int:pk>/<segment>/ group as status/logistics-status/rack-number above
+    # ("damaged-exchange" is a distinct literal segment, so no shadowing risk).
+    path(
+        "purchase-orders/line-items/<int:pk>/damaged-exchange/",
+        DamagedExchangeSubmitView.as_view(),
+        name="po-line-item-damaged-exchange",
+    ),
     # SPEC-ORDER-011: bulk-logistics-status must precede <int:pk>/logistics-status/
     path(
         "purchase-orders/line-items/bulk-logistics-status/",
@@ -112,6 +136,14 @@ urlpatterns = [
         "purchase-orders/line-items/rack-number-summary/",
         LineItemRackNumberSummaryView.as_view(),
         name="po-line-item-rack-number-summary",
+    ),
+    # SPEC-PURCHASE-ORDER-011: cross-order read-only ISBN search (GET only,
+    # no <int:pk> conflict possible — same reasoning as rack-number-summary
+    # above).
+    path(
+        "purchase-orders/line-items/damaged-exchange-search/",
+        DamagedExchangeSearchView.as_view(),
+        name="po-line-item-damaged-exchange-search",
     ),
     # SPEC-ORDER-015: outbound processing. Both paths are fully static (no
     # <int:pk> segment), so the line-items/<int:pk>/... patterns above cannot

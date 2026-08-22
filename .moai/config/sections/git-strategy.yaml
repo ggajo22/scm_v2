@@ -46,7 +46,7 @@ git_strategy:
     github_integration: true
     push_to_remote: true
     branch_prefix: "feature/SPEC-"
-    main_branch: main
+    main_branch: master   # 이 저장소의 기본 브랜치는 master (2026-08-15 변경)
 
     # Branch creation policy
     branch_creation:
@@ -78,7 +78,7 @@ git_strategy:
     github_integration: true
     push_to_remote: true
     branch_prefix: "feature/SPEC-"
-    main_branch: main
+    main_branch: master   # 이 저장소의 기본 브랜치는 master (2026-08-15 변경)
     draft_pr: true
     required_reviews: 1
     branch_protection: true

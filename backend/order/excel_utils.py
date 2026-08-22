@@ -493,6 +493,53 @@ def _no_stock_logic(
     return selected, basis
 
 
+# SPEC-ORDER-024 REQ-OP-001: candidate_basis label per secondary distributor,
+# kept next to resolve_publisher_distributor() so the two stay in sync.
+_VENDOR_RULE_BASIS: dict[str, str] = {
+    "agape": "아가페규칙",
+    "choeumgoyuk": "처음교육규칙",
+    "sungseoyunion": "성서유니온규칙",
+}
+
+
+def resolve_publisher_distributor(
+    publisher: str | None,
+    vendor_rules: list[tuple[str, str]] | None,
+) -> str | None:
+    """
+    Resolve a 교보 출판사 name to its secondary distributor code.
+
+    Extracted from auto_select_distributor()'s Step 0 (SPEC-ORDER-024
+    REQ-OP-001) so the Daily Review UPLOAD side can reach the same verdict
+    the DOWNLOAD side reached: the '선택' cell collapses both 아가페 and
+    성서유니온 into the single label '타출판사'
+    (_DISTRIBUTOR_CODE_TO_LABEL), so the concrete distributor has to be
+    re-derived from the publisher rather than read back off the file.
+
+    Matching semantics are byte-for-byte the original Step 0 loop:
+    아가페 matches on substring (any publisher name containing "아가페"),
+    처음교육/성서유니온 match on exact publisher_name equality. First rule
+    row that matches wins.
+
+    Args:
+        publisher: KyoboData.publisher / '교보 출판사' cell value.
+        vendor_rules: Pre-fetched list of (publisher_name, distributor_code).
+
+    Returns:
+        "agape" | "choeumgoyuk" | "sungseoyunion", or None when no rule matches.
+    """
+    if not vendor_rules or not publisher:
+        return None
+    for pub_name, dist_code in vendor_rules:
+        if dist_code == "agape" and "아가페" in publisher:
+            return "agape"
+        if dist_code == "choeumgoyuk" and publisher == pub_name:
+            return "choeumgoyuk"
+        if dist_code == "sungseoyunion" and publisher == pub_name:
+            return "sungseoyunion"
+    return None
+
+
 def auto_select_distributor(
     vc: "VendorComparison",
     total_qty: int,
@@ -538,14 +585,9 @@ def auto_select_distributor(
     # ------------------------------------------------------------------
     # Step 0: DistributorVendorRule override
     # ------------------------------------------------------------------
-    if vendor_rules and vc.kyobo_publisher:
-        for pub_name, dist_code in vendor_rules:
-            if dist_code == "agape" and "아가페" in vc.kyobo_publisher:
-                return _result("agape", "아가페규칙", price_diff, False)
-            if dist_code == "choeumgoyuk" and vc.kyobo_publisher == pub_name:
-                return _result("choeumgoyuk", "처음교육규칙", price_diff, False)
-            if dist_code == "sungseoyunion" and vc.kyobo_publisher == pub_name:
-                return _result("sungseoyunion", "성서유니온규칙", price_diff, False)
+    rule_code = resolve_publisher_distributor(vc.kyobo_publisher, vendor_rules)
+    if rule_code is not None:
+        return _result(rule_code, _VENDOR_RULE_BASIS[rule_code], price_diff, False)
 
     # ------------------------------------------------------------------
     # Step 1: Warehouse stock priority
@@ -616,9 +658,26 @@ _NOTE_TYPE_STATUS_MAP: dict[str, str] = {
     "주문보류": "on_hold",
     "CS필요": "cs_required",
     "타출판사": "other_publisher",
-    # SPEC-PURCHASE-ORDER-010 REQ-DMG-003: re-enters the reorder queue via
-    # ConfirmOrderView/UploadDailyReviewView's widened read-side eligibility.
-    "파손/교환": "damaged_exchange",
+    # SPEC-PURCHASE-ORDER-010 REQ-DMG-003 introduced "파손/교환" here so a
+    # Daily Review upload could set purchase_status="damaged_exchange"
+    # directly. SPEC-PURCHASE-ORDER-011 removes that entry: damage intake is
+    # now exclusive to DamagedExchangeSubmitView, which always pairs the
+    # status with an explicit damaged_quantity >= 1 (REQ-DEX-009/009b) — a
+    # requirement this batch upload has no column to satisfy. See
+    # _BLOCKED_SELECTED_LABELS below for the explicit rejection this label
+    # now gets instead of silently falling through as CS-type.
+}
+
+# @MX:NOTE: [AUTO] SPEC-PURCHASE-ORDER-011: '선택' values that were
+# previously recognized (via _NOTE_TYPE_STATUS_MAP/_DISTRIBUTOR_LABEL_MAP)
+# but are now deliberately blocked. Rows selecting one of these are neither
+# treated as a distributor code nor silently absorbed into the generic
+# unrecognized-selected-value skip path (REQ-PO8-011) — the caller
+# (UploadDailyReviewView) reports them explicitly via `errors` with the
+# given reason, so the operator can find the row and resubmit it through
+# the correct entry point instead of it vanishing without a trace.
+_BLOCKED_SELECTED_LABELS: dict[str, str] = {
+    "파손/교환": "damaged_exchange_requires_dedicated_page",
 }
 
 _DAILY_REVIEW_HEADERS = [
@@ -875,6 +934,12 @@ def parse_daily_review_excel(file_bytes: bytes) -> list[dict]:
         note_type: str | None = None
         if selected_label and not distributor_code and selected_label in _NOTE_TYPE_STATUS_MAP:
             note_type = selected_label
+        # SPEC-PURCHASE-ORDER-011: explicit rejection reason for '선택'
+        # values that are recognized but no longer processable via this
+        # upload — distinct from `note_type is None and distributor_code is
+        # None`, which also covers genuinely unrecognized/blank values
+        # (REQ-PO8-011). See _BLOCKED_SELECTED_LABELS.
+        blocked_reason = _BLOCKED_SELECTED_LABELS.get(selected_label) if selected_label else None
 
         note = _str_or_none(_cell(row, note_idx))
 
@@ -908,6 +973,7 @@ def parse_daily_review_excel(file_bytes: bytes) -> list[dict]:
             "name": name,
             "distributor": distributor_code,
             "note_type": note_type,
+            "blocked_reason": blocked_reason,
             "note": note,
             "bs_price": bs_price,
             "ky_price": ky_price,
