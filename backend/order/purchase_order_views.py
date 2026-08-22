@@ -2122,6 +2122,51 @@ class UploadDailyReviewView(APIView):
                             if li.purchase_status == "damaged_exchange":
                                 li.purchase_status = "unordered"
                         nonwarehouse_li_updates.extend(unordered_lis)
+
+                        # @MX:NOTE: [AUTO] SPEC-ORDER-019 REQ-MEMO-001..006:
+                        # this branch used to read `note` nowhere at all, so a
+                        # distributor row's memo was silently dropped. It is
+                        # now persisted exactly like the CS branch above and
+                        # the warehouse branch do — appended to
+                        # `pending_notes`, never a per-row create().
+                        # assignee="발주" follows ConfirmOrderView's precedent
+                        # and labels the memo as a purchasing one; leaving it
+                        # to the model default ("CS") would mislabel it.
+                        # is_resolved=True is what keeps it OUT of the CS and
+                        # 발주 tabs: LineItemNoteUnresolvedListView filters on
+                        # is_resolved=False, and the frontend's three tabs read
+                        # only from that endpoint (LineItemNotesPage
+                        # filterNotes). The memo is a record of why the row was
+                        # confirmed, not a task anyone must act on — the
+                        # unresolved queue is for the latter. It stays visible
+                        # in the line item's note history on the order detail
+                        # page, which serializes notes unfiltered
+                        # (LineItemSerializer.notes).
+                        # `note_type` is deliberately NOT copied from the CS
+                        # branch: the 타출판사 Excel export selects purely on
+                        # note_type, so any value set here can leak a
+                        # purchasing memo into a publisher's file. Distributor
+                        # rows carry note_type=None from the parser regardless.
+                        # @MX:NOTE: [AUTO] SPEC-ORDER-019 REQ-MEMO-011/012:
+                        # re-upload safety here is INHERITED, not enforced.
+                        # The first upload links these LineItems to a
+                        # PurchaseOrder, after which _reorder_candidate_filter
+                        # drops them from the candidate set and the row is
+                        # skipped before ever reaching this point. There is no
+                        # content-based dedup — widening that filter would
+                        # silently start duplicating these notes.
+                        if note is not None:
+                            for li in unordered_lis:
+                                pending_notes.append(
+                                    LineItemNote(
+                                        line_item=li,
+                                        content=note,
+                                        author=None,
+                                        assignee="발주",
+                                        is_resolved=True,
+                                    )
+                                )
+
                         # First-processed row for a given (sku, distributor)
                         # group determines the resulting PurchaseOrder's
                         # title/unit_price — the post-loop build reads those
@@ -2176,7 +2221,9 @@ class UploadDailyReviewView(APIView):
                     )
 
                 # REQ-PO9-005: single bulk_create() for every LineItemNote
-                # collected across the CS and warehouse branches.
+                # collected across the CS, warehouse and non-warehouse
+                # (distributor) branches — SPEC-ORDER-019 REQ-MEMO-009/010
+                # added the third one without adding a query.
                 if pending_notes:
                     LineItemNote.objects.bulk_create(pending_notes)
 
