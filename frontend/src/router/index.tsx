@@ -62,6 +62,13 @@ export const router = createBrowserRouter([
                 },
               },
               {
+                path: 'etoile-add-isbn',
+                lazy: async () => {
+                  const { EtoileAddIsbnPage } = await import('@/pages/EtoileAddIsbnPage')
+                  return { Component: EtoileAddIsbnPage }
+                },
+              },
+              {
                 path: ':id',
                 lazy: async () => {
                   const { BookDetailPage } = await import('@/pages/BookDetailPage')

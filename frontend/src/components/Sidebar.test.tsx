@@ -135,6 +135,28 @@ describe('Sidebar', () => {
     })
   })
 
+  describe('REQ-EIA-018: Etoile ISBN 추가 하위 항목 (SPEC-ETOILE-INVEN-ADD-001)', () => {
+    it('"Etoile ISBN 추가" 링크가 /books/etoile-add-isbn 경로로 렌더링된다', () => {
+      renderSidebar()
+      const link = screen.getByRole('link', { name: 'Etoile ISBN 추가' })
+      expect(link).toBeInTheDocument()
+      expect(link).toHaveAttribute('href', '/books/etoile-add-isbn')
+    })
+
+    it('/books/etoile-add-isbn 경로에서 "Etoile ISBN 추가" 링크가 aria-current="page"를 가진다', () => {
+      renderSidebar('super_admin', '/books/etoile-add-isbn')
+      expect(screen.getByRole('link', { name: 'Etoile ISBN 추가' })).toHaveAttribute(
+        'aria-current',
+        'page'
+      )
+    })
+
+    it('/books/etoile-add-isbn 경로에서 "Etoile 현황"은 aria-current를 가지지 않는다', () => {
+      renderSidebar('super_admin', '/books/etoile-add-isbn')
+      expect(screen.getByRole('link', { name: 'Etoile 현황' })).not.toHaveAttribute('aria-current')
+    })
+  })
+
   describe('REQ-FLA-012: 빠른 리스팅 하위 항목 (SPEC-FAST-LISTING-ADD-001)', () => {
     it('"빠른 리스팅" 링크가 /books/fast-listing 경로로 렌더링된다', () => {
       renderSidebar()
